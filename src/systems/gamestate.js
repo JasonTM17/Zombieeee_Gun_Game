@@ -122,8 +122,9 @@ export const bus = new EventTarget();
  */
 
 /**
- * @typedef {("shop"|"user")} PauseReason - why the run is frozen. "user" is
- * the legacy Esc/P pause; "shop" is set while the shop overlay is open.
+ * @typedef {("shop"|"user"|"outro")} PauseReason - why the run is frozen. "user" is
+ * the legacy Esc/P pause; "shop" is set while the shop overlay is open; "outro"
+ * while the full-screen story outro owns the display.
  */
 
 /**
@@ -359,6 +360,15 @@ export function createGamestate(busArg, settings) {
   // and input.js swallows it anyway (it tracks the overlay itself).
   B.addEventListener("shop-open", () => addPause("shop"));
   B.addEventListener("shop-closed", () => removePause("shop"));
+
+  // NIGHT 30 P1: the full-screen outro owns the display — the world must not
+  // simulate behind it (a player could die in the dark and the gameover panel
+  // would sit under the overlay). Freeze under its own reason while it shows.
+  B.addEventListener("outro-active", (e) => {
+    const active = e && e.detail ? e.detail.active === true : false;
+    if (active) addPause("outro");
+    else removePause("outro");
+  });
 
   return gamestate;
 }

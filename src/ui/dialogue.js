@@ -698,6 +698,14 @@ export function createDialogue(container, bus, i18n) {
 
   // --- sequence lifecycle ---------------------------------------------------------
 
+  /** The outro owns the whole screen — the world must not simulate behind it.
+   * gamestate freezes under the "outro" pause reason while active is true. */
+  function setOutroActive(active) {
+    if (bus && typeof bus.dispatchEvent === "function") {
+      bus.dispatchEvent(new CustomEvent("outro-active", { detail: { active } }));
+    }
+  }
+
   function begin(kind, items, onDone) {
     stopTimers();
     showMore(false);
@@ -706,6 +714,7 @@ export function createDialogue(container, bus, i18n) {
     slide.style.display = "none";
     outro.style.display = "none";
     outroText.style.opacity = "0";
+    if (mode === "outro") setOutroActive(false); // re-begin mid-outro: unfreeze
     mode = kind;
     seq = items;
     idx = 0;
@@ -725,6 +734,7 @@ export function createDialogue(container, bus, i18n) {
       // Fade the full-screen surface out, then remove it from layout.
       const node = wasMode === "intro" ? slide : outro;
       node.style.opacity = "0";
+      if (wasMode === "outro") setOutroActive(false); // world resumes
       setTimeout(() => {
         if (mode === "" && node.style.display !== "none") {
           node.style.display = "none";
@@ -871,6 +881,7 @@ export function createDialogue(container, bus, i18n) {
       }
       outro.style.display = "flex";
       outroText.style.opacity = "0";
+      setOutroActive(true); // freeze the world while the outro owns the screen
       busy = true;
       requestAnimationFrame(() => {
         if (mode !== "outro") return;

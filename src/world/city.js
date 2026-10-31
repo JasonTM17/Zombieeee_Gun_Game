@@ -489,8 +489,10 @@ function makeGateIconTexture() {
   canvas.height = S;
   const ctx = canvas.getContext("2d");
   ctx.clearRect(0, 0, S, S);
-  ctx.strokeStyle = "rgba(150, 235, 255, 0.95)";
-  ctx.shadowColor = "rgba(90, 220, 255, 0.9)";
+  // White artwork — the per-gate material color provides the red/green tint
+  // (EXPANSION-P1 §3.4.2); multiplying white reads cleanly, cyan would muddy.
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.95)";
+  ctx.shadowColor = "rgba(255, 255, 255, 0.9)";
   ctx.shadowBlur = 12;
   ctx.lineWidth = 6;
   ctx.beginPath();
@@ -641,7 +643,7 @@ export function createCity(scene, level) {
     center: r.id === "safehouse" ? { x: -75, z: 8 }
       : r.id === "residential" ? { x: -72, z: -80 }
       : r.id === "commercial" ? { x: 57, z: -92 }
-      : r.id === "hospital" ? { x: 68, z: 0 } // §3.1 said (92,−12) — inside the main block; see header
+      : r.id === "hospital" ? { x: 92, z: -12 } // §3.1 contract point — inside the main block
       : r.id === "park" ? { x: 57, z: 80 }
       : { x: -72, z: 80 }, // docks
   }));
@@ -1203,13 +1205,8 @@ export function createCity(scene, level) {
   const RED = new THREE.Color(GATE_RED);
   const GREEN = new THREE.Color(GATE_GREEN);
   const frameMat = new THREE.MeshBasicMaterial({ vertexColors: true });
-  const iconMat = new THREE.MeshBasicMaterial({
-    map: gateIconTex, transparent: true, side: THREE.DoubleSide, depthWrite: false,
-  });
-  materials.push(frameMat, iconMat);
+  materials.push(frameMat);
   const frameGeos = [];
-  /** Icon quads share one static material — merged into a single mesh. */
-  const iconGeos = [];
   let wpVertex = 0;
 
   for (const g of gates) {
@@ -1234,7 +1231,14 @@ export function createCity(scene, level) {
     lintel.translate(g.x, 4.0, g.z);
     frameGeos.push(tintGeo(lintel, 0, 0, 0));
     g.wpCount = wpVertex - g.wpStart;
-    // Icon quad on both lintel faces (static cyan ring — pattern level.js).
+    // Icon quad on both lintel faces — per-gate material so the icon flips
+    // red ↔ green with the frame (EXPANSION-P1 §3.4.2; was static cyan).
+    g.iconMat = new THREE.MeshBasicMaterial({
+      map: gateIconTex, transparent: true, side: THREE.DoubleSide, depthWrite: false,
+      color: GATE_RED,
+    });
+    materials.push(g.iconMat);
+    const iconGeosG = [];
     for (const side of [-1, 1]) {
       const plane = new THREE.PlaneGeometry(0.9, 0.9);
       if (alongX) {
@@ -1243,11 +1247,11 @@ export function createCity(scene, level) {
         plane.rotateY(Math.PI / 2);
         plane.translate(g.x + side * 0.37, 4.0, g.z);
       }
-      iconGeos.push(plane);
+      iconGeosG.push(plane);
     }
+    addMerged(iconGeosG, g.iconMat, { cast: false, solid: false, name: "gate-icons" });
   }
   const framesMesh = addMerged(frameGeos, frameMat, { cast: false, solid: true, name: "gate-frames" });
-  addMerged(iconGeos, iconMat, { cast: false, solid: false, name: "gate-icons" });
 
   /**
    * Rewrite one gate's frame vertex colors (red ↔ green) in the merged mesh.
@@ -1435,6 +1439,7 @@ export function createCity(scene, level) {
       const k = a.toOpen ? p : 1 - p; // 0 = red/locked, 1 = green/open (both ways)
       g.mat.emissive.copy(a.fromColor).lerp(a.toOpen ? GREEN : RED, p);
       paintFrame(g, tmpFrom.copy(RED).lerp(GREEN, k));
+      if (g.iconMat) g.iconMat.color.copy(RED).lerp(GREEN, k);
       if (p >= 1) finishAnim(a);
     }
     if (anims.size > 0) rafId = requestAnimationFrame(animTick);

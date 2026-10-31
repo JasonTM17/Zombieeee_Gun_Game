@@ -510,10 +510,10 @@ bus.addEventListener("ui-play", () => {
   input.lockPointer();
 });
 bus.addEventListener("ui-play-free", () => {
-  // NIGHT 30 P1 (§5.5.2 + §5.6.2.3): CHƠI TỰ DO — fresh run, NO intro slides,
-  // mission 1 active immediately. story-mode stays OFF: legacy zones behavior
-  // (wave-clear may unlock north/east) is part of the old free-run shape.
-  storyMode(false);
+  // NIGHT 30 P1 (§5.5.2 + §5.6.2.3 + §5.6.4): CHƠI TỰ DO — fresh run, NO intro
+  // slides, mission 1 active immediately. Story-guard stays ARMED: quarantine
+  // interior stays sealed until mission 6 even in free-roam (WORLD.md §12.1).
+  storyMode(true);
   freshRun(false);
   storyRun = false;
   keepStory = false;
