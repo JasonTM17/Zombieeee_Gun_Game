@@ -24,6 +24,19 @@
  * - giveAmmo(): refill reserves by mutating weapons.list entries (e.g.
  *   reserve = magSize * 5 per weapon; pistol stays Infinity).
  *
+ * EXPANSION api (docs/EXPANSION.md "main.js MỞ RỘNG" — the doc directs adding
+ * the new keys here because register() ignores unknown ones):
+ * - giveMoney(n): economy.add(n).
+ * - buyWeapon(id) / buy(id): shop.buy(id) — a weapon or ammo/medkit item.
+ * - toggleShop(): open/close the shop overlay (no-ops outside a live run).
+ * - spawnBoss(type, inFront?): one boss; inFront → ~12 m before the camera,
+ *   otherwise the zone anchor. Outside wave accounting (debug spawn).
+ * - damageBoss(n): n damage to the live boss.
+ * - teleport(zoneId): player to a zone's center ("main" = arena origin).
+ * - unlockZone(id): open that expansion zone (idempotent).
+ * - getState(): the legacy snapshot PLUS {money, boss, unlockedZones,
+ *   ownedWeapons}.
+ *
  * register(api) replaces the no-op methods with the api's own methods (same
  * names); unknown api keys are ignored. window.__game must exist as soon as
  * createDebugHook() is called (before registration), so console calls never
@@ -37,7 +50,10 @@
  * @property {(api: {
  *   startGame?: Function, getState?: Function, spawnZombie?: Function,
  *   damagePlayer?: Function, fireWeapon?: Function, switchWeapon?: Function,
- *   reload?: Function, giveAmmo?: Function
+ *   reload?: Function, giveAmmo?: Function,
+ *   giveMoney?: Function, buyWeapon?: Function, toggleShop?: Function,
+ *   buy?: Function, spawnBoss?: Function, damageBoss?: Function,
+ *   teleport?: Function, unlockZone?: Function
  * }) => void} register - install the real api onto window.__game.
  */
 
@@ -50,6 +66,15 @@ const DEBUG_KEYS = [
   "switchWeapon",
   "reload",
   "giveAmmo",
+  // EXPANSION (docs/EXPANSION.md) — wired by main.js at register() time.
+  "giveMoney",
+  "buyWeapon",
+  "toggleShop",
+  "buy",
+  "spawnBoss",
+  "damageBoss",
+  "teleport",
+  "unlockZone",
 ];
 
 export function createDebugHook() {

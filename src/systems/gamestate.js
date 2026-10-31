@@ -29,6 +29,16 @@
  * - "ui-quit"           {}                          menus (QUIT TO MENU / MENU button) → main.js: gamestate.toMenu()
  * - "settings-changed"  {patch}                     menus (sliders / language, saved immediately via settings.set) → main.js: audio.setVolume(patch.volume) when present; language persistence handled by menus itself
  *
+ * EXPANSION events (docs/EXPANSION.md) — emitted/consumed by the new modules:
+ * - "money-changed"     {money, delta}              economy (every applied balance change) → hud (money chip), shop UI (affordability)
+ * - "shop-toggle"       {}                          input (B while playing + shop closed) → shop UI (toggle overlay)
+ * - "shop-open" / "shop-closed" {}                  shop UI (open after lock release / on close) → gamestate (addPause/removePause("shop")), input (lock choreography), hud (shop hint)
+ * - "explosion"         {position}                  explosives (blast) → additive (the boom is synthesized locally in explosives.js)
+ * - "zone-unlocked"     {id, name}                  zones (idempotent unlock) → hud (toast)
+ * - "boss-spawned"      {type, zoneId, hp}          waves (boss wave) / main debug spawnBoss → hud (boss bar), main.js (live boss tracking for hud.update extras + debug damageBoss)
+ * - "boss-drops"        {position, kinds}           boss death (constructor signature is frozen — no pickups ref) → main.js routes to pickups.spawn(position, kind) per kind
+ * - "boss-roar"         {type, action}              boss specials (windup/shriek/slam) → main.js routes to audio.zombieGrowl()
+ *
  * NOTE on zombie hit sounds: combat.js calls audio.zombieHit() directly
  * (combat owns audio); zombie.takeDamage() does NOT emit a hit-sound event —
  * this avoids 8 stacked sounds for one shotgun blast.
@@ -56,11 +66,32 @@ export const bus = new EventTarget();
  *   - "player-died" → state = "gameover"; if score > settings.get().highScore,
  *     persist via settings.set({highScore: score}); then emit "state-changed"
  *     {state: "gameover", score, highScore}.
- *   - "pause-toggle" → if playing then pause(); else if paused then resume().
- * - start(): state = "playing", score = 0, kills = 0, wave = 1, emit
- *   "state-changed". restart(): identical, from any state. toMenu(): state =
- *   "menu", emit "state-changed". pause()/resume() only act from the matching
- *   state and also emit "state-changed".
+ *   - "pause-toggle" → if playing then addPause("user"); else if paused WITH
+ *     the "user" reason set then removePause("user"). A shop-only pause
+ *     (reason "shop" without "user") is deliberately untouched: the shop
+ *     overlay owns Esc/B while it is open, so a stray "pause-toggle" (the P
+ *     key path) can never lift the shop pause or strand an orphan reason.
+ *   - "shop-open" → addPause("shop"); "shop-closed" → removePause("shop")
+ *     (EXPANSION: pause by reason).
+ * - PAUSE BY REASON (EXPANSION, docs/EXPANSION.md): paused ⇔ the `reasons`
+ *   set ("shop" | "user") is non-empty. addPause(reason) records it (from a
+ *   live run only) and flips to "paused" + emit on the first reason;
+ *   removePause(reason) drops it and flips back to "playing" + emit when the
+ *   last reason goes. hasPause(reason) reports membership (main.js uses it to
+ *   keep the pause MENU hidden under the shop overlay while the run is still
+ *   frozen). Esc/P keeps toggling exactly the "user" reason — legacy behavior
+ *   unchanged whenever no shop is involved.
+ * - start(): state = "playing", score = 0, kills = 0, wave = 1, reasons
+ *   cleared, emit "state-changed". restart(): identical, from any state.
+ *   toMenu(): state = "menu", reasons cleared, emit "state-changed".
+ *   pause()/resume() are thin wrappers over addPause/removePause("user") —
+ *   they only act from the matching situation and emit "state-changed" on the
+ *   actual transition, exactly like before. A player death also clears every
+ *   reason (the gameover screen has no pause contexts).
+ * - Fresh-run money reset (EXPANSION): economy.reset() handles it — main.js
+ *   calls economy.reset() in its freshRun(), and economy additionally
+ *   listens "ui-play"/"ui-restart" itself (this module holds no economy ref;
+ *   the createGamestate(bus, settings) signature stays frozen).
  * - update(dt): called by the main loop every frame while playing (dt in
  *   seconds); hook for future per-frame logic — must not throw.
  * - score/wave/kills live on the returned object (HUD reads them every frame
@@ -77,17 +108,28 @@ export const bus = new EventTarget();
  */
 
 /**
+ * @typedef {("shop"|"user")} PauseReason - why the run is frozen. "user" is
+ * the legacy Esc/P pause; "shop" is set while the shop overlay is open.
+ */
+
+/**
  * @typedef {Object} Gamestate
  * @property {GameStateName} state - current state.
  * @property {number} score - current run score.
  * @property {number} wave - current wave number (1-based; follows "wave-start").
  * @property {number} kills - zombies killed this run.
  * @property {() => void} start - menu → playing, fresh run.
- * @property {() => void} pause - playing → paused.
- * @property {() => void} resume - paused → playing.
+ * @property {() => void} pause - playing → paused (reason "user").
+ * @property {() => void} resume - paused → playing (drops reason "user").
  * @property {() => void} restart - any state → playing, fresh run.
  * @property {() => void} toMenu - any state → menu.
  * @property {(dt: number) => void} update - per-frame tick while playing.
+ * @property {(reason: PauseReason) => void} addPause - EXPANSION: record a
+ *   pause reason (live runs only); first reason flips playing → paused.
+ * @property {(reason: PauseReason) => void} removePause - EXPANSION: drop a
+ *   pause reason; the last one flips paused → playing.
+ * @property {(reason: PauseReason) => boolean} hasPause - EXPANSION: true
+ *   while `reason` is recorded (main.js: hide the pause menu under the shop).
  */
 
 export function createGamestate(busArg, settings) {
@@ -106,7 +148,63 @@ export function createGamestate(busArg, settings) {
     restart,
     toMenu,
     update,
+    addPause,
+    removePause,
+    hasPause,
   };
+
+  // --- pause by reason (EXPANSION, docs/EXPANSION.md) --------------------------
+  // paused ⇔ this set is non-empty. Esc/P toggles ONLY the "user" reason;
+  // the shop overlay drives the "shop" reason through bus events. Legacy
+  // behavior (no shop involved) is byte-identical: one reason, same emits.
+  /** @type {Set<PauseReason>} */
+  const pauseReasons = new Set();
+
+  /**
+   * Record `reason` and freeze the run. Only meaningful mid-run: menu and
+   * gameover have no pause contexts (the shop UI force-closes there anyway).
+   * Re-adding an active reason is a no-op (no duplicate emits).
+   * @param {PauseReason} reason
+   */
+  function addPause(reason) {
+    const r = typeof reason === "string" ? reason : "";
+    if (!r) return;
+    if (gamestate.state === "menu" || gamestate.state === "gameover") return;
+    if (pauseReasons.has(r)) return;
+    pauseReasons.add(r);
+    if (gamestate.state === "playing") {
+      gamestate.state = "paused";
+      emit();
+    }
+  }
+
+  /**
+   * Drop `reason`; when the LAST reason goes the run resumes (emit). Dropping
+   * a reason that is not set is a no-op.
+   * @param {PauseReason} reason
+   */
+  function removePause(reason) {
+    const r = typeof reason === "string" ? reason : "";
+    if (!pauseReasons.has(r)) return;
+    pauseReasons.delete(r);
+    if (pauseReasons.size === 0 && gamestate.state === "paused") {
+      gamestate.state = "playing";
+      emit();
+    }
+  }
+
+  /**
+   * @param {PauseReason} reason
+   * @returns {boolean} true while `reason` is recorded.
+   */
+  function hasPause(reason) {
+    return pauseReasons.has(typeof reason === "string" ? reason : "");
+  }
+
+  /** Fresh runs / menu / death leave no reasons behind (no emit of its own). */
+  function clearPauses() {
+    pauseReasons.clear();
+  }
 
   /** Current best score, defensively read (settings is optional in tests). */
   function highScore() {
@@ -132,6 +230,7 @@ export function createGamestate(busArg, settings) {
 
   /** Shared body of start()/restart(): zero the run counters, go playing. */
   function freshRun() {
+    clearPauses(); // a fresh run starts unfrozen (no shop / user reasons)
     gamestate.state = "playing";
     gamestate.score = 0;
     gamestate.kills = 0;
@@ -150,19 +249,16 @@ export function createGamestate(busArg, settings) {
   }
 
   function pause() {
-    if (gamestate.state !== "playing") return; // only acts from "playing"
-    gamestate.state = "paused";
-    emit();
+    addPause("user"); // only acts from "playing" (guard inside addPause)
   }
 
   function resume() {
-    if (gamestate.state !== "paused") return; // only acts from "paused"
-    gamestate.state = "playing";
-    emit();
+    removePause("user"); // only acts while the "user" reason is set
   }
 
   function toMenu() {
     if (gamestate.state === "menu") return; // no-op transition
+    clearPauses();
     gamestate.state = "menu";
     emit();
   }
@@ -197,7 +293,9 @@ export function createGamestate(busArg, settings) {
 
   // Death → gameover + persist the high score when beaten (exactly once per
   // run: player.damage() no-ops after death, so "player-died" cannot repeat).
+  // Pause reasons die with the run — the gameover screen has no pause contexts.
   B.addEventListener("player-died", () => {
+    clearPauses();
     gamestate.state = "gameover";
     const best = highScore();
     if (gamestate.score > best && settings && typeof settings.set === "function") {
@@ -206,11 +304,23 @@ export function createGamestate(busArg, settings) {
     emit();
   });
 
-  // Esc/P: playing ⇄ paused (input.js emits exactly once per press).
+  // Esc/P: playing ⇄ paused (input.js emits exactly once per press), toggling
+  // ONLY the "user" reason. A shop-only pause ("shop" set, "user" not) is
+  // untouched: the shop overlay owns Esc/B while open, and a stray toggle
+  // (the P key path) must never lift it or strand an orphan reason.
   B.addEventListener("pause-toggle", () => {
-    if (gamestate.state === "playing") pause();
-    else if (gamestate.state === "paused") resume();
+    if (gamestate.state === "playing") addPause("user");
+    else if (gamestate.state === "paused" && pauseReasons.has("user")) {
+      removePause("user");
+    }
   });
+
+  // EXPANSION: the shop overlay freezes the run under its own reason. The
+  // shop UI releases the pointer lock BEFORE emitting "shop-open", so the
+  // async lock-loss "pause-toggle" (input.js) arrives with "shop" already set
+  // and input.js swallows it anyway (it tracks the overlay itself).
+  B.addEventListener("shop-open", () => addPause("shop"));
+  B.addEventListener("shop-closed", () => removePause("shop"));
 
   return gamestate;
 }
