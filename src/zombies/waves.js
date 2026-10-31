@@ -31,9 +31,40 @@
  *
  * Spawn cadence (regular waves): the FIRST spawn lands within 3 s of the wave
  * starting, then one zombie every 0.8–1.5 s (random) until the wave's count
- * is exhausted. Spawn position: a level.spawnPoints entry at least 15 m from
- * the player (if none qualifies, the farthest one); instantiate
+ * is exhausted. Spawn position: a pool entry at least 15 m from the player
+ * (if none qualifies, the farthest one); instantiate
  * `new Zombie(scene, type, position, bus)`.
+ *
+ * SPAWN POOL (P1 "ĐÊM THỨ 30", docs/EXPANSION-P1.md §4.2): with the optional
+ * 5th `city` argument the pool comes from the DISTRICT the player stands in
+ * (`city.districtAt(playerPos)` → `district.spawnPoints`), so zombies pour
+ * out of the streets around the player instead of the legacy quarantine ring.
+ * Rules:
+ * - safehouse (the ×0.5-density hub): every single spawn is SWAPPED to an
+ *   adjacent district whose shared gate is OPEN (adjacency =
+ *   `district.gates` + `city.gateBetween(...).open`); with no open gate yet
+ *   the safehouse's own points are used so mission 1 still has pressure.
+ * - quarantine declares NO points of its own (they live on
+ *   `level.spawnPoints`) → the legacy pool applies there, byte-identical.
+ * - if the player's district has fewer than 2 eligible (≥ 15 m) points, the
+ *   pool expands with the adjacent OPEN districts' points before the
+ *   farthest-point fallback kicks in.
+ * - fallback (no city passed / districtAt = null / empty district pool): the
+ *   legacy `level.spawnPoints` pool — the pre-P1 behavior, unchanged.
+ *
+ * CONCURRENCY CAP (§4.2.1): MAX_CONCURRENT = 60 LIVE zombies across the wave
+ * director's `tracked` list (wave minions + bosses + screamer summons; debug
+ * spawns are not tracked). When the cap is reached the spawn is DEFERRED —
+ * the queue keeps its zombie and the attempt retries next frame (never
+ * dropped, so wave accounting stays exact).
+ *
+ * DENSITY MULTIPLIERS (§4.2.3) apply to the recurring spawn gap (not the
+ * wave's first-spawn timer, keeping wave-start timing intact). They never
+ * stack — the single applicable one wins (both are ×2/3 ≈ +50% density):
+ * - a district whose "quota-done" {districtId} arrived (missions fires it
+ *   once, when its quota objective completes) while the player stands in it;
+ * - missions 7–8 active (horde: "mission-start" {index:7|8} until
+ *   "mission-complete" {index:7|8}) while the player stands in quarantine.
  *
  * A wave CLEARS when all of its zombies are dead → emit "wave-clear" {n},
  * then a 10 s intermission → emit "wave-start" {n+1} and repeat. Wave 1
@@ -54,6 +85,13 @@
  *   with "zombie-despawned" {zombie} so the shared array stays in sync
  *   (main.js must tolerate duplicates of that event).
  *
+ * Bus events consumed (P1 additions — docs/EXPANSION-P1.md §4.2/§6):
+ * - "quota-done" {districtId} — missions marks a district cleared → that
+ *   district's spawn density ×2/3 while the player stands in it.
+ * - "mission-start" {index} / "mission-complete" {index} — index 7|8 toggles
+ *   the quarantine horde density (×2/3) for missions 7–8.
+ * ("zombie-despawned"/"zombie-spawned" were already consumed above.)
+ *
  * Internal bookkeeping: once a zombie is dead ("zombie-killed") it no longer
  * counts toward wave-clear; drop it from the internal list when its corpse
  * finishes despawning ("zombie-despawned") or on reset().
@@ -68,6 +106,11 @@
  * @param {import("../world/zones.js").Zones} [zones] - optional (C5); when
  *   present, boss waves read `zones.bossAnchorFor(wave)` for the spawn anchor
  *   and report its zoneId in "boss-spawned".
+ * @param {import("../world/city.js").City} [city] - optional (P1 §4.2); when
+ *   present, spawns come from the player's district pool via districtAt() +
+ *   districts[].spawnPoints (safehouse swap + adjacent-open expansion +
+ *   MAX_CONCURRENT 60 + density multipliers). Omitted → the legacy
+ *   level.spawnPoints pool with identical behavior.
  * @returns {Waves}
  */
 
@@ -97,7 +140,12 @@ const BOSS_FIRST_MIN = 0.3; // boss waves open the gates quickly (builder choice
 const BOSS_FIRST_MAX = 0.8;
 const BOSS_FALLBACK_ZONE = "main"; // zoneId reported when zones is absent
 
-export function createWaves(scene, level, bus, zones) {
+// --- P1 "ĐÊM THỨ 30" (docs/EXPANSION-P1.md §4.2) -------------------------------
+const MAX_CONCURRENT = 60; // live-zombie cap (tracked) — defer, never drop
+const QUOTA_DENSITY = 2 / 3; // ×2/3 gap ≈ +50% spawn density
+const MIN_ELIGIBLE_POOL = 2; // < 2 eligible points → expand to adjacent opens
+
+export function createWaves(scene, level, bus, zones, city) {
   const B = bus || new EventTarget();
   let wave = 0; // current wave number (0 = none started yet)
   let phase = "idle"; // idle → spawning → combat → intermission → …
@@ -109,6 +157,26 @@ export function createWaves(scene, level, bus, zones) {
   let bossWave = false; // current wave is a boss wave (wave % 5 === 0)
   /** @type {import("./zombie.js").Zombie[]} everything spawned this wave (alive or corpse) */
   const tracked = [];
+
+  // P1 density bookkeeping (§4.2.3): districts missions marked quota-done +
+  // the m7–m8 horde flag. Both feed the ×2/3 gap multiplier (never stacked).
+  const quotaDoneDistricts = new Set();
+  let hordeActive = false;
+  /** Reused spawn-pool buffer (§4.2.2) — zero allocation per spawn attempt. */
+  const poolScratch = [];
+
+  B.addEventListener("quota-done", (e) => {
+    const id = e && e.detail ? e.detail.districtId : null;
+    if (typeof id === "string" && id) quotaDoneDistricts.add(id);
+  });
+  B.addEventListener("mission-start", (e) => {
+    const idx = e && e.detail ? Number(e.detail.index) : NaN;
+    if (idx === 7 || idx === 8) hordeActive = true;
+  });
+  B.addEventListener("mission-complete", (e) => {
+    const idx = e && e.detail ? Number(e.detail.index) : NaN;
+    if (idx === 7 || idx === 8) hordeActive = false;
+  });
 
   // Corpses announce themselves when fully despawned — drop them here so only
   // live zombies count toward the wave-clear check.
@@ -237,9 +305,138 @@ export function createWaves(scene, level, bus, zones) {
     emit("boss-spawned", { type, zoneId, hp: boss.hp }); // HUD boss bar
   }
 
+  // --- P1 spawn-pool resolution (docs/EXPANSION-P1.md §4.2.2) ------------------
+  // Reused scratch arrays (zero per-call allocation; pickSpawnPoint runs at
+  // spawn cadence, not per frame).
+
+  /** The player's district id, or null without a city / in the void. */
+  function playerDistrictOf(playerPos) {
+    if (!city || typeof city.districtAt !== "function") return null;
+    const px = playerPos && Number.isFinite(playerPos.x) ? playerPos.x : 0;
+    const pz = playerPos && Number.isFinite(playerPos.z) ? playerPos.z : 0;
+    try {
+      return city.districtAt(px, pz) || null;
+    } catch {
+      return null; // malformed city: legacy pool
+    }
+  }
+
+  function districtById(id) {
+    if (!city || !Array.isArray(city.districts)) return null;
+    for (let i = 0; i < city.districts.length; i++) {
+      if (city.districts[i] && city.districts[i].id === id) return city.districts[i];
+    }
+    return null;
+  }
+
+  /**
+   * Districts sharing an OPEN gate with `id` (adjacency from districts[].gates).
+   * A neighbor with no declared points (quarantine — its pool lives on
+   * level.spawnPoints per §3.6.6) contributes the legacy pool instead, so a
+   * swap/expansion through an open steel gate still has somewhere to spawn.
+   */
+  function adjacentOpenDistricts(id) {
+    const out = [];
+    const d = districtById(id);
+    if (!d || !Array.isArray(d.gates) || typeof city.gateBetween !== "function") return out;
+    const legacy = level && level.spawnPoints;
+    for (let i = 0; i < d.gates.length; i++) {
+      const to = d.gates[i] && d.gates[i].to;
+      if (typeof to !== "string" || !to) continue;
+      let gate = null;
+      try {
+        gate = city.gateBetween(id, to); // pair unordered per contract §3.6.1
+      } catch {
+        gate = null;
+      }
+      if (gate && gate.open) {
+        const nd = districtById(to);
+        if (!nd) continue;
+        const pts = Array.isArray(nd.spawnPoints) ? nd.spawnPoints : [];
+        if (pts.length > 0) out.push({ spawnPoints: pts });
+        else if (legacy && legacy.length > 0) out.push({ spawnPoints: legacy });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Resolve the spawn pool for the player's position into `pool` (cleared
+   * first; entries are the pool's own point objects — never copied):
+   * - player's district points (safehouse → swapped to adjacent OPEN pools,
+   *   §4.1 ×0.5 via the swap);
+   * - < 2 own points otherwise → expand with adjacent OPEN districts;
+   * - no city / void district / empty district pool (quarantine) → legacy
+   *   level.spawnPoints (pre-P1 behavior, byte-identical).
+   */
+  function resolveSpawnPool(playerPos, pool) {
+    pool.length = 0;
+    const legacy = level && level.spawnPoints;
+    const dId = playerDistrictOf(playerPos);
+    if (!dId) {
+      if (legacy) for (let i = 0; i < legacy.length; i++) pool.push(legacy[i]);
+      return;
+    }
+    const d = districtById(dId);
+    const own = d && Array.isArray(d.spawnPoints) ? d.spawnPoints : null;
+    if (!own || own.length === 0) {
+      // quarantine (empty per contract §3.6.6) or bad data → legacy pool.
+      if (legacy) for (let i = 0; i < legacy.length; i++) pool.push(legacy[i]);
+      return;
+    }
+    if (dId === "safehouse") {
+      // Hub (§4.1 ×0.5): every single spawn swaps to an adjacent OPEN pool.
+      const adj = adjacentOpenDistricts(dId);
+      if (adj.length > 0) {
+        for (let i = 0; i < adj.length; i++) {
+          const pts = adj[i].spawnPoints;
+          for (let j = 0; j < pts.length; j++) pool.push(pts[j]);
+        }
+        return;
+      }
+      // No open gate yet (mission 1) — own points keep the pressure on.
+      for (let i = 0; i < own.length; i++) pool.push(own[i]);
+      return;
+    }
+    let eligible = 0;
+    const px = playerPos && Number.isFinite(playerPos.x) ? playerPos.x : 0;
+    const pz = playerPos && Number.isFinite(playerPos.z) ? playerPos.z : 0;
+    for (let i = 0; i < own.length; i++) {
+      const dx = own[i].x - px;
+      const dz = own[i].z - pz;
+      if (dx * dx + dz * dz >= MIN_SPAWN_DIST * MIN_SPAWN_DIST) eligible++;
+    }
+    for (let i = 0; i < own.length; i++) pool.push(own[i]);
+    if (eligible < MIN_ELIGIBLE_POOL) {
+      const adj = adjacentOpenDistricts(dId);
+      for (let i = 0; i < adj.length; i++) {
+        const pts = adj[i].spawnPoints;
+        for (let j = 0; j < pts.length; j++) pool.push(pts[j]);
+      }
+    }
+  }
+
+  /** Single applicable density multiplier (§4.2.3 — never stacked). */
+  function densityMultiplier(playerPos) {
+    const d = playerDistrictOf(playerPos);
+    if (hordeActive && d === "quarantine") return QUOTA_DENSITY;
+    if (d && quotaDoneDistricts.has(d)) return QUOTA_DENSITY;
+    return 1;
+  }
+
+  /** Next recurring spawn gap (boss burst included), density applied. */
+  function nextGap(playerPos) {
+    const mult = densityMultiplier(playerPos);
+    if (bossWave) {
+      // The 0.05 s floor must hold AFTER the multiplier, not before.
+      return Math.max(0.05, ((BOSS_BURST_WINDOW - waveTime) / Math.max(1, queue.length)) * mult);
+    }
+    return (GAP_MIN + Math.random() * (GAP_MAX - GAP_MIN)) * mult;
+  }
+
   /** A spawn point ≥ 15 m from the player; if none qualifies, the farthest. */
-  function pickSpawnPoint(playerPos) {
-    const pts = level && level.spawnPoints;
+  function pickSpawnPoint(playerPos, pool) {
+    const pts = pool && pool.length > 0 ? pool : level && level.spawnPoints;
     if (!pts || pts.length === 0) return null;
     const px = playerPos && Number.isFinite(playerPos.x) ? playerPos.x : 0;
     const pz = playerPos && Number.isFinite(playerPos.z) ? playerPos.z : 0;
@@ -261,9 +458,25 @@ export function createWaves(scene, level, bus, zones) {
     return eligible[(Math.random() * eligible.length) | 0];
   }
 
-  function spawnOne(playerPos) {
-    const base = pickSpawnPoint(playerPos);
-    if (!base) return; // no spawn points: keep the queue, retry next frame
+  /** LIVE zombies in the wave director's tracked list (cap check §4.2.1). */
+  function aliveCount() {
+    let n = 0;
+    for (let i = 0; i < tracked.length; i++) {
+      if (tracked[i].alive) n++;
+    }
+    return n;
+  }
+
+  /**
+   * Spawn one zombie from the wave queue. Returns false when deferred —
+   * cap reached or no usable point — the queue keeps its zombie and the
+   * caller retries next frame (never dropped: wave accounting stays exact
+   * because `tracked` only receives successfully spawned zombies).
+   */
+  function spawnOne(playerPos, pool) {
+    if (aliveCount() >= MAX_CONCURRENT) return false; // §4.2.1: defer, keep queue
+    const base = pickSpawnPoint(playerPos, pool);
+    if (!base) return false; // no spawn points: keep the queue, retry next frame
     const type = queue.pop();
     // Jitter the point, skipping samples that land inside a collider; if all
     // of them do, fall back to the raw spawn point (clear by level design).
@@ -283,6 +496,7 @@ export function createWaves(scene, level, bus, zones) {
     spawnedThisWave++;
     tracked.push(zombie);
     emit("zombie-spawned", { zombie });
+    return true;
   }
 
   function allDead() {
@@ -302,13 +516,20 @@ export function createWaves(scene, level, bus, zones) {
       waveTime += dt;
       spawnTimer -= dt;
       if (spawnTimer <= 0 && queue.length > 0) {
-        spawnOne(playerPos);
-        if (queue.length > 0) {
-          // Boss waves squeeze every minion into the first 6 s: the gap is
-          // whatever remains of the window, split over the remaining queue.
-          spawnTimer = bossWave
-            ? Math.max(0.05, (BOSS_BURST_WINDOW - waveTime) / queue.length)
-            : GAP_MIN + Math.random() * (GAP_MAX - GAP_MIN);
+        // P1 §4.2.2: the pool follows the player's district (legacy pool when
+        // no city). Resolved per attempt — pool entries are shared refs.
+        resolveSpawnPool(playerPos, poolScratch);
+        if (spawnOne(playerPos, poolScratch)) {
+          if (queue.length > 0) {
+            // Boss waves squeeze every minion into the first 6 s: the gap is
+            // whatever remains of the window, split over the remaining queue.
+            // P1 §4.2.3: the ×2/3 density multiplier rides on this gap.
+            spawnTimer = nextGap(playerPos);
+          }
+        } else {
+          // Deferred (cap reached or no usable point): retry next frame —
+          // the queue was NOT popped, wave accounting stays exact.
+          spawnTimer = 0;
         }
       }
       if (queue.length === 0) phase = "combat"; // all out — wait for the kills
@@ -348,6 +569,8 @@ export function createWaves(scene, level, bus, zones) {
     interTimer = 0;
     waveTime = 0;
     bossWave = false;
+    quotaDoneDistricts.clear(); // P1: fresh run, no density bonuses
+    hordeActive = false;
     phase = "idle"; // next update() starts wave 1 again
   }
 
