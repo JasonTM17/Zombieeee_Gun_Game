@@ -50,6 +50,15 @@
  * - getState(): the legacy snapshot PLUS {story, currentDistrict,
  *   unlockedDistricts}.
  *
+ * NIGHT 30 P2 api (docs/EXPANSION-P2.md §8.7) — same pattern:
+ * - forceEvent(type): start "horde"|"supply"|"survivor"|"bloodmoon" right
+ *   now (skips the scheduler cooldown, still respects the bloodmoon
+ *   exclusion rules — §3.2).
+ * - audioState(): {ctxState, activeVoices} — the 3D voice engine snapshot
+ *   (§5.4).
+ * - getState(): the legacy snapshot PLUS {event: {type, timeLeft}|null,
+ *   bloodmoon: boolean}.
+ *
  * register(api) replaces the no-op methods with the api's own methods (same
  * names); unknown api keys are ignored. window.__game must exist as soon as
  * createDebugHook() is called (before registration), so console calls never
@@ -69,7 +78,8 @@
  *   teleport?: Function, unlockZone?: Function,
  *   startStory?: Function, skipToMission?: Function,
  *   completeObjective?: Function, fillQuota?: Function,
- *   teleportDistrict?: Function
+ *   teleportDistrict?: Function,
+ *   forceEvent?: Function, audioState?: Function
  * }) => void} register - install the real api onto window.__game.
  */
 
@@ -98,6 +108,10 @@ const DEBUG_KEYS = [
   "completeObjective",
   "fillQuota",
   "teleportDistrict",
+  // NIGHT 30 P2 (docs/EXPANSION-P2.md §8.7) — wired by main.js at
+  // register() time.
+  "forceEvent",
+  "audioState",
 ];
 
 export function createDebugHook() {

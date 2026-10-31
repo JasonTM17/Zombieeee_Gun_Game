@@ -37,7 +37,18 @@
  * - "zone-unlocked"     {id, name}                  zones (idempotent unlock) → hud (toast)
  * - "boss-spawned"      {type, zoneId, hp}          waves (boss wave) / main debug spawnBoss → hud (boss bar), main.js (live boss tracking for hud.update extras + debug damageBoss)
  * - "boss-drops"        {position, kinds}           boss death (constructor signature is frozen — no pickups ref) → main.js routes to pickups.spawn(position, kind) per kind
- * - "boss-roar"         {type, action}              boss specials (windup/shriek/slam) → main.js routes to audio.zombieGrowl()
+ * - "boss-roar"         {type, action}              boss specials (windup/spit/shriek/slam — action "spit" added NIGHT 30 P2, P2-K14) → audio.js listens itself and plays the real boss voice (P2-K9: the legacy main.js route to zombieGrowl() is REMOVED)
+ *
+ * NIGHT 30 P2 events (docs/EXPANSION-P2.md §6) — emitted/consumed by the
+ * events/map/audio layer:
+ * - "event-start"       {type: "horde"|"supply"|"survivor"|"bloodmoon", timeLeft, x, z, districtId} (x/z null for bloodmoon; horde x/z = the representative spawn point) → events.js → hud (event banner + compass marker), map (event cache), audio (horde murmur ×1.6)
+ * - "event-end"         {type, reason: "done"|"opened"|"rescued"|"lost"|"despawned"|"reset", money?} (money rides supply "opened") → events.js → hud (toast), map (cache drop), audio (murmur release)
+ * - "bloodmoon-active"  {active: boolean, duration: 90} → events.js → atmosphere (sky/fog lerp red), waves (gap ×0.5), economy (reward ×2), audio (murmur ×1.6), hud (red countdown chip), map
+ * - "survivor-rescued"  {x, z}                      events.js → main.js (economy.add 300 + thank-you dialogue + "pickup"{kind:"health"})
+ * - "map-toggle"        {}                          input (M while playing + shop closed, §8.6) → map.js (toggles its overlay)
+ * - "map-visibility"    {open: boolean}             map.js (after every open state change) → hud (hides the compass strip while the map is up)
+ * - "zombie-voice"      {kind: "idle"|"alert"|"chase"|"attack"|"pain"|"death", type, position: Vector3 clone} → zombie.js + bosses.js (P2-K16 payload) → audio.js (recipe + 3D mix, cap 8)
+ * - "interact-near"     {target: "item_supply", near: boolean} — events.js emits it for the supply crate (existing HUD chip route, missions' shape)
  *
  * NOTE on zombie hit sounds: combat.js calls audio.zombieHit() directly
  * (combat owns audio); zombie.takeDamage() does NOT emit a hit-sound event —

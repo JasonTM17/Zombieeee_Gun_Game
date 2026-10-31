@@ -97,6 +97,42 @@
  *   completeObjective(), fillQuota(), teleportDistrict(id) (BFS route, opens
  *   each gate on the shortest path, drops at the district center) and
  *   getState() += { story, currentDistrict, unlockedDistricts }.
+ *
+ * NIGHT 30 P2 wiring (docs/EXPANSION-P2.md §8 — everything below is additive;
+ * the pre-existing creation order keeps its relative sequence):
+ * - events = createEvents(bus, city, audio, hooks, scene) after dialogue
+ *   (§8.1): hooks.spawnRunner builds one runner through the SAME path as
+ *   debug spawnZombie (jitter + isBlocked like waves.js:556-566, pushed into
+ *   debugZombies + "zombie-spawned" — outside wave accounting) and RETURNS
+ *   the Zombie so the survivor ring can watch .alive; hooks.supplyOpened
+ *   pays the crate loot DIRECTLY (P2-K5 — no pickups.spawn, which clamps
+ *   into the arena rects): economy.add(200–400) + "pickup"{kind:"health"}
+ *   (+40 HP) + full ammo for the CURRENT gun, returning the money so the
+ *   "event-end" toast can show it; hooks.activeMission clamps
+ *   missions.current to 0..9 (P2-K3). `scene` is events.js's additive 5th
+ *   param (supply crate / survivor meshes).
+ * - map = createMap(uiRoot, bus, city) — the read-only M overlay (listens
+ *   "map-toggle" itself; emits "map-visibility").
+ * - Main loop (§8.2): audio.update3D(camera, zombies) right after
+ *   updateZombies; events.update(dt, player.position) after missions.update;
+ *   map.update(player, mapExtras()) on a 10 Hz timer.
+ * - freshRun(): events.reset() next to zones.reset() — events are world
+ *   state and reset on EVERY fresh run (§8.3, story-keep included);
+ *   map.show(false) as belt & suspenders (the map also closes itself on
+ *   every state ≠ "playing").
+ * - "survivor-rescued" (§8.5) → economy.add(300) + "pickup"{kind:"health"}
+ *   + the event_survivor_thanks line through the queued dialogue path.
+ * - The legacy "boss-roar" → audio.zombieGrowl() route is REMOVED (P2-K9):
+ *   audio.js listens to "boss-roar" itself and plays the real boss voice.
+ * - hud.update extras gain `mission` + `event` (P2-K13: main derives the
+ *   mission marker — first incomplete objective: reach → o.x/o.z,
+ *   quota/survive → district center, activate/collect → the quota
+ *   district's center of the same mission, m1 → safehouse center); map
+ *   extras add `boss` + `yaw`. Event coordinates come from the
+ *   "event-start"/"event-end" payloads (a newest-wins stack matching
+ *   events.active()).
+ * - Debug API (§8.7): forceEvent(type), audioState(), and getState() +=
+ *   { event, bloodmoon }.
  */
 
 import * as THREE from "three";
@@ -114,6 +150,7 @@ import { createExplosives } from "./systems/explosives.js";
 import { createEconomy } from "./systems/economy.js";
 import { createShop } from "./systems/shop.js";
 import { createMissions, STORY_DIALOGUE } from "./systems/missions.js";
+import { createEvents } from "./systems/events.js"; // NIGHT 30 P2 §8.1
 import { createPlayer } from "./player/controller.js";
 import { createWeapons } from "./player/weapons.js";
 import { createCombat } from "./systems/combat.js";
@@ -125,6 +162,7 @@ import { createHud } from "./ui/hud.js";
 import { createShopUI } from "./ui/shop.js";
 import { createMenus } from "./ui/menus.js";
 import { createDialogue } from "./ui/dialogue.js";
+import { createMap } from "./ui/map.js"; // NIGHT 30 P2 §8.1
 import { bus, createGamestate } from "./systems/gamestate.js";
 import { createDebugHook } from "./core/debug.js";
 
@@ -231,6 +269,44 @@ const gamestate = createGamestate(bus, settings);
 // intro slides and the outro overlay (self-styled inside #ui).
 const dialogue = createDialogue(uiRoot, bus, i18n);
 
+// --- NIGHT 30 P2 (§8.1): random events + the M map ---------------------------
+// events gets the main-owned callbacks (P2-K6) + the world scene (events.js
+// additive 5th param — supply crate / survivor / smoke FX). spawnEventRunner
+// is a hoisted function declaration near the other spawn helpers, so the
+// reference below is valid at creation time; the hook bodies only ever RUN
+// during gameplay. Missing hooks would degrade to event-without-zombies
+// (events.js warns once) — the integrator contract says they MUST be passed.
+const events = createEvents(bus, city, audio, {
+  // §3.1 typedef: build one runner AT (x, z) and RETURN it so the survivor
+  // ring can watch .alive. Debug-path spawn → no wave accounting (§3.1).
+  spawnRunner: spawnEventRunner,
+  // P2-K5: the loot is APPLIED here, not dropped as physical items (pickups
+  // .spawn clamps into the legacy arena rects — a park/docks crate would
+  // teleport the loot ~100 m). Returns the money for the "event-end" toast.
+  supplyOpened() {
+    const money = 200 + Math.round(Math.random() * 200); // §3.4: 200–400
+    economy.add(money);
+    // +40 HP (cap 100): the controller already listens "pickup" {kind:
+    // "health"} and main routes the same event to audio.pickup().
+    bus.dispatchEvent(new CustomEvent("pickup", { detail: { kind: "health" } }));
+    // Full ammo for the CURRENT gun: mag = magSize, reserve = startReserve
+    // (pistol keeps Infinity) — direct mutation like debug giveAmmo (§3.4.3).
+    const w = weapons.list[weapons.current];
+    if (w) {
+      w.mag = w.magSize;
+      if (Number.isFinite(w.reserve)) w.reserve = w.startReserve;
+    }
+    return money;
+  },
+  // P2-K3: missions.current is 0 (not started) .. 9, 10 = free-roam → clamp.
+  activeMission() {
+    return Math.min(Math.max(missions.current, 0), 9);
+  },
+}, scene);
+// The read-only M overlay inside #ui (listens "map-toggle" from input.js
+// itself and emits "map-visibility"; pointer-events stay off).
+const map = createMap(uiRoot, bus, city);
+
 // --- bus wiring -------------------------------------------------------------------
 
 // EXPANSION C4/C6: the live boss (bar drain via hud.update extras, debug
@@ -292,9 +368,56 @@ bus.addEventListener("boss-drops", (e) => {
   }
 });
 
-// EXPANSION C4: boss voices (butcher windup / screamer shriek / golem slam).
-// audio.js is frozen — the closest existing voice is the ambient growl.
-bus.addEventListener("boss-roar", () => audio.zombieGrowl());
+// NIGHT 30 P2 (P2-K9): the legacy "boss-roar" → audio.zombieGrowl() route is
+// GONE — audio.js subscribes to "boss-roar" itself and plays the real boss
+// voice per the §5.2 matrix (windup → metal roar, spit → wet spit, shriek →
+// high wail, slam → stone groan).
+
+// NIGHT 30 P2 §8.5: the survivor rescue pays through main (events.js holds
+// no economy/dialogue refs): $300, +40 HP as a direct "pickup" (P2-K5 — the
+// controller heals, main routes the sound), and ONE thank-you line through
+// the queued dialogue path (§5.6.2.3 queue so it never eats a briefing).
+bus.addEventListener("survivor-rescued", () => {
+  economy.add(300);
+  bus.dispatchEvent(new CustomEvent("pickup", { detail: { kind: "health" } }));
+  showDialogue([
+    { speakerKey: "speaker_unknown", text: i18n.t("event_survivor_thanks") },
+  ]);
+});
+
+// §8.4: the live event marker for the compass strip + map. events.active()
+// is frozen to {type, timeLeft} per spec, so the coordinates come from the
+// "event-start" payloads; overlapping events stack (newest last, matching
+// active()'s newest-first shape) and every "event-end" (incl. reason
+// "reset") pops its type. Same-type restarts self-heal by replacing.
+const eventMarkers = /** @type {Array<{type: string, x: number|null, z: number|null}>} */ ([]);
+bus.addEventListener("event-start", (e) => {
+  const d = e && e.detail ? e.detail : {};
+  const type = String(d.type || "");
+  if (!type) return;
+  for (let i = 0; i < eventMarkers.length; i++) {
+    if (eventMarkers[i].type === type) {
+      eventMarkers.splice(i, 1);
+      break;
+    }
+  }
+  eventMarkers.push({
+    type,
+    x: Number.isFinite(d.x) ? Number(d.x) : null, // null for bloodmoon
+    z: Number.isFinite(d.z) ? Number(d.z) : null,
+  });
+});
+bus.addEventListener("event-end", (e) => {
+  const d = e && e.detail ? e.detail : {};
+  const type = String(d.type || "");
+  for (let i = eventMarkers.length - 1; i >= 0; i--) {
+    if (eventMarkers[i].type === type) eventMarkers.splice(i, 1);
+  }
+});
+/** Newest still-active event marker (matches events.active()) or null. */
+function activeEventMarker() {
+  return eventMarkers.length > 0 ? eventMarkers[eventMarkers.length - 1] : null;
+}
 
 // EXPANSION C6: track the live boss for the HUD boss bar drain + arrow.
 bus.addEventListener("boss-spawned", (e) => {
@@ -409,6 +532,13 @@ function freshRun(keepStoryProgress) {
   shop.reset(); // forget bought guns — weapons.reset() just un-owned them
   explosives.reset(); // clear live grenades + pending blast FX/shake
   zones.reset(); // re-lock both areas ("wave-start"{n:1} repeats this no-op)
+  // NIGHT 30 P2 §8.3: events are WORLD state — reset on EVERY fresh run
+  // (story-keep included). events.reset() emits "bloodmoon-active"
+  // {active:false} + per-event "event-end" {reason:"reset"} first, so the
+  // waves/economy/atmosphere/audio multipliers drop before the next run.
+  events.reset();
+  map.show(false); // close the M overlay with the run (map also self-closes
+  //                   on every state ≠ "playing" — this is belt & suspenders)
   if (keepStoryProgress && missions.current > 6) {
     // Past mission 6 the interiors belong to the run — unseal again (the
     // unlockForWave path is the same one mission 6's completion used).
@@ -681,8 +811,78 @@ function updateGrowls(dt) {
 // shows while the player stands in the quota district). Without a live boss
 // the boss field is null; `district` is ALWAYS present (string|null) so the
 // HUD's hasOwnProperty gate stays true.
-const hudExtrasScratch = { boss: null, yaw: 0, district: null };
+const hudExtrasScratch = {
+  boss: null,
+  yaw: 0,
+  district: null,
+  mission: null, // NIGHT 30 P2 §8.4 (P2-K13): {x, z} | null
+  event: null, // NIGHT 30 P2 §8.4: {type, x, z} | null (bloodmoon → null: the
+  //               strip marker needs finite coords, hud.readExtras skips null)
+};
 const hudBossScratch = { position: null, hp: 0, maxHp: 0, type: "" };
+const hudMissionScratch = { x: 0, z: 0 }; // reused — zero per-frame alloc
+const hudEventScratch = { type: "", x: 0, z: 0 };
+// mapExtras (§8.4): the map's 10 Hz argument — boss + yaw + mission/event.
+const mapExtrasScratch = { boss: null, yaw: 0, mission: null, event: null };
+const mapBossScratch = { x: 0, z: 0, type: "" };
+let mapTimer = 0; // 10 Hz map repaint accumulator (§4.0/§8.2)
+
+/**
+ * NIGHT 30 P2 (P2-K13): the mission marker for the map + compass. Derives
+ * from the LIVE objectives array (missions.objectives) — the first
+ * INCOMPLETE objective decides, mirroring missions' own beaconTarget():
+ * reach → its POI coords (o.x/o.z from the mission-start payload);
+ * quota/survive → that district's center via city.districts;
+ * activate/collect → the center of the QUOTA district of the same mission
+ * (m1 has no quota → the safehouse center −75, 8 = city's record);
+ * boss → no fixed point (the live boss marker covers it); all complete →
+ * null. Fills hudMissionScratch in place — callers must not mutate it.
+ * @returns {{x: number, z: number}|null}
+ */
+function missionMarker() {
+  const objs = missions.objectives;
+  if (!Array.isArray(objs) || objs.length === 0) return null;
+  let o = null;
+  for (let i = 0; i < objs.length; i++) {
+    const ob = objs[i];
+    if (ob && ob.complete !== true) {
+      o = ob;
+      break;
+    }
+  }
+  if (!o) return null;
+  if (o.type === "reach") {
+    if (Number.isFinite(o.x) && Number.isFinite(o.z)) {
+      hudMissionScratch.x = o.x;
+      hudMissionScratch.z = o.z;
+      return hudMissionScratch;
+    }
+    return null;
+  }
+  let districtId = null;
+  if (o.type === "quota" || o.type === "survive") {
+    districtId = typeof o.district === "string" ? o.district : null;
+  } else if (o.type === "activate" || o.type === "collect") {
+    // The quota district of the SAME mission; m1 (activate only) → safehouse.
+    for (let i = 0; i < objs.length; i++) {
+      const ob = objs[i];
+      if (ob && ob.type === "quota" && typeof ob.district === "string") {
+        districtId = ob.district;
+        break;
+      }
+    }
+    if (!districtId) districtId = "safehouse";
+  } else {
+    return null; // "boss": no fixed point
+  }
+  const d = city.districts.find((x) => x.id === districtId);
+  if (d && d.center && Number.isFinite(d.center.x) && Number.isFinite(d.center.z)) {
+    hudMissionScratch.x = d.center.x;
+    hudMissionScratch.z = d.center.z;
+    return hudMissionScratch;
+  }
+  return null;
+}
 
 function hudExtras() {
   if (bossRef && bossRef.alive) {
@@ -699,7 +899,43 @@ function hudExtras() {
     player.position.x,
     player.position.z
   );
+  // NIGHT 30 P2 (§8.4): mission + event markers for the compass strip. The
+  // event marker passes finite coords only — bloodmoon carries none and the
+  // HUD must not point the strip at the origin.
+  hudExtrasScratch.mission = missionMarker();
+  const em = activeEventMarker();
+  if (em && em.x !== null && em.z !== null) {
+    hudEventScratch.type = em.type;
+    hudEventScratch.x = em.x;
+    hudEventScratch.z = em.z;
+    hudExtrasScratch.event = hudEventScratch;
+  } else {
+    hudExtrasScratch.event = null;
+  }
   return hudExtrasScratch;
+}
+
+/**
+ * NIGHT 30 P2 (§8.4): the 10 Hz map.update() argument — boss (live bossRef),
+ * camera yaw, and the same mission/event markers (the map tolerates x/z null
+ * for bloodmoon — its own bus cache owns the countdown + red wash).
+ * @returns {{boss: {x: number, z: number, type: string}|null, yaw: number,
+ *            mission: {x: number, z: number}|null,
+ *            event: {type: string, x: number|null, z: number|null}|null}}
+ */
+function mapExtras() {
+  if (bossRef && bossRef.alive) {
+    mapBossScratch.x = bossRef.position.x;
+    mapBossScratch.z = bossRef.position.z;
+    mapBossScratch.type = bossRef.type;
+    mapExtrasScratch.boss = mapBossScratch;
+  } else {
+    mapExtrasScratch.boss = null;
+  }
+  mapExtrasScratch.yaw = camera.rotation.y;
+  mapExtrasScratch.mission = missionMarker();
+  mapExtrasScratch.event = activeEventMarker();
+  return mapExtrasScratch;
 }
 
 // --- main loop ---------------------------------------------------------------------
@@ -716,14 +952,23 @@ function frame() {
     player.update(dt); // writes camera yaw/pitch/bob absolutely
     if (player.alive) weapons.update(dt); // layers recoil DELTA on top; fires
     updateZombies(dt); // chase/attack (attacks call player.damage → death can flip state here)
+    audio.update3D(camera, zombies); // NIGHT 30 P2 §8.2: 3D voice mix + murmur (1×/frame, after the zombie pass)
     waves.update(dt, player.position);
     missions.update(dt, player.position); // NIGHT 30 P1 §5.6.2.4: after waves.update
+    events.update(dt, player.position); // NIGHT 30 P2 §8.2: after missions.update (playing-only → pause freezes the scheduler)
     pickups.update(dt, player.position);
     explosives.update(dt); // EXPANSION B5: grenade flight/detonation + shake decay
     particles.update(dt);
     atmosphere.update(dt, player.position); // P1 §5.7: moon shadow follows
     gamestate.update(dt);
     hud.update(player, weapons.getState(), gamestate, hudExtras());
+    // NIGHT 30 P2 §8.2: the M overlay repaints at 10 Hz (map.js also paints
+    // itself immediately on every open/toggle).
+    mapTimer += dt;
+    if (mapTimer >= 0.1) {
+      mapTimer = 0;
+      map.update(player, mapExtras());
+    }
     updateGrowls(dt);
   } else if (st === "gameover") {
     // The world keeps breathing behind the panel: corpses finish their fade,
@@ -845,6 +1090,48 @@ function reachableDistricts(startId) {
   return Array.from(seen);
 }
 
+// --- NIGHT 30 P2 event spawn hook (docs/EXPANSION-P2.md §3.1, P2-K6) ------------
+
+/** Lateral scatter so consecutive horde/survivor spawns don't stack — the
+ * waves.js jitter value (JITTER = 0.7, waves.js:149). */
+const EVENT_JITTER = 0.7;
+
+/**
+ * One runner AT (x, z) for the P2 events (horde burst / survivor ring) —
+ * the EXACT spawn path of debug spawnZombie(): jitter + isBlocked retries
+ * like waves.js:570-589, pushed into debugZombies (freshRun drains them,
+ * wave accounting untouched) and announced through "zombie-spawned" so the
+ * shared array, combat and audio.update3D all see it. Returns the Zombie so
+ * events.js can watch .alive (null return → events treat it as dead).
+ * @param {number} x
+ * @param {number} z
+ * @returns {import("./zombies/zombie.js").Zombie|null}
+ */
+function spawnEventRunner(x, z) {
+  const bx = Number(x);
+  const bz = Number(z);
+  if (!Number.isFinite(bx) || !Number.isFinite(bz)) return null;
+  // Jitter the point, skipping samples that land inside a collider; if all
+  // of them do, fall back to the raw point (clear by events' pool design —
+  // waves.js:570-589 pattern).
+  let px = bx;
+  let pz = bz;
+  const canTest = typeof level.isBlocked === "function";
+  for (let i = 0; i < 4; i++) {
+    const jx = bx + (Math.random() * 2 - 1) * EVENT_JITTER;
+    const jz = bz + (Math.random() * 2 - 1) * EVENT_JITTER;
+    if (!canTest || !level.isBlocked(jx, jz, 0.4)) {
+      px = jx;
+      pz = jz;
+      break;
+    }
+  }
+  const zombie = new Zombie(scene, "runner", tmpPos.set(px, 0, pz), bus);
+  debugZombies.push(zombie);
+  bus.dispatchEvent(new CustomEvent("zombie-spawned", { detail: { zombie } }));
+  return zombie;
+}
+
 /**
  * One boss through the debug mechanics (§5.6.5: "dùng cơ chế spawnBoss hiện
  * có") — shared by the debug spawnBoss() API and the mission-8 activation.
@@ -913,6 +1200,7 @@ const debugApi = {
 
   getState() {
     const w = weapons.getState();
+    const evSnapshot = events.active(); // NIGHT 30 P2 §8.7 ({type, timeLeft}|null)
     const nd = nearestZombieDist();
     let alive = 0;
     for (let i = 0; i < zombies.length; i++) {
@@ -949,6 +1237,10 @@ const debugApi = {
       story: missions.getState(),
       currentDistrict: city.districtAt(player.position.x, player.position.z),
       unlockedDistricts: reachableDistricts("safehouse"),
+      // NIGHT 30 P2 additions (docs/EXPANSION-P2.md §8.7): the newest active
+      // event ({type, timeLeft}|null) and the bloodmoon flag derived from it.
+      event: evSnapshot,
+      bloodmoon: !!(evSnapshot && evSnapshot.type === "bloodmoon"),
     };
   },
 
@@ -1227,6 +1519,26 @@ const debugApi = {
     player.velocity.set(0, 0, 0);
     player.position.set(cx, 0, cz); // camera follows on the next player.update
     return { from, target: wanted, opened, x: cx, z: cz };
+  },
+
+  // --- NIGHT 30 P2 debug API (docs/EXPANSION-P2.md §8.7) -------------------
+
+  /**
+   * Start `type` ("horde"|"supply"|"survivor"|"bloodmoon") right now —
+   * events.forceEvent skips the cooldown but still respects the bloodmoon
+   * exclusion rules (§3.2): bloodmoon needs an empty board, everything else
+   * is blocked while bloodmoon runs. Unknown type → {ok:false, valid:[...]}.
+   */
+  forceEvent(type) {
+    const ok = events.forceEvent(String(type == null ? "" : type));
+    return ok
+      ? { ok: true, event: events.active() }
+      : { ok: false, valid: ["horde", "supply", "survivor", "bloodmoon"] };
+  },
+
+  /** Live audio-voice snapshot (§5.4): context state + concurrent voices. */
+  audioState() {
+    return audio.audioState();
   },
 };
 
