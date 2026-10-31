@@ -155,7 +155,11 @@ export function createShop(bus, economy, weapons, player) {
       const max = Number.isFinite(w.maxReserve)
         ? w.maxReserve
         : START_RESERVE[w.name];
-      if (max !== undefined) w.reserve = max; // pistol: stays Infinity
+      // Refill tops up — a reserve already above start (stockpiled pickups)
+      // must never go DOWN from a purchase.
+      if (max !== undefined && Number.isFinite(w.reserve)) {
+        w.reserve = Math.max(w.reserve, max); // pistol: stays Infinity
+      }
     }
   }
 
