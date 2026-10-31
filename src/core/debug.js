@@ -37,6 +37,19 @@
  * - getState(): the legacy snapshot PLUS {money, boss, unlockedZones,
  *   ownedWeapons}.
  *
+ * NIGHT 30 P1 api (docs/EXPANSION-P1.md §5.6.5) — same pattern, wired by
+ * main.js at register() time:
+ * - startStory(): fresh story run → intro slides (identical to pressing PLAY).
+ * - skipToMission(n): mark m1..m(n−1) done (their gates open), activate
+ *   mission n + emit "mission-start".
+ * - completeObjective(): force-complete the active mission's first
+ *   unfinished objective.
+ * - fillQuota(): set the active quota objective to done = need.
+ * - teleportDistrict(id): open every gate along the BFS shortest route, then
+ *   move the player to that district's center.
+ * - getState(): the legacy snapshot PLUS {story, currentDistrict,
+ *   unlockedDistricts}.
+ *
  * register(api) replaces the no-op methods with the api's own methods (same
  * names); unknown api keys are ignored. window.__game must exist as soon as
  * createDebugHook() is called (before registration), so console calls never
@@ -53,7 +66,10 @@
  *   reload?: Function, giveAmmo?: Function,
  *   giveMoney?: Function, buyWeapon?: Function, toggleShop?: Function,
  *   buy?: Function, spawnBoss?: Function, damageBoss?: Function,
- *   teleport?: Function, unlockZone?: Function
+ *   teleport?: Function, unlockZone?: Function,
+ *   startStory?: Function, skipToMission?: Function,
+ *   completeObjective?: Function, fillQuota?: Function,
+ *   teleportDistrict?: Function
  * }) => void} register - install the real api onto window.__game.
  */
 
@@ -75,6 +91,13 @@ const DEBUG_KEYS = [
   "damageBoss",
   "teleport",
   "unlockZone",
+  // NIGHT 30 P1 (docs/EXPANSION-P1.md §5.6.5) — wired by main.js at
+  // register() time; keys absent from this list are still ignored.
+  "startStory",
+  "skipToMission",
+  "completeObjective",
+  "fillQuota",
+  "teleportDistrict",
 ];
 
 export function createDebugHook() {
