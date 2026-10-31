@@ -5,8 +5,13 @@
  * in src/core/i18n.js) may be registered via i18n.registerBundle().
  *
  * Screens (show(name) with name in):
- * - "main":     PLAY / SETTINGS / HOW TO PLAY.
- *               PLAY → emit "ui-play". SETTINGS/HOW TO PLAY → internal screen
+ * - "main":     PLAY / CHƠI TỰ DO / SETTINGS / HOW TO PLAY.
+ *               PLAY → emit "ui-play" — P1 meaning (docs/EXPANSION-P1.md
+ *               §5.5): start the STORY (intro slides → mission 1; main.js
+ *               wires gamestate.startStory() + dialogue.showIntro()).
+ *               CHƠI TỰ DO → emit "ui-play-free" (P1): free-roam start with
+ *               NO intro slides — mission 1 activates immediately (main.js).
+ *               SETTINGS/HOW TO PLAY → internal screen
  *               switches (remember which screen BACK returns to).
  * - "settings": slider sensitivity 0.5–3.0, slider volume 0–100 (displayed %,
  *               stored as 0..1), language button EN⇄VI. Every change is saved
@@ -19,7 +24,10 @@
  * - "pause":    RESUME / RESTART / SETTINGS / QUIT TO MENU →
  *               "ui-resume" / "ui-restart" / settings screen / "ui-quit".
  * - "gameover": SCORE + HIGH SCORE + PLAY AGAIN / MENU →
- *               "ui-play" / "ui-quit". The numbers are refreshed by listening
+ *               "ui-play" / "ui-quit". PLAY AGAIN keeps "ui-play" — P1: it
+ *               restarts the story (main.js keeps mission/money progress when
+ *               the run reached mission ≥ 2, per docs/EXPANSION-P1.md §5.6.3).
+ *               The numbers are refreshed by listening
  *               "state-changed" {state:"gameover", score, highScore} on the bus.
  *
  * show(null) hides everything.
@@ -35,7 +43,8 @@
  *
  * Implementation notes:
  * - Extra i18n keys registered here (merged, EN + VI): tagline, startHint,
- *   settingsTip, pausedHint.
+ *   settingsTip, pausedHint, and the P1 key freePlay ("Free Roam" /
+ *   "CHƠI TỰ DO" — docs/EXPANSION-P1.md §5.5.2).
  * - The language button calls i18n.setLang(next) AND settings.set({lang})
  *   (persistence), re-emits "settings-changed" {patch:{lang}} and re-renders
  *   every bound label so the switch is live on all screens.
@@ -61,12 +70,16 @@ const MENU_BUNDLE = {
     startHint: "Click PLAY to capture the mouse — ESC pauses.",
     settingsTip: "Changes are saved instantly.",
     pausedHint: "Take a breath — the horde is still out there.",
+    // P1 (docs/EXPANSION-P1.md §5.5.2): the free-roam start button.
+    freePlay: "Free Roam",
   },
   vi: {
     tagline: "Gắn đạn. Ngắm bắn. Sống sót qua đêm.",
     startHint: "Nhấn CHƠI để khóa chuột vào màn hình — ESC để tạm dừng.",
     settingsTip: "Mọi thay đổi được lưu ngay lập tức.",
     pausedHint: "Hít một hơi thật sâu — bầy zombie vẫn chờ ngoài kia.",
+    // P1 (docs/EXPANSION-P1.md §5.5.2): the free-roam start button.
+    freePlay: "CHƠI TỰ DO",
   },
 };
 
@@ -134,6 +147,9 @@ export function createMenus(container, bus, settings, i18n) {
   bind(make("p", "tagline", pMain), "tagline");
   const mainNav = make("div", "nav", pMain);
   button("play", "btn btn-primary", () => emitUi("ui-play"), mainNav);
+  // P1 "CHƠI TỰ DO" right below PLAY (docs/EXPANSION-P1.md §5.5.2): free-roam
+  // start — no intro slides, mission 1 active immediately (main.js wires it).
+  button("freePlay", "btn", () => emitUi("ui-play-free"), mainNav);
   button("settings", "btn", () => openSettings("main"), mainNav);
   button("howToPlay", "btn", () => openHowto("main"), mainNav);
   bind(make("p", "hint", pMain), "startHint");

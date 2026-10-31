@@ -50,6 +50,38 @@
  *   ignored); if main passes an explicit boolean `visible` on the boss data
  *   it is trusted instead.
  *
+ * P1 story widgets (docs/EXPANSION-P1.md §5.4 — additive, nothing that
+ * already exists changes behavior, the crosshair stays clear):
+ * - Mission tracker, top right BELOW the kill feed (killfeed owns
+ *   top: 18px; right: 18px — the tracker sits at top: 120px): one gold title
+ *   row ("MISSION {n}/9 — {title}") + one row per objective ("obj_*"
+ *   templates with live "2/3" progress; the glyph flips ✕→✓ on completion).
+ *   Rebuilt on "mission-start" {index, titleKey, objectives}, updated in
+ *   place by "objective-progress" {mission, objective, done, need}, flashed
+ *   by "mission-complete" {index, reward} (which also shows the
+ *   mission_complete_toast toast — main pays the money), cleared by
+ *   "mission-reset". Hidden while no mission is active (index 0).
+ * - Quota chip "🧟 {n}/{need}" — FIRST chip in the .topinfo row (order:
+ *   quota · wave · score). Cached from the quota objective of the current
+ *   mission (mission-start / objective-progress); shown only while the
+ *   player stands in the quota district — update()'s extras now carry
+ *   `district` (main computes city.districtAt every frame). No district
+ *   field on extras → the chip keeps its event-driven state. "quota-done"
+ *   shows the quota_done_toast toast.
+ * - "E — INTERACT" hint chip centered under the crosshair (never over it):
+ *   shown/hidden by "interact-near" {target, near} with the target's display
+ *   name (the target_* / item_* keys via the K1 id→key mapping of §7.3).
+ * - "gate-open" {from, to} → the shared toast shows gate_open_toast with the
+ *   destination district's name.
+ *
+ * P1 i18n keys: this module CONSUMES keys owned by missions.js (the
+ * mission_* / obj_* / quota_* / gate_open_toast / interact_hint /
+ * mission_complete_toast / item_* / target_* families) and city.js
+ * (district_*). It registers an identical-text FALLBACK bundle
+ * (verbatim docs/STORY.md §7) so the widgets stay readable even when this
+ * module renders before those owners register; i18n merges per key and
+ * identical values make registration order irrelevant.
+ *
  * update(player, weapons, gamestate[, extras]) — called by the main loop
  * EVERY FRAME while playing:
  *   @param player    - the Player object (read hp, alive, position).
@@ -77,7 +109,9 @@
  * "money-changed" {money, delta}, "boss-spawned" {type, zoneId, hp},
  * "zone-unlocked" {id, name}, "shop-open" / "shop-closed" {} and
  * "state-changed" {state} (run-end cleanup). Bus-driven sounds:
- * audio.waveBanner() on "wave-start".
+ * audio.waveBanner() on "wave-start". P1 story events (§6 table):
+ * "mission-start", "objective-progress", "mission-complete", "mission-reset",
+ * "quota-done", "gate-open", "interact-near".
  *
  * Implementation notes:
  * - No object allocation in the per-frame path: DOM writes are gated on value
@@ -168,6 +202,19 @@ const KNOWN_TYPES = {
 };
 const BOSS_TYPES = { butcher: 1, spitter: 1, screamer: 1, golem: 1 };
 
+// P1 (docs/EXPANSION-P1.md §7.3, decision K1): interact target id / collect
+// item id → i18n display key. Numbered ids ("generator-1", "supply-2", …)
+// match by prefix; landmarks match exactly.
+const TARGET_KEYS = [
+  [/^generator/, "target_generator"],
+  [/^radio-tower$/, "target_antenna"],
+  [/^campfire$/, "target_campfire"],
+  [/^final-door$/, "target_steel_door"],
+  [/^supply/, "item_supply"],
+  [/^medicine/, "item_medicine"],
+  [/^fuel/, "item_fuel"],
+];
+
 const HUD_BUNDLE = {
   en: {
     hudReloading: "RELOADING…",
@@ -227,6 +274,69 @@ const HUD_BUNDLE = {
   },
 };
 
+// P1 story keys — FALLBACK copies, verbatim from docs/STORY.md §7 (same text
+// the missions.js / city.js owners register; see the header note). Kept here
+// so the tracker/quota/hint/toasts render correctly even if this module draws
+// before those owners register their bundles.
+const HUD_P1_BUNDLE = {
+  en: {
+    mission_progress: "MISSION {n}/9",
+    obj_quota: "Kill zombies in {district}: {n}/{need}",
+    obj_collect: "Collect {item}: {n}/{need}",
+    obj_activate: "Activate: {target}",
+    obj_reach: "Reach the marker",
+    obj_boss: "Kill the boss",
+    obj_survive: "Survive: {n}/{need} s",
+    quota_counter: "🧟 {n}/{need}",
+    quota_done_toast: "DISTRICT CLEARED",
+    gate_open_toast: "GATE OPEN — {district}",
+    interact_hint: "E — INTERACT",
+    mission_complete_toast: "MISSION COMPLETE +{money}$",
+    item_supply: "Supply Pack",
+    item_medicine: "Medicine Box",
+    item_fuel: "Fuel Can",
+    target_generator: "Generator",
+    target_antenna: "Broadcast Antenna",
+    target_campfire: "Campfire",
+    target_steel_door: "Central Steel Door",
+    district_safehouse: "Safehouse",
+    district_residential: "Residential",
+    district_commercial: "Commercial",
+    district_hospital: "Hospital",
+    district_park: "Park",
+    district_docks: "Docks",
+    district_quarantine: "Quarantine Zone",
+  },
+  vi: {
+    mission_progress: "NHIỆM VỤ {n}/9",
+    obj_quota: "Hạ zombie trong {district}: {n}/{need}",
+    obj_collect: "Thu {item}: {n}/{need}",
+    obj_activate: "Kích hoạt: {target}",
+    obj_reach: "Tới điểm đánh dấu",
+    obj_boss: "Hạ boss",
+    obj_survive: "Trụ lại: {n}/{need} s",
+    quota_counter: "🧟 {n}/{need}",
+    quota_done_toast: "KHU ĐÃ SẠCH",
+    gate_open_toast: "CỔNG MỞ — {district}",
+    interact_hint: "E — TƯƠNG TÁC",
+    mission_complete_toast: "NHIỆM VỤ HOÀN THÀNH +{money}$",
+    item_supply: "Gói Tiếp Tế",
+    item_medicine: "Hộp Thuốc",
+    item_fuel: "Can Xăng",
+    target_generator: "Máy Phát Điện",
+    target_antenna: "Đài Phát Sáng",
+    target_campfire: "Đống Lửa Trại",
+    target_steel_door: "Cửa Thép Trung Tâm",
+    district_safehouse: "An Toàn Nhà",
+    district_residential: "Khu Dân Cư",
+    district_commercial: "Phố Thương Mại",
+    district_hospital: "Bệnh Viện",
+    district_park: "Công Viên",
+    district_docks: "Bến Cảng",
+    district_quarantine: "Vùng Cách Ly",
+  },
+};
+
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 
 /** Tiny DOM builder (module-local). */
@@ -267,6 +377,7 @@ export function createHud(container, bus, audio, i18n) {
   }
   if (i18n && typeof i18n.registerBundle === "function") {
     i18n.registerBundle(HUD_BUNDLE);
+    i18n.registerBundle(HUD_P1_BUNDLE); // P1 fallback keys — see header note
   }
 
   const tr = (key, params) =>
@@ -283,6 +394,10 @@ export function createHud(container, bus, audio, i18n) {
   const banner = make("div", "banner", root);
 
   const top = make("div", "topinfo", root);
+  // P1 quota chip — FIRST in the row (order: quota · wave · score, §5.4.2).
+  const quotaChip = make("div", "chip quota-chip", top);
+  css(quotaChip, { display: "none" }); // event/extras driven, hidden by default
+  const quotaVal = make("span", "val", quotaChip);
   const waveChip = make("div", "chip", top);
   const waveLbl = make("span", "lbl", waveChip);
   const waveVal = make("span", "val", waveChip);
@@ -438,6 +553,37 @@ export function createHud(container, bus, audio, i18n) {
     transition: "opacity 0.25s ease-out, transform 0.25s ease-out",
   });
 
+  // P1 mission tracker — top right, BELOW the kill feed (the killfeed owns
+  // top: 18px; right: 18px with 3 self-fading lines). Gold title row + one
+  // row per objective; rebuilt on "mission-start", updated in place by
+  // "objective-progress".
+  const tracker = make("div", "mission-tracker", root);
+  css(tracker, {
+    position: "absolute",
+    top: "120px",
+    right: "18px",
+    display: "none",
+    flexDirection: "column",
+    alignItems: "flex-end",
+    gap: "5px",
+    maxWidth: "360px",
+    textAlign: "right",
+  });
+  const trkTitle = make("div", "mission-tracker-title", tracker);
+  css(trkTitle, {
+    padding: "5px 12px",
+    background: "var(--gg-chip)",
+    border: "1px solid var(--gg-line)",
+    borderRight: "3px solid var(--gg-gold)",
+    borderRadius: "4px",
+    fontSize: "12px",
+    fontWeight: "800",
+    letterSpacing: "0.1em",
+    color: "var(--gg-gold)",
+    textTransform: "uppercase",
+    textShadow: "0 1px 3px rgba(0,0,0,0.8)",
+  });
+
   // "B — SHOP" hint chip, bottom center, visible during wave intermission.
   const hintWrap = make("div", "shop-hint-wrap", root);
   css(hintWrap, {
@@ -479,6 +625,38 @@ export function createHud(container, bus, audio, i18n) {
   hintKey.textContent = "B";
   const hintAction = make("span", "shop-hint-action", hint);
 
+  // P1 "E — INTERACT" hint — centered just under the crosshair (never over
+  // it; §5.4.3). Shown/hidden by "interact-near" {target, near}; carries the
+  // target's display name next to the fixed interact_hint text.
+  const eHint = make("div", "interact-hint", root);
+  css(eHint, {
+    position: "absolute",
+    left: "50%",
+    top: "calc(50% + 74px)",
+    transform: "translateX(-50%)",
+    display: "none",
+    padding: "6px 14px",
+    background: "var(--gg-chip)",
+    border: "1px solid var(--gg-line)",
+    borderRadius: "6px",
+    fontSize: "12px",
+    fontWeight: "700",
+    letterSpacing: "0.14em",
+    textTransform: "uppercase",
+    color: "var(--gg-text)",
+    whiteSpace: "nowrap",
+    textShadow: "0 1px 3px rgba(0,0,0,0.8)",
+  });
+  const eHintLbl = make("span", "interact-hint-lbl", eHint);
+  const eHintTarget = make("span", "interact-hint-target", eHint);
+  css(eHintTarget, {
+    color: "var(--gg-accent)",
+    marginLeft: "8px",
+    textTransform: "none",
+    fontWeight: "400",
+    letterSpacing: "0.06em",
+  });
+
   // --- transient caches (declared first: applyLang() reads prevWeapon) ---------
   let prevHp = -1;
   let prevMag = -1;
@@ -504,6 +682,17 @@ export function createHud(container, bus, audio, i18n) {
   let toastToken = 0; // invalidates stale hide timers after a newer toast
   let prevArrowShown = false;
   let prevArrowAngle = NaN;
+
+  // P1 story caches (docs/EXPANSION-P1.md §5.4).
+  let trkIndex = 0; // mission index shown in the tracker (0 = hidden)
+  let trkTitleKey = "";
+  /** @type {Array<Object>} live objective descriptors (mutated in place) */
+  let trkObjs = [];
+  /** @type {{row: HTMLElement, glyph: HTMLElement, txt: HTMLElement, obj: Object}[]} */
+  const trkRows = [];
+  let quota = null; // {done, need, district, complete} | null
+  let quotaVisible = false; // event-driven default; extras.district refines it
+  let eHintShown = false;
 
   // Per-frame scratch for the optional extras argument (zero allocation).
   const bossScratch = {
@@ -545,6 +734,204 @@ export function createHud(container, bus, audio, i18n) {
     return String(fallbackName || id || "");
   }
 
+  // --- P1 story widget helpers (docs/EXPANSION-P1.md §5.4) ---------------------
+
+  /** Target/item id → display name (K1 mapping; unknown ids render raw).
+   * Both K1 namespaces arrive through this path: interact target ids
+   * ("generator-1", "radio-tower", …) AND ready-to-display i18n keys
+   * ("target_generator", "item_fuel" — missions.js puts targetKey into the
+   * activate objective's `target`). */
+  function storyLabel(id) {
+    const s = String(id || "");
+    if (/^(target|item)_[a-z_]+$/.test(s)) {
+      const direct = tr(s);
+      if (direct !== s) return direct;
+    }
+    for (let i = 0; i < TARGET_KEYS.length; i++) {
+      if (TARGET_KEYS[i][0].test(s)) {
+        const v = tr(TARGET_KEYS[i][1]);
+        return v === TARGET_KEYS[i][1] ? s : v;
+      }
+    }
+    return s;
+  }
+
+  /** District id → display name ("district_" keys — owned by city.js). */
+  function districtLabel(id) {
+    const key = "district_" + String(id || "");
+    const v = tr(key);
+    return v === key ? String(id || "") : v;
+  }
+
+  /** Objective descriptor → tracker line via its obj_* template. */
+  function objText(o) {
+    if (!o || typeof o !== "object") return "";
+    const need = Math.max(1, Math.round(Number(o.need) || 1));
+    const done = clamp(Math.round(Number(o.done) || 0), 0, need);
+    switch (o.type) {
+      case "quota":
+        return tr("obj_quota", {
+          district: districtLabel(o.district),
+          n: done,
+          need,
+        });
+      case "collect":
+        return tr("obj_collect", { item: storyLabel(o.item), n: done, need });
+      case "activate": {
+        // missions.js models m1 as ONE activate objective with need = the
+        // generator count — surface the live "n/need" so the row is not a
+        // flat ✕ until the very end (the template itself has no {n} slot).
+        const base = tr("obj_activate", { target: storyLabel(o.target) });
+        return need > 1 ? base + " (" + done + "/" + need + ")" : base;
+      }
+      case "reach":
+        return tr("obj_reach");
+      case "boss":
+        return tr("obj_boss");
+      case "survive":
+        return tr("obj_survive", { n: done, need });
+      default:
+        return String(o.type || "");
+    }
+  }
+
+  function paintRow(r) {
+    r.glyph.textContent = r.obj.complete ? "✓" : "✕";
+    r.glyph.style.color = r.obj.complete ? "#6fe08a" : "#5c6b80";
+    r.txt.textContent = objText(r.obj);
+    r.row.style.borderRightColor = r.obj.complete
+      ? "var(--gg-gold)"
+      : "var(--gg-line)";
+    r.row.style.color = r.obj.complete ? "var(--gg-text)" : "";
+  }
+
+  /** Rebuild the tracker from the cached snapshot (mission-start + lang). */
+  function renderTracker() {
+    for (let i = trkRows.length - 1; i >= 0; i--) trkRows[i].row.remove();
+    trkRows.length = 0;
+    if (!(trkIndex >= 1)) {
+      tracker.style.display = "none"; // §5.4.1: hidden while current = 0
+      return;
+    }
+    trkTitle.textContent =
+      tr("mission_progress", { n: trkIndex }) +
+      (trkTitleKey ? " — " + tr(trkTitleKey) : "");
+    for (let i = 0; i < trkObjs.length; i++) {
+      const obj = trkObjs[i];
+      const row = make("div", "mission-obj", tracker);
+      css(row, {
+        display: "flex",
+        alignItems: "center",
+        gap: "7px",
+        padding: "4px 12px",
+        background: "var(--gg-chip)",
+        border: "1px solid var(--gg-line)",
+        borderRight: "3px solid var(--gg-line)",
+        borderRadius: "4px",
+        fontSize: "12px",
+        color: "var(--gg-text-dim)",
+        textShadow: "0 1px 3px rgba(0,0,0,0.8)",
+      });
+      const glyph = make("span", "obj-glyph", row);
+      css(glyph, { fontWeight: "800", fontSize: "11px" });
+      const txt = make("span", "obj-text", row);
+      const entry = { row, glyph, txt, obj };
+      trkRows.push(entry);
+      paintRow(entry);
+    }
+    tracker.style.display = "flex";
+  }
+
+  /** Quota chip text + visibility (quotaVisible gates the display). */
+  function paintQuotaChip() {
+    if (!quota || !(quota.need > 0) || !quotaVisible) {
+      quotaChip.style.display = "none";
+      return;
+    }
+    quotaVal.textContent = tr("quota_counter", {
+      n: Math.min(quota.done, quota.need),
+      need: quota.need,
+    });
+    quotaChip.style.display = ""; // back to the .chip CSS default (flex)
+  }
+
+  /** Adopt a quota objective descriptor into the chip cache. */
+  function cacheQuota(o) {
+    if (!o || o.type !== "quota") return;
+    quota = {
+      done: Math.round(Number(o.done) || 0),
+      need: Math.round(Number(o.need) || 0),
+      district: String(o.district || ""),
+      complete: !!o.complete,
+    };
+  }
+
+  /** Does objective descriptor `w` point at cached objective `o`? */
+  function matchObj(o, w) {
+    if (!w || typeof w !== "object") return false;
+    if (w.type && o.type !== w.type) return false;
+    if (w.target != null && o.target !== w.target) return false;
+    if (w.item != null && o.item !== w.item) return false;
+    if (w.district != null && o.district !== w.district) return false;
+    return true;
+  }
+
+  /**
+   * "objective-progress" {mission, objective, done, need}. The contract does
+   * not pin the shape of `objective`, so the matcher is liberal: a number is
+   * the 0-based index into the mission-start objectives, an object is matched
+   * by type/target/item/district, a string by type; otherwise the first
+   * incomplete row. Wrong-row picks only mislabel a sibling line visually —
+   * missions stay authoritative.
+   */
+  function applyProgress(d) {
+    if (!trkRows.length) return;
+    const m = Number(d.mission);
+    if (Number.isFinite(m) && m > 0 && trkIndex > 0 && m !== trkIndex) return;
+    const want = d.objective;
+    let entry = null;
+    if (typeof want === "number" && Number.isInteger(want)) {
+      entry = trkRows[want] || null;
+    } else if (want && typeof want === "object") {
+      entry =
+        trkRows.find((r) => !r.obj.complete && matchObj(r.obj, want)) ||
+        trkRows.find((r) => matchObj(r.obj, want)) ||
+        null;
+    } else if (typeof want === "string") {
+      entry =
+        trkRows.find((r) => !r.obj.complete && r.obj.type === want) ||
+        trkRows.find((r) => r.obj.type === want) ||
+        null;
+    }
+    if (!entry) entry = trkRows.find((r) => !r.obj.complete) || null;
+    if (!entry) return;
+    const done = Number(d.done);
+    const need = Number(d.need);
+    if (Number.isFinite(done)) entry.obj.done = done;
+    if (Number.isFinite(need) && need > 0) entry.obj.need = need;
+    entry.obj.complete = entry.obj.done >= entry.obj.need;
+    paintRow(entry);
+    if (entry.obj.type === "quota") {
+      cacheQuota(entry.obj);
+      paintQuotaChip();
+    }
+  }
+
+  /** Run-scoped cleanup (gameover/menu + show(false)) — §5.4.6. */
+  function clearStoryWidgets() {
+    trkIndex = 0;
+    trkTitleKey = "";
+    trkObjs = [];
+    renderTracker();
+    quota = null;
+    quotaVisible = false;
+    paintQuotaChip();
+    if (eHintShown) {
+      eHintShown = false;
+      eHint.style.display = "none";
+    }
+  }
+
   function applyLang() {
     const l = i18n && typeof i18n.getLang === "function" ? i18n.getLang() : "en";
     if (l === lang) return;
@@ -559,6 +946,10 @@ export function createHud(container, bus, audio, i18n) {
     moneyLbl.textContent = tr("hudMoney");
     hintAction.textContent = tr("hudShopHint");
     if (bossTypeShown) bossName.textContent = bossLabel(bossTypeShown);
+    // P1 story widgets re-resolve their templates/labels.
+    renderTracker();
+    paintQuotaChip();
+    if (eHintShown) eHintLbl.textContent = tr("interact_hint");
   }
   applyLang();
 
@@ -736,6 +1127,87 @@ export function createHud(container, bus, audio, i18n) {
     showToast(tr("hudZoneToast") + ": " + zoneLabel(d.id, d.name));
   });
 
+  // --- P1 story events (docs/EXPANSION-P1.md §6) ------------------------------
+
+  // Tracker rebuild + quota cache from the fresh objective list.
+  bus.addEventListener("mission-start", (e) => {
+    const d = e && e.detail ? e.detail : {};
+    trkIndex = Math.round(Number(d.index) || 0);
+    trkTitleKey = typeof d.titleKey === "string" ? d.titleKey : "";
+    trkObjs = Array.isArray(d.objectives)
+      ? d.objectives.filter((o) => o && typeof o === "object")
+      : [];
+    renderTracker();
+    let q = null;
+    for (let i = 0; i < trkObjs.length; i++) {
+      if (trkObjs[i] && trkObjs[i].type === "quota") q = trkObjs[i];
+    }
+    quota = null;
+    cacheQuota(q);
+    // Event-driven default: visible once a quota exists; extras.district
+    // refines this to "only while standing in the quota district".
+    quotaVisible = !!(quota && quota.need > 0);
+    paintQuotaChip();
+  });
+
+  bus.addEventListener("objective-progress", (e) => {
+    applyProgress(e && e.detail ? e.detail : {});
+  });
+
+  bus.addEventListener("quota-done", () => {
+    if (quota) quota.complete = true;
+    showToast(tr("quota_done_toast")); // "DISTRICT CLEARED" / "KHU ĐÃ SẠCH"
+  });
+
+  // main.js pays the reward; the toast + tracker flash are the HUD's job.
+  bus.addEventListener("mission-complete", (e) => {
+    const d = e && e.detail ? e.detail : {};
+    showToast(
+      tr("mission_complete_toast", {
+        money: Math.max(0, Math.round(Number(d.reward) || 0)),
+      })
+    );
+    if (tracker.style.display !== "none" && typeof tracker.animate === "function") {
+      tracker.animate(
+        [{ filter: "brightness(2.1)" }, { filter: "brightness(1)" }],
+        { duration: 650, easing: "ease-out" }
+      );
+    }
+  });
+
+  bus.addEventListener("gate-open", (e) => {
+    const d = e && e.detail ? e.detail : {};
+    showToast(tr("gate_open_toast", { district: districtLabel(d.to) }));
+  });
+
+  bus.addEventListener("interact-near", (e) => {
+    const d = e && e.detail ? e.detail : {};
+    if (d.near) {
+      eHintLbl.textContent = tr("interact_hint");
+      const raw = String(d.target || "");
+      const label = storyLabel(raw);
+      eHintTarget.textContent = label && label !== raw ? "· " + label : "";
+      eHintTarget.style.display = eHintTarget.textContent ? "inline" : "none";
+      if (!eHintShown) {
+        eHintShown = true;
+        eHint.style.display = "block";
+      }
+    } else if (eHintShown) {
+      eHintShown = false;
+      eHint.style.display = "none";
+    }
+  });
+
+  bus.addEventListener("mission-reset", () => {
+    trkIndex = 0;
+    trkTitleKey = "";
+    trkObjs = [];
+    renderTracker();
+    quota = null;
+    quotaVisible = false;
+    paintQuotaChip();
+  });
+
   // The hint would point at a shop that is already on screen.
   bus.addEventListener("shop-open", hideHint);
   bus.addEventListener("shop-closed", () => {
@@ -751,6 +1223,7 @@ export function createHud(container, bus, audio, i18n) {
       hideBossBar();
       hideToast();
       hideHint();
+      clearStoryWidgets(); // P1: tracker + quota + hint E are run-scoped
       intermission = false;
     }
   });
@@ -895,6 +1368,26 @@ export function createHud(container, bus, audio, i18n) {
       }
     }
 
+    // --- P1: quota chip visibility follows the player's district ----------
+    // extras.district (main computes city.districtAt(player) every frame,
+    // zero-alloc). Absent field → keep the event-driven state (§5.4.5).
+    if (
+      extras &&
+      typeof extras === "object" &&
+      Object.prototype.hasOwnProperty.call(extras, "district")
+    ) {
+      const d = extras.district;
+      const want =
+        !!quota &&
+        quota.need > 0 &&
+        typeof d === "string" &&
+        d === quota.district;
+      if (want !== quotaVisible) {
+        quotaVisible = want;
+        paintQuotaChip();
+      }
+    }
+
     // --- EXPANSION: boss bar drain + direction arrow (optional extras) ---
     const s = readExtras(extras);
     if (s.has) {
@@ -966,6 +1459,7 @@ export function createHud(container, bus, audio, i18n) {
       hideBossBar();
       hideToast();
       hideHint();
+      clearStoryWidgets(); // P1: tracker + quota + hint E
       intermission = false;
     }
   }
