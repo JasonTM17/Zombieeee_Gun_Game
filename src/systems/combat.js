@@ -4,9 +4,19 @@
  *
  * - 1 ray normally; for the shotgun cast 8 rays jittered inside a cone of
  *   half-angle weapon.spread radians (weapon.pellets === 8).
- * - Ray targets: every live zombie in `zombies` (the shared array main.js
- *   keeps in sync — each Zombie exposes `.group`, a THREE.Group whose meshes
- *   carry userData.part === "head" | "body"). Cap ray distance (~100 m).
+ * - Ray scope: the whole `scene` (roots = scene.children minus the particles
+ *   InstancedMesh) so level geometry occludes — bullets stop at walls,
+ *   pillars, crates and the floor. Damage targets: every live zombie in
+ *   `zombies` (the shared array main.js keeps in sync — each Zombie exposes
+ *   `.group`, a THREE.Group whose meshes carry userData.part === "head" |
+ *   "body" and userData.zombie). Cap ray distance (~100 m).
+ * - Occlusion: intersections arrive sorted closest-first and the ray walks
+ *   them until it resolves. A mesh marked userData.solid (level.js tags
+ *   floor/walls/obstacles) stops the pellet — no damage, no sound, no
+ *   hitmarker, no blood. The pellet PASSES THROUGH: the camera subtree
+ *   (weapons viewmodel), corpses (userData.zombie with alive === false,
+ *   still fading for 1.5 s), and unmarked objects (bulbs, pickups —
+ *   decorations, not cover).
  * - Damage: weapon.damage per pellet; a hit on userData.part === "head"
  *   doubles it (x2).
  * - For each landed pellet: zombie.takeDamage(dmg, headshot) (returns true if
@@ -57,9 +67,11 @@ export function createCombat(camera, scene, zombies, particles, audio, bus) {
   const CENTER = new THREE.Vector2(0, 0); // screen center → setFromCamera basis
 
   // Reused buffers — no per-shot steady-state allocation beyond event objects.
-  const targets = [];        // live zombie root groups (this shot)
+  const targets = [];        // live zombie root groups (this shot); the
+                             // classification fallback for an untagged group
   const targetZombies = [];  // parallel: targets[i] ↔ targetZombies[i]
   const hitBuf = [];         // intersectObjects output (cleared per pellet)
+  const raycastRoots = [];   // scene.children minus the particles mesh (per shot)
   const camDir = new THREE.Vector3();
   const rightB = new THREE.Vector3();
   const upB = new THREE.Vector3();
@@ -67,26 +79,45 @@ export function createCombat(camera, scene, zombies, particles, audio, bus) {
   const camPos = new THREE.Vector3();
   const muzzlePos = new THREE.Vector3();
 
-  // Walk up from a hit mesh to its zombie root group; record the first
-  // userData.part seen on the way (head/body tagging lives on the meshes).
+  // Walk up from a hit mesh to its root and decide what the pellet met, in
+  // one pass. Verdicts:
+  //   0 — pass through: the camera subtree (weapons viewmodel), a corpse
+  //       (userData.zombie with alive === false), or anything unmarked
+  //       (bulbs, pickups, particles — decorations, not cover). The ray
+  //       continues to the next surface.
+  //   1 — live zombie hit: foundZombie/foundPart are set (first userData.part
+  //       seen on the way — head/body tagging lives on the meshes). Sources:
+  //       userData.zombie on the meshes, or targets membership as the
+  //       fallback for an untagged group.
+  //   2 — solid level geometry (userData.solid, tagged by level.js on
+  //       floor/walls/obstacles): the pellet stops, nothing else happens.
   let foundZombie = null;
   let foundPart = null;
-  function resolveTarget(obj) {
+  function classify(obj) {
     foundZombie = null;
     foundPart = null;
     let o = obj;
     while (o) {
-      if (foundPart === null && o.userData && o.userData.part) {
-        foundPart = o.userData.part;
+      if (o === camera) return 0; // never shoot the viewmodel off your own gun
+      const ud = o.userData;
+      if (ud) {
+        if (foundPart === null && ud.part) {
+          foundPart = ud.part;
+        }
+        if (ud.zombie) {
+          foundZombie = ud.zombie;
+          return ud.zombie.alive ? 1 : 0; // corpse: fade on, pellet through
+        }
+        if (ud.solid) return 2;
       }
       const idx = targets.indexOf(o);
       if (idx !== -1) {
         foundZombie = targetZombies[idx];
-        return true;
+        return 1;
       }
       o = o.parent;
     }
-    return false;
+    return 0;
   }
 
   function shoot(weapon) {
@@ -104,6 +135,24 @@ export function createCombat(camera, scene, zombies, particles, audio, bus) {
         targets.push(z.group);
         targetZombies.push(z);
       }
+    }
+
+    // Raycast roots for this shot: scene.children minus the particles
+    // InstancedMesh — its pool instances sit right in front of the muzzle,
+    // and testing them per pellet is wasted work (they are pass-through
+    // anyway; classify() never marks them solid). The camera stays in the
+    // list: its viewmodel subtree is filtered per hit by classify() instead.
+    raycastRoots.length = 0;
+    let roots;
+    if (scene) {
+      const children = scene.children;
+      for (let i = 0; i < children.length; i++) {
+        const c = children[i];
+        if (!c.isInstancedMesh) raycastRoots.push(c);
+      }
+      roots = raycastRoots;
+    } else {
+      roots = targets; // degenerate bootstrap (no scene): zombies only
     }
 
     // The controller/weapons wrote camera transform this frame; make the
@@ -134,22 +183,29 @@ export function createCombat(camera, scene, zombies, particles, audio, bus) {
       }
       raycaster.ray.direction.copy(pelletDir);
 
+      // Intersections come back sorted closest-first (Raycaster.ascSort);
+      // walk them in order until the pellet resolves — a live zombie takes
+      // the damage, a solid surface eats it, everything else is passed
+      // through. An exhausted list means the pellet left the arena.
       hitBuf.length = 0;
-      raycaster.intersectObjects(targets, true, hitBuf);
-      if (hitBuf.length === 0) continue;
-      const hit = hitBuf[0]; // closest intersection takes the pellet
-      if (!resolveTarget(hit.object)) continue;
-      if (!foundZombie.alive) continue; // died from an earlier pellet this shot
-
-      const headshot = foundPart === "head";
-      const dmg = headshot ? damage * HEADSHOT_MULT : damage;
-      const killed = foundZombie.takeDamage(dmg, headshot) === true;
-      if (particles) {
-        particles.spawnBlood(hit.point, 8 + Math.floor(Math.random() * 7)); // 8..14
+      raycaster.intersectObjects(roots, true, hitBuf);
+      for (let h = 0; h < hitBuf.length; h++) {
+        const hit = hitBuf[h];
+        const verdict = classify(hit.object);
+        if (verdict === 0) continue; // viewmodel / corpse / decoration — through
+        if (verdict === 2) break;    // level cover: the pellet stops, silent
+        if (!foundZombie.alive) continue; // died from an earlier pellet this shot
+        const headshot = foundPart === "head";
+        const dmg = headshot ? damage * HEADSHOT_MULT : damage;
+        const killed = foundZombie.takeDamage(dmg, headshot) === true;
+        if (particles) {
+          particles.spawnBlood(hit.point, 8 + Math.floor(Math.random() * 7)); // 8..14
+        }
+        landed = true;
+        if (headshot) anyHead = true;
+        if (killed) anyKilled = true;
+        break; // the pellet is spent on this zombie
       }
-      landed = true;
-      if (headshot) anyHead = true;
-      if (killed) anyKilled = true;
     }
 
     // One hit feedback per shoot() call that landed something — never per

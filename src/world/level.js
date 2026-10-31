@@ -5,6 +5,11 @@
  * no external assets). Use merged geometry or otherwise keep the draw-call
  * count low. Floor/walls receive shadows; obstacles cast + receive.
  *
+ * Every solid surface (floor, walls, obstacle meshes) also carries
+ * userData.solid = true — combat.js bullet occlusion stops pellets on marked
+ * meshes. level.js is the single place that declares what is cover: a new
+ * obstacle added here must go through the same path to block shots.
+ *
  * Colliders are axis-aligned XZ rectangles (the game simulates XZ only):
  *   {minX, maxX, minZ, maxZ} in meters, covering walls + all obstacles.
  *
@@ -170,6 +175,7 @@ export function createLevel(scene) {
   materials.push(floorMat);
   const floor = new THREE.Mesh(floorGeo, floorMat);
   floor.receiveShadow = true;
+  floor.userData.solid = true; // combat.js: the floor stops bullets
   objects.push(floor);
   scene.add(floor);
 
@@ -204,6 +210,7 @@ export function createLevel(scene) {
   const walls = new THREE.Mesh(wallGeo, wallMat);
   walls.castShadow = true;
   walls.receiveShadow = true;
+  walls.userData.solid = true; // combat.js: walls stop bullets
   objects.push(walls);
   scene.add(walls);
 
@@ -251,6 +258,7 @@ export function createLevel(scene) {
     const mesh = new THREE.Mesh(merged, obstacleMat);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
+    mesh.userData.solid = true; // combat.js: crates/blocks/pillars stop bullets
     objects.push(mesh);
     scene.add(mesh);
   }
