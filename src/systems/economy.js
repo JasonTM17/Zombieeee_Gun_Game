@@ -44,7 +44,9 @@
  * the +50% headshot rounds once) so HUD/shop display never shows fractions.
  *
  * Bus events consumed: "zombie-killed" (money rewards), "ui-play"/"ui-restart"
- * (defensive fresh-run reset).
+ * (defensive fresh-run reset), "bloodmoon-active" (NIGHT 30 P2 §3.6.4 — while
+ * systems/events.js holds the flag true, kill money pays ×2; the rounding
+ * stays a single Math.round over base × headshot × bloodmoon).
  * Bus events emitted: "money-changed" {money, delta}.
  *
  * @param {EventTarget} bus - the shared bus exported by src/systems/gamestate.js
@@ -119,11 +121,22 @@ export function createEconomy(bus) {
   }
 
   // Kills pay money by TYPE (score is the point value — deliberately unused).
+  // NIGHT 30 P2 §3.6.4 (ADDITIVE): while "bloodmoon-active" {active: true}
+  // runs, every kill pays ×2. The reward table above is untouched — the
+  // multiplier rides on the amount and the rounding stays ONE Math.round
+  // (base × headshot × bloodmoon), exactly as the contract prescribes.
+  // The flag is managed by events.js ("bloodmoon-active" {active: false} on
+  // end/reset) — economy.reset() deliberately does not touch it.
+  let bloodmoonActive = false;
+  B.addEventListener("bloodmoon-active", (e) => {
+    const d = e && e.detail ? e.detail : {};
+    bloodmoonActive = d.active === true;
+  });
   B.addEventListener("zombie-killed", (e) => {
     const d = e && e.detail ? e.detail : {};
     const base = REWARDS[d.type];
     if (!base) return; // unknown type pays 0
-    const amount = Math.round(base * (d.headshot ? HEADSHOT_MULT : 1));
+    const amount = Math.round(base * (d.headshot ? HEADSHOT_MULT : 1) * (bloodmoonActive ? 2 : 1));
     add(amount);
   });
 

@@ -96,6 +96,14 @@
  *   the quarantine horde density (×2/3) for missions 7–8.
  * ("zombie-despawned"/"zombie-spawned" were already consumed above.)
  *
+ * NIGHT 30 P2 (docs/EXPANSION-P2.md §3.6.3 — ADDITIVE): the new event
+ * "bloodmoon-active" {active} (emitted by systems/events.js) multiplies the
+ * FINAL recurring spawn gap ×0.5 (≈ ×2 density) while active — stacked OUTSIDE
+ * the single-winner P1 multiplier (P2-K8), so a quota-done district AND a
+ * bloodmoon CAN combine; the 0.05 s boss-burst floor still holds after the
+ * product. reset() clears the flag. Every other behavior (cap 60, wave
+ * composition, intermission, boss cadence) is untouched.
+ *
  * Internal bookkeeping: once a zombie is dead ("zombie-killed") it no longer
  * counts toward wave-clear; drop it from the internal list when its corpse
  * finishes despawning ("zombie-despawned") or on reset().
@@ -166,8 +174,16 @@ export function createWaves(scene, level, bus, zones, city) {
   // the m7–m8 horde flag. Both feed the ×2/3 gap multiplier (never stacked).
   const quotaDoneDistricts = new Set();
   let hordeActive = false;
+  // NIGHT 30 P2 §3.6.3: bloodmoon halves the FINAL gap (stacked outside the
+  // P1 multiplier — P2-K8). Flag arrives on the bus from systems/events.js.
+  let bloodmoonActive = false;
   /** Reused spawn-pool buffer (§4.2.2) — zero allocation per spawn attempt. */
   const poolScratch = [];
+
+  B.addEventListener("bloodmoon-active", (e) => {
+    const d = e && e.detail ? e.detail : {};
+    bloodmoonActive = d.active === true;
+  });
 
   B.addEventListener("quota-done", (e) => {
     const id = e && e.detail ? e.detail.districtId : null;
@@ -498,7 +514,9 @@ export function createWaves(scene, level, bus, zones, city) {
 
   /** Next recurring spawn gap (boss burst included), density applied. */
   function nextGap(playerPos) {
-    const mult = densityMultiplier(playerPos);
+    // P1 §4.2.3 picks ONE winner (never stacked); the P2 bloodmoon factor
+    // multiplies the FINAL gap on top of it (contract §3.6.3 / P2-K8).
+    const mult = densityMultiplier(playerPos) * (bloodmoonActive ? 0.5 : 1);
     if (bossWave) {
       // The 0.05 s floor must hold AFTER the multiplier, not before.
       return Math.max(0.05, ((BOSS_BURST_WINDOW - waveTime) / Math.max(1, queue.length)) * mult);
@@ -643,6 +661,7 @@ export function createWaves(scene, level, bus, zones, city) {
     bossWave = false;
     quotaDoneDistricts.clear(); // P1: fresh run, no density bonuses
     hordeActive = false;
+    bloodmoonActive = false; // P2 §3.6.3: fresh run, no bloodmoon gap bonus
     phase = "idle"; // next update() starts wave 1 again
   }
 

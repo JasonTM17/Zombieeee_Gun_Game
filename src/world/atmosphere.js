@@ -22,6 +22,14 @@
  * before. The 84 × 84 frustum keeps covering everything the fog lets you see
  * of the near streets; far silhouettes are deliberately unshadowed.
  *
+ * NIGHT 30 P2 (docs/EXPANSION-P2.md §3.6.2 — ADDITIVE, Builder A): listens
+ * "bloodmoon-active" {active} on the shared bus and lerps `scene.background`
+ * (SKY 0x05070c → blood 0x180507) and `scene.fog.color` (FOG_COLOR 0x0a0e16
+ * → 0x26070a) over ~2.5 s inside the existing update(dt) — factor dt/2.5,
+ * then back to the exact base constants when the flag clears. No other
+ * behavior changes: lamps, stars, moon and the P1 moon-follow are untouched,
+ * and with no bloodmoon ever started the per-frame cost is one comparison.
+ *
  * @param {import("three").Scene} scene
  * @returns {Atmosphere}
  */
@@ -34,10 +42,16 @@
  */
 
 import * as THREE from "three";
+import { bus } from "../systems/gamestate.js";
 
 const SKY = 0x05070c;
 const FOG_COLOR = 0x0a0e16;
 const FOG_DENSITY = 0.026; // §3.7/§5.7: 0.022 → 0.026 (hides the draw limit)
+
+// NIGHT 30 P2 §3.6.2 — bloodmoon targets (contract numbers, verbatim).
+const BLOODMOON_SKY = 0x180507;
+const BLOODMOON_FOG = 0x26070a;
+const BLOODMOON_LERP = 2.5; // seconds for the full tint (either direction)
 
 export function createAtmosphere(scene) {
   // --- sky + fog ---------------------------------------------------------------
@@ -147,6 +161,21 @@ export function createAtmosphere(scene) {
   scene.add(stars);
 
   // --- per-frame -------------------------------------------------------------------
+  // NIGHT 30 P2 §3.6.2 — bloodmoon tint state. The flag arrives on the bus
+  // ("bloodmoon-active" {active}, emitted by events.js); the actual lerp runs
+  // here in update() so it respects the frame clock and freezes with the rest
+  // of the world when the loop stops calling us (pause: render only).
+  let bloodmoon = false; // target state (bus flag)
+  let bloodK = 0; // 0 = night, 1 = full bloodmoon
+  const skyBase = new THREE.Color(SKY);
+  const fogBase = new THREE.Color(FOG_COLOR);
+  const skyBlood = new THREE.Color(BLOODMOON_SKY);
+  const fogBlood = new THREE.Color(BLOODMOON_FOG);
+  bus.addEventListener("bloodmoon-active", (e) => {
+    const d = e && e.detail ? e.detail : {};
+    bloodmoon = d.active === true;
+  });
+
   const tmpColor = new THREE.Color();
   // Moon follow scratch (§5.7): quantize the anchor to 2 m so the shadow map
   // does not crawl every frame. Zero allocation.
@@ -166,6 +195,23 @@ export function createAtmosphere(scene) {
    */
   function update(dt, playerPos) {
     if (!Number.isFinite(dt) || dt <= 0) return;
+
+    // Bloodmoon tint (§3.6.2): move k toward the bus flag's target, then paint
+    // sky + fog. When k sits at both endpoints the branch costs nothing and
+    // the scene keeps the exact base colors it was built with.
+    const bloodTarget = bloodmoon ? 1 : 0;
+    if (bloodK !== bloodTarget) {
+      bloodK = bloodmoon
+        ? Math.min(1, bloodK + dt / BLOODMOON_LERP)
+        : Math.max(0, bloodK - dt / BLOODMOON_LERP);
+      if (scene.background && /** @type {any} */ (scene.background).isColor) {
+        /** @type {THREE.Color} */ (scene.background).copy(skyBase).lerp(skyBlood, bloodK);
+      }
+      if (scene.fog && scene.fog.color) {
+        scene.fog.color.copy(fogBase).lerp(fogBlood, bloodK);
+      }
+    }
+
     if (
       playerPos &&
       Number.isFinite(playerPos.x) &&
