@@ -91,6 +91,7 @@ const weapons = createWeapons(camera, input, audio, bus);
 
 // --- 12-13. combat + waves (shared zombie array bridges them) --------------------
 const zombies = []; // live + dying zombies; combat raycasts against it
+const debugZombies = []; // debug-spawned only — outside the wave director's list
 const combat = createCombat(camera, scene, zombies, particles, audio, bus);
 const waves = createWaves(scene, level, bus);
 
@@ -161,6 +162,16 @@ bus.addEventListener("state-changed", (e) => {
 // so input.lockPointer() keeps the browser's user activation (Pointer Lock).
 function freshRun() {
   waves.reset(); // disposes every zombie + announces "zombie-despawned" per one
+  // Debug-spawned zombies are outside the wave director's tracked list —
+  // despawn them the same way (announce, then dispose) so the shared array
+  // and the scene stay in sync across restarts.
+  for (let i = 0; i < debugZombies.length; i++) {
+    const z = debugZombies[i];
+    if (!z) continue;
+    bus.dispatchEvent(new CustomEvent("zombie-despawned", { detail: { zombie: z } }));
+    z.dispose();
+  }
+  debugZombies.length = 0;
   pickups.reset(); // clear dropped items
   player.reset(); // hp 100, alive, position (0,0,0), camera to spawn facing
   weapons.reset(); // full mags/reserves, pistol out (beyond-contract extra)
@@ -347,8 +358,9 @@ const debugApi = {
 
   /**
    * Spawn one debug zombie. Default (no x/z): ~6 m in front of the camera.
-   * Debug spawns do NOT affect wave accounting — they only enter the shared
-   * array, never the wave director's tracked list.
+   * Debug spawns do NOT affect wave accounting — they enter the shared array
+   * via the event and the debugZombies list, which freshRun() drains on every
+   * restart so they never leak into the next run.
    */
   spawnZombie(type, x, z) {
     const kind = typeof type === "string" && type ? type : "walker";
@@ -360,6 +372,7 @@ const debugApi = {
       pz = spot.z;
     }
     const zombie = new Zombie(scene, kind, tmpPos.set(px, 0, pz), bus);
+    debugZombies.push(zombie);
     bus.dispatchEvent(new CustomEvent("zombie-spawned", { detail: { zombie } }));
     return zombie;
   },

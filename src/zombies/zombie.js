@@ -131,6 +131,8 @@ export class Zombie {
     const pants = new THREE.MeshLambertMaterial({ color: t.pants });
     const eyes = new THREE.MeshLambertMaterial({ color: 0x050505, emissive: 0xff2a18 });
     this._mats = [skin, cloth, pants, eyes];
+    // Emissive to restore after a hurt flash — the eyes keep their glow.
+    this._baseEmissive = this._mats.map((m) => m.emissive.getHex());
 
     const geo = geometries();
     const g = new THREE.Group();
@@ -218,7 +220,9 @@ export class Zombie {
     if (this.flashT > 0) {
       this.flashT -= dt;
       if (this.flashT <= 0) {
-        for (let i = 0; i < this._mats.length; i++) this._mats[i].emissive.setHex(0);
+        for (let i = 0; i < this._mats.length; i++) {
+          this._mats[i].emissive.setHex(this._baseEmissive[i]);
+        }
       }
     }
     if (this.attackCd > 0) this.attackCd -= dt;
@@ -292,7 +296,7 @@ export class Zombie {
     }
 
     // --- attack ---------------------------------------------------------------
-    if (canChase && dist < ATTACK_RANGE && this.attackCd <= 0) {
+    if (canChase && dist < ATTACK_RANGE && this.attackCd <= 0 && this._hasLineOfSight(ppos.x, ppos.z, level)) {
       this.attackCd = ATTACK_COOLDOWN;
       this.attackAnimT = ATTACK_ANIM;
       if (typeof player.damage === "function") player.damage(this.dmg);
@@ -302,6 +306,31 @@ export class Zombie {
     this.gait += ((moved > 1e-4 ? 1 : 0) - this.gait) * Math.min(1, dt * 6);
     this.walkPhase += moved * GAIT_RATE;
     this._animate();
+  }
+
+  /**
+   * Cheap line-of-sight on the level colliders: sample the XZ segment to the
+   * player and look for a blocker in between (covers are ≥ 0.3 m thick, a
+   * 0.15 m sample radius catches them at ATTACK_RANGE distances). No level
+   * API → optimistic.
+   * @param {number} px - player X
+   * @param {number} pz - player Z
+   * @param {import("../world/level.js").Level} level
+   * @returns {boolean} true when nothing blocks the straight line
+   */
+  _hasLineOfSight(px, pz, level) {
+    if (!level || typeof level.isBlocked !== "function") return true;
+    const pos = this.position;
+    const dx = px - pos.x;
+    const dz = pz - pos.z;
+    const d = Math.sqrt(dx * dx + dz * dz);
+    if (d < 1e-6) return true;
+    const steps = Math.max(2, Math.ceil(d / 0.5));
+    for (let i = 1; i < steps; i++) {
+      const t = i / steps;
+      if (level.isBlocked(pos.x + dx * t, pos.z + dz * t, 0.15)) return false;
+    }
+    return true;
   }
 
   /**
