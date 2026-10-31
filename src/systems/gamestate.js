@@ -91,5 +91,126 @@ export const bus = new EventTarget();
  */
 
 export function createGamestate(busArg, settings) {
-  throw new Error("TODO: implement");
+  // The shared bus is the default so `createGamestate(settings)` also works in
+  // isolated tests; main.js passes it explicitly per the signature.
+  const B = busArg || bus;
+
+  const gamestate = {
+    state: /** @type {GameStateName} */ ("menu"),
+    score: 0,
+    wave: 1,
+    kills: 0,
+    start,
+    pause,
+    resume,
+    restart,
+    toMenu,
+    update,
+  };
+
+  /** Current best score, defensively read (settings is optional in tests). */
+  function highScore() {
+    if (settings && typeof settings.get === "function") {
+      const h = Number(settings.get().highScore);
+      if (Number.isFinite(h) && h > 0) return Math.floor(h);
+    }
+    return 0;
+  }
+
+  /** One "state-changed" {state, score, highScore} — menus + main route on it. */
+  function emit() {
+    B.dispatchEvent(
+      new CustomEvent("state-changed", {
+        detail: {
+          state: gamestate.state,
+          score: gamestate.score,
+          highScore: highScore(),
+        },
+      })
+    );
+  }
+
+  /** Shared body of start()/restart(): zero the run counters, go playing. */
+  function freshRun() {
+    gamestate.state = "playing";
+    gamestate.score = 0;
+    gamestate.kills = 0;
+    gamestate.wave = 1;
+    emit();
+  }
+
+  function start() {
+    // Fresh run from wherever we are (menu / gameover / even playing — the
+    // counters reset either way; main.js resets the world before calling).
+    freshRun();
+  }
+
+  function restart() {
+    freshRun();
+  }
+
+  function pause() {
+    if (gamestate.state !== "playing") return; // only acts from "playing"
+    gamestate.state = "paused";
+    emit();
+  }
+
+  function resume() {
+    if (gamestate.state !== "paused") return; // only acts from "paused"
+    gamestate.state = "playing";
+    emit();
+  }
+
+  function toMenu() {
+    if (gamestate.state === "menu") return; // no-op transition
+    gamestate.state = "menu";
+    emit();
+  }
+
+  /**
+   * Per-frame tick while playing. No per-frame logic needs to live here yet —
+   * the wave director and HUD consume their own inputs — but the hook stays so
+   * future logic does not touch the main loop. Must not throw.
+   * @param {number} dt - seconds since the previous frame (already clamped).
+   */
+  function update(dt) {
+    void dt;
+  }
+
+  // --- bus reactions ---------------------------------------------------------
+
+  // Kills: score = BASE score from the zombie, x1.5 applied HERE (the zombie
+  // emits the base value — do NOT pre-multiply on the emitting side).
+  B.addEventListener("zombie-killed", (e) => {
+    const d = e && e.detail ? e.detail : {};
+    const base = Number(d.score);
+    const pts = Number.isFinite(base) && base > 0 ? Math.round(base) : 0;
+    gamestate.score += d.headshot ? Math.round(pts * 1.5) : pts;
+    gamestate.kills += 1;
+  });
+
+  // Wave number follows the wave director.
+  B.addEventListener("wave-start", (e) => {
+    const n = Math.round(Number(e && e.detail ? e.detail.n : NaN));
+    if (Number.isFinite(n) && n > 0) gamestate.wave = n;
+  });
+
+  // Death → gameover + persist the high score when beaten (exactly once per
+  // run: player.damage() no-ops after death, so "player-died" cannot repeat).
+  B.addEventListener("player-died", () => {
+    gamestate.state = "gameover";
+    const best = highScore();
+    if (gamestate.score > best && settings && typeof settings.set === "function") {
+      settings.set({ highScore: gamestate.score });
+    }
+    emit();
+  });
+
+  // Esc/P: playing ⇄ paused (input.js emits exactly once per press).
+  B.addEventListener("pause-toggle", () => {
+    if (gamestate.state === "playing") pause();
+    else if (gamestate.state === "paused") resume();
+  });
+
+  return gamestate;
 }
