@@ -17,7 +17,11 @@
  *     butcher…), at `zones.bossAnchorFor(wave)` when the optional `zones`
  *     argument is present (payload {zoneId, x, z}); without zones — or when
  *     the anchor is missing/blocked — the boss uses the level spawn point
- *     FARTHEST from the player. It is announced twice:
+ *     FARTHEST from the player. P1 (§4.2): with a city, a blocked OR sealed
+ *     candidate (anchor or legacy point behind closed steel gates —
+ *     unreachable from the player's district) is rejected; the boss then
+ *     spawns from the player's district pool so boss waves stay clearable.
+ *     It is announced twice:
  *       "zombie-spawned" {zombie}  (main.js pushes it into the shared array —
  *                                   combat raycasts hit it like any zombie)
  *       "boss-spawned"   {type, zoneId, hp}  (HUD boss bar)
@@ -291,12 +295,36 @@ export function createWaves(scene, level, bus, zones, city) {
     if (x !== null && level && typeof level.isBlocked === "function" && level.isBlocked(x, z, 0.5)) {
       x = null;
     }
+    // P1 (docs/EXPANSION-P1.md §4.0 spawn-theo-khu + §4.2 "KHÔNG phá boss
+    // wave"): a boss sealed behind CLOSED steel gates can neither reach the
+    // player nor be shot through the solid barrier (userData.solid) — the
+    // wave would never clear. Story runs before mission 6 hit exactly that:
+    // both zone anchors AND the whole legacy ring pool sit inside the sealed
+    // quarantine while the player fights in the outer districts. With a city,
+    // keep a candidate only when its district connects to the player's
+    // district through OPEN gates; otherwise fall through to the player's
+    // district pool (§4.2.2). No city → the pre-P1 path stays byte-identical.
+    if (x !== null && !spawnReachableFromPlayer(x, z, playerPos)) {
+      x = null;
+      zoneId = BOSS_FALLBACK_ZONE; // anchor rejected — do not report its zone
+    }
     if (x === null) {
       const p = farthestSpawnPoint(playerPos);
-      if (!p) return; // no spawn points either: boss-less boss wave (degenerate)
-      x = p.x;
-      z = p.z;
+      if (p && spawnReachableFromPlayer(p.x, p.z, playerPos)) {
+        x = p.x;
+        z = p.z;
+      }
     }
+    if (x === null) {
+      // Stranded-anchor fallback: the minion pool around the player (§4.2.2).
+      resolveSpawnPool(playerPos, poolScratch);
+      const p = pickSpawnPoint(playerPos, poolScratch);
+      if (p) {
+        x = p.x;
+        z = p.z;
+      }
+    }
+    if (x === null) return; // no spawn points either: boss-less boss wave (degenerate)
 
     const boss = new Ctor(scene, n, new THREE.Vector3(x, 0, z), B);
     spawnedThisWave++;
@@ -327,6 +355,50 @@ export function createWaves(scene, level, bus, zones, city) {
       if (city.districts[i] && city.districts[i].id === id) return city.districts[i];
     }
     return null;
+  }
+
+  /**
+   * P1 §4.2: true when the point's district connects to the PLAYER's district
+   * through OPEN gates (BFS over districts[].gates + gateBetween().open).
+   * Always true without a city or without a known player district (void /
+   * legacy runs) so the pre-P1 path stays byte-identical; false only when a
+   * city exists and the point provably sits behind sealed steel.
+   */
+  function spawnReachableFromPlayer(x, z, playerPos) {
+    if (!city || typeof city.districtAt !== "function") return true;
+    const from = playerDistrictOf(playerPos);
+    if (!from) return true;
+    let to = null;
+    try {
+      to = city.districtAt(x, z) || null;
+    } catch {
+      return true; // malformed city: keep the legacy tolerance
+    }
+    if (!to) return false; // void — unreachable by construction (§3.1 rule 5)
+    if (to === from) return true;
+    const seen = new Set([from]);
+    const queue = [from];
+    while (queue.length > 0) {
+      const cur = queue.shift();
+      const d = districtById(cur);
+      if (!d || !Array.isArray(d.gates) || typeof city.gateBetween !== "function") continue;
+      for (let i = 0; i < d.gates.length; i++) {
+        const nextId = d.gates[i] && d.gates[i].to;
+        if (typeof nextId !== "string" || seen.has(nextId)) continue;
+        let gate = null;
+        try {
+          gate = city.gateBetween(cur, nextId); // unordered pair per §3.6.1
+        } catch {
+          gate = null;
+        }
+        if (gate && gate.open) {
+          if (nextId === to) return true;
+          seen.add(nextId);
+          queue.push(nextId);
+        }
+      }
+    }
+    return false;
   }
 
   /**

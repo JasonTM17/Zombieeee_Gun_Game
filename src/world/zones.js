@@ -39,7 +39,10 @@
  *   until mission 6 (main.js calls unlockForWave directly there). Direct
  *   unlockForWave calls always work; only the wave-clear automation is gated.
  * - "wave-start" {n: 1} → reset(). A fresh run always starts at wave 1, so
- *   this re-locks both zones without emitting events.
+ *   this re-locks both zones without emitting events. NIGHT 30 P1 story-guard
+ *   (§5.6.3/§5.6.4): skipped while a story run is armed — main.js owns the
+ *   zone lifecycle there (explicit reset on fresh story; the keep-progress
+ *   death-restart re-opens the mission-6 interiors and must not be re-sealed).
  * - "story-mode" {active} (NIGHT 30 P1 §5.6.4/§6) — main.js arms/disarms the
  *   story guard. {active: false} also arrives on every fresh story BEFORE the
  *   resets, per the contract ordering.
@@ -242,9 +245,15 @@ export function createZones(scene, level) {
   });
 
   // A fresh run always (re)starts at wave 1 → re-lock both zones silently.
+  // NIGHT 30 P1 story-guard (§5.6.3/§5.6.4): skipped while a story run is
+  // active — main.js owns the zone lifecycle there. A fresh story resets the
+  // zones explicitly ({active:false} → zones.reset → … → {active:true}), and
+  // the §5.6.3 keep-progress death-restart re-opens the mission-6 interiors
+  // (unlockForWave) AFTER its own zones.reset() — the wave-start{n:1} that
+  // follows must NOT re-seal them one frame later.
   bus.addEventListener("wave-start", (e) => {
     const n = e && e.detail ? Number(e.detail.n) : NaN;
-    if (n === 1) reset();
+    if (n === 1 && !storyActive) reset();
   });
 
   return { list, unlockForWave, bossAnchorFor, reset };

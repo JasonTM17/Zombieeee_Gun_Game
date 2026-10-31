@@ -1409,7 +1409,12 @@ export function createCity(scene, level) {
         /** @type {any} */ (level).__cityGateOpenAt(g.x, g.z, true);
       }
     } else {
-      level.colliders.push(g.collider);
+      // Idempotent push (P1 fix): a setGateOpen(gate, false) that lands
+      // MID-SINK deletes the open anim before its finishAnim ran, so the
+      // collider was never spliced — an unguarded push here would duplicate
+      // it and the next open's single splice (below) would leave a sunk gate
+      // that still blocks player and zombies alike.
+      if (level.colliders.indexOf(g.collider) === -1) level.colliders.push(g.collider);
       if (level && typeof /** @type {any} */ (level).__cityGateOpenAt === "function") {
         /** @type {any} */ (level).__cityGateOpenAt(g.x, g.z, false);
       }

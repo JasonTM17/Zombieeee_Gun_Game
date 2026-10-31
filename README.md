@@ -35,6 +35,7 @@ npm run preview   # phục vụ dist/ tại http://localhost:4173
 | Chuột | Ngắm (pointer lock) |
 | Chuột trái | Bắn |
 | `R` | Nạp đạn |
+| `E` | **Tương tác** — kích hoạt máy phát điện / đống lửa trại, nhặt vật phẩm nhiệm vụ (gói tiếp tế, hộp thuốc, can xăng); nhắc **"E — TƯƠNG TÁC"** hiện khi đứng gần điểm tương tác |
 | `1` `2` `3` hoặc con lăn chuột | Đổi súng |
 | `4` `5` `6` `7` | Đổi sang súng mua trong cửa hàng: `4` SMG · `5` Sniper · `6` Minigun · `7` Grenade Launcher (đổi súng chỉ luân chuyển trong các súng **đã sở hữu**) |
 | `B` | Mở / đóng **CỬA HÀNG** (game tạm dừng khi cửa hàng mở; `Esc`/`B` để đóng) |
@@ -105,6 +106,75 @@ Boss gục **rơi CHẮC 1 medkit + 1 ammo** tại chỗ gục; thưởng tiền
 - Trước khi mở, cổng **bị chặn kín** — player không đi lọt và wave không sinh minion trong khu; clear đúng wave thì cổng mở kèm toast **"KHU VỰC MỚI MỞ"**.
 - Boss wave sinh boss tại **anchor trong khu đã mở** (luân phiên north/east theo thứ tự boss).
 - Zombie biết **đi vòng qua cổng** khi tường chắn đường — kể cả từ khu này sang khu kia.
+
+## ĐÊM THỨ 30 — Phần 1: Thế giới mở
+
+Bản mở rộng cốt truyện: thành phố **~260×260 m gồm 7 khu** bao quanh đấu trường cũ (nay là Vùng Cách Ly), chuỗi **9 nhiệm vụ** và hệ thống cổng phong toả mở dần theo tiến trình.
+
+### Bản đồ 7 khu
+
+```
+┌───────────────────────────┬───────────────────────────┐
+│  RESIDENTIAL (quota 20)   │  COMMERCIAL (quota 25)    │
+│  Khu Dân Cư — nhà phố     │  Phố Thương Mại — plaza   │
+├───────────────┬───────────┴───────────┬───────────────┤
+│  SAFEHOUSE    │ QUARANTINE — Vùng     │  HOSPITAL     │
+│  An Toàn Nhà  │ Cách Ly (arena cũ     │  (quota 30)   │
+│  (hub, M1)    │ 60×60 · khoá đến M6)  │  Bệnh Viện    │
+├───────────────┴───────────┬───────────┴───────────────┤
+│  DOCKS (quota 30)         │  PARK (quota 25)          │
+│  Bến Cảng — container     │  Công Viên — hồ, lửa trại │
+└───────────────────────────┴───────────────────────────┘
+```
+
+| Khu (EN / VI) | Quota zombie | Nhiệm vụ chính |
+|---|---|---|
+| Safehouse · An Toàn Nhà | — (hub) | **M1 — Sáng Đèn / Lights On**: bật 3 máy phát điện |
+| Residential · Khu Dân Cư | 20 | **M2 — Đường Phố / Dead Blocks**: quota 20 + 3 gói tiếp tế |
+| Commercial · Phố Thương Mại | 25 | **M3 — Tiếng Radio / The Signal**: quota 25 + tới đài phát thanh |
+| Hospital · Bệnh Viện | 30 | **M4 — Thuốc Cho Bệnh Nhân / Medicine Run**: quota 30 + 3 hộp thuốc |
+| Park · Công Viên | 25 | **M5 — Lửa Trại Cầu Cứu / Signal Fire**: quota 25 + bật đống lửa |
+| Docks · Bến Cảng | 30 | **M6 — Nhiên Liệu / Fuel Run**: quota 30 + 4 can xăng |
+| Quarantine · Vùng Cách Ly | — (vào bằng nhiệm vụ) | **M7 — Vào Tâm Dịch / Into the Swarm** (trụ 60 s) · **M8 — Vệ Binh Cách Ly / The Warden** (hạ boss) · **M9 — Cánh Cửa Cuối / The Last Door** (tới cửa thép trung tâm) |
+
+Thưởng nhiệm vụ: $300 → $600 tăng dần (m1 $300, m2 $325, m3 $350, m4 $400, m5 $425, m6 $450, m7 $500, m8 $550, m9 $600).
+
+### Cổng phong toả + quota
+
+- 7 khu nối nhau bằng **12 cổng thép** có khung phát sáng: **đỏ = khoá, xanh lục = mở**. Xong nhiệm vụ của khu (quota zombie trong khu **và** mục tiêu phụ) → rào chắn **chìm xuống đất trong 1 s**, khung đổi đỏ → xanh, kèm tiếng rền và toast **"CỔNG MỞ — {tên khu}"**.
+- **Quota** chỉ đếm zombie thường (walker / runner / brute) hạ **nội trong khu** đó; bộ đếm **"🧟 12/20"** hiện cạnh Wave khi bạn đứng trong khu có quota. Khu đạt quota thì zombie trong khu sinh **dày hơn ~50%**.
+- Zombie (tối đa **60 đồng thời**) sinh ra theo **khu bạn đang đứng**; boss wave mỗi 5 wave vẫn giữ nguyên — boss xuất hiện tại khu bạn đang chiến đấu (không bao giờ bị nhốt sau cổng đóng).
+- Cửa đóng lại khi bắt đầu một lượt chạy mới (trừ hồi sinh **giữ tiến trình** sau khi chết từ nhiệm vụ 2 — phần thành quả mở cửa của bạn được giữ lại).
+
+### Phím E — tương tác
+
+Đứng gần điểm nhiệm vụ phát sáng (máy phát điện, gói tiếp tế, hộp thuốc, can xăng, đống lửa trại…) trong **3 m** → chip **"E — TƯƠNG TÁC"** hiện cạnh tâm màn hình kèm tên mục tiêu. Bấm `E` trong **2 m** để kích hoạt / nhặt: máy phát và lửa trại bật sáng vĩnh viễn, vật phẩm nhặt biến mất khỏi thế giới.
+
+### Cốt truyện — 9 nhiệm vụ
+
+- **PLAY** khởi động cốt truyện: 4 slide intro chữ trắng nền đen mờ dần → nhiệm vụ 1. **CHƠI TỰ DO** bỏ qua intro, nhiệm vụ 1 active ngay.
+- Thoại hiện **từng ký tự** trong hộp dưới màn hình với 3 giọng: GIỌNG RADIO · BẠN · KHÔNG RÕ (click chuột hoặc `E` để bỏ qua nhanh). Kết thúc M9 là outro 3 dòng — dòng giữa hiện dạng **banner chữ hoa** ("HẾT PHẦN 1 — …") — rồi vào chế độ chơi tự do.
+- Chết từ **nhiệm vụ 2 trở lên**: "PLAY AGAIN" **giữ nguyên tiền + tiến trình nhiệm vụ**, hồi sinh tại An Toàn Nhà. Chết ở nhiệm vụ 1 hoặc chơi CHƠI TỰ DO: reset sạch như cũ.
+
+<details>
+<summary><b>SPOILER — tóm tắt cốt truyện (bấm để mở)</b></summary>
+
+Bạn là người sống sót cuối của tổ hợp cách ly, liên lạc duy nhất qua một chiếc radio cũ. Giọng dẫn đường giao từng nhiệm vụ: thắp sáng khu an toàn, dọn từng khu phố, tìm thuốc cho bệnh nhân, đốt lửa cầu cứu, chở nhiên liệu — từng bước khép lại vành đai cổng để tiến vào tâm dịch bị niêm kín. Nhưng trong những bản tin sau, một **giọng thứ hai** xen vào sóng — không ai biết nó phát từ đâu, và nó dường như muốn bạn tiến **sâu hơn vào tâm cách ly**…
+
+</details>
+
+### Debug API (`window.__game`)
+
+Bổ sung cho bảng debug sẵn có trên console (các phím cũ như `spawnZombie`, `spawnBoss`, `teleport`, `giveMoney`… giữ nguyên):
+
+| Method | Hành vi |
+|---|---|
+| `startStory()` | Chạy story mới như bấm PLAY (intro slides) |
+| `skipToMission(n)` | Đánh m1..m(n−1) hoàn thành (cổng tương ứng mở), active nhiệm vụ n |
+| `completeObjective()` | Force-complete mục tiêu đầu tiên chưa xong của nhiệm vụ hiện tại |
+| `fillQuota()` | Lấp đầy quota của nhiệm vụ hiện tại |
+| `teleportDistrict(id)` | Mở mọi cổng trên đường BFS ngắn nhất rồi dịch chuyển tới tâm khu (`safehouse`/`residential`/`commercial`/`hospital`/`park`/`docks`/`quarantine`) |
+| `getState()` | Snapshot mở rộng: thêm `story` (nhiệm vụ + objectives), `currentDistrict`, `unlockedDistricts` |
 
 ## Cấu trúc source
 
