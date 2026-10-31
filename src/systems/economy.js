@@ -29,6 +29,17 @@
  * NOT listen "state-changed": resume of a kill-less run also reports
  * state "playing" with score 0 and must not wipe the balance.
  *
+ * NIGHT 30 P1 story-keep (docs/EXPANSION-P1.md §5.6.3 — ADDITIVE behavior,
+ * frozen signature untouched): while the bus event "story-keep" {hold: true}
+ * is set, the defensive "ui-play"/"ui-restart" reset is SKIPPED — main.js
+ * restarts a death at mission ≥ 2 by keeping BOTH the mission progress and
+ * the money (they are kept or wiped together, never split). main.js decides
+ * per click and dispatches "story-keep" {hold} BEFORE economy's own listener
+ * runs on the same "ui-play" dispatch (nested dispatch, registration order);
+ * {hold: false} restores the legacy always-reset behavior. The DIRECT
+ * economy.reset() calls from main.js's freshRun() are not affected by the
+ * flag — main.js gates those itself.
+ *
  * The balance is intentionally kept as an integer (rewards are integers,
  * the +50% headshot rounds once) so HUD/shop display never shows fractions.
  *
@@ -118,7 +129,17 @@ export function createEconomy(bus) {
 
   // Defensive fresh-run reset (main.js's economy.reset() stays the canonical
   // call — both paths are idempotent). "ui-play" covers PLAY and PLAY AGAIN.
-  const freshRun = () => reset();
+  // NIGHT 30 P1 §5.6.3: skipped while a "story-keep" {hold: true} window is
+  // open (death-restart at mission ≥ 2 keeps money + missions together).
+  let storyKeep = false;
+  B.addEventListener("story-keep", (e) => {
+    const d = e && e.detail ? e.detail : {};
+    storyKeep = d.hold === true;
+  });
+  const freshRun = () => {
+    if (storyKeep) return;
+    reset();
+  };
   B.addEventListener("ui-play", freshRun);
   B.addEventListener("ui-restart", freshRun);
 

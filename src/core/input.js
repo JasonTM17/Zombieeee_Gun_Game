@@ -3,7 +3,7 @@
  *
  * Key identifiers are `KeyboardEvent.code` strings: "KeyW", "KeyA", "KeyS",
  * "KeyD", "ShiftLeft"/"ShiftRight", "Space", "KeyR", "KeyP", "Escape",
- * "KeyB", "Digit1"…"Digit7". Mouse buttons are addressable as "Mouse0"
+ * "KeyB", "KeyE", "Digit1"…"Digit7". Mouse buttons are addressable as "Mouse0"
  * (left / fire), "Mouse1" (middle), "Mouse2" (right) for isDown().
  * Digit4…Digit7 need NO extra plumbing (EXPANSION C7): wasPressed() already
  * forwards EVERY KeyboardEvent.code one-shot, so weapons.js polls Digit4..7
@@ -17,6 +17,12 @@
  *   one event (P always emits via keydown; auto-repeat must not re-emit).
  * - "shop-toggle" — per keydown of B (auto-repeat ignored) while a run is
  *   live (state "playing") and the shop is NOT already open.
+ * - "interact-press" — per keydown of E (auto-repeat ignored), P1
+ *   (docs/EXPANSION-P1.md §5.2). Deliberately NO gamestate condition: the
+ *   intro/outro screens rely on E to skip while the pointer is unlocked, and
+ *   missions/dialogue each decide whether to listen. The ONE exception is
+ *   the shop overlay — while it is open E stays inert (the same rule as B:
+ *   the shop UI owns both keys, input.js stays silent).
  *
  * Shop coordination (EXPANSION C7 + integration note 1 in docs/EXPANSION.md):
  * - This module tracks the overlay via bus "shop-open" / "shop-closed"
@@ -160,6 +166,14 @@ export function createInput(canvas, settings) {
       // (see the shop-coordination notes in the header).
       if (!shopOpen && lastKnownState === "playing") {
         bus.dispatchEvent(new CustomEvent("shop-toggle"));
+      }
+    } else if (e.code === "KeyE") {
+      // E = interact (P1, docs/EXPANSION-P1.md §5.2): missions resolve the
+      // nearest POI from this press; dialogue reuses it to skip lines and
+      // slides. No state condition (see the header) — only the shop keeps
+      // the key, exactly like B above.
+      if (!shopOpen) {
+        bus.dispatchEvent(new CustomEvent("interact-press"));
       }
     }
   });

@@ -26,6 +26,14 @@
  *   when hp reaches 0 (exactly once): alive = false and emits "player-died".
  * - reset(): hp = 100, alive = true, position (0, 0, 0), velocity zeroed,
  *   yaw/pitch reset to spawn facing. Called by main.js on fresh runs.
+ *   NIGHT 30 P1 (docs/EXPANSION-P1.md §5.6.2.2 — ADDITIVE, optional args; the
+ *   legacy zero-argument call behaves exactly as before): reset(spawnYaw,
+ *   spawnX, spawnZ) also plants the run spawn — main.js spawns the story at
+ *   the safehouse yard (−75, 8) facing the compound gate (east). The yaw is a
+ *   private module local, so the spawn facing CANNOT be applied from the
+ *   caller side without this hook; camera position/rotation are written here
+ *   too so the very first rendered frame (the intro slides behind-state) is
+ *   already at the story spawn.
  * - Listens on the bus: "pickup" {kind:"health"} → if alive, hp = min(100, hp + 40).
  *
  * Bus events emitted: "footstep", "player-hurt" {hp}, "player-died".
@@ -47,7 +55,9 @@
  * @property {boolean} alive
  * @property {(dt: number) => void} update - advance one frame, dt in seconds.
  * @property {(n: number) => void} damage - apply n damage (clamps at 0 hp).
- * @property {() => void} reset - back to spawn state (full hp, alive).
+ * @property {(spawnYaw?: number, spawnX?: number, spawnZ?: number) => void} reset
+ *   back to spawn state (full hp, alive). The optional args (NIGHT 30 P1) also
+ *   set the spawn position + facing; omitted → the legacy (0, 0, 0), −Z facing.
  */
 
 import * as THREE from "three";
@@ -195,19 +205,24 @@ export function createPlayer(scene, camera, input, level, bus) {
     }
   }
 
-  function reset() {
+  function reset(spawnYaw, spawnX, spawnZ) {
+    // NIGHT 30 P1 additive spawn hook — every argument is optional and
+    // validated; a legacy reset() call is byte-identical to before.
+    const sy = Number.isFinite(Number(spawnYaw)) ? Number(spawnYaw) : 0;
+    const sx = Number.isFinite(Number(spawnX)) ? Number(spawnX) : 0;
+    const sz = Number.isFinite(Number(spawnZ)) ? Number(spawnZ) : 0;
     player.hp = 100;
     player.alive = true;
-    player.position.set(0, 0, 0);
+    player.position.set(sx, 0, sz);
     player.velocity.set(0, 0, 0);
-    yaw = 0;
+    yaw = sy;
     pitch = 0;
     grounded = true;
     bobPhase = 0;
     bobAmp = 0;
     footDist = 0;
-    camera.position.set(0, EYE_HEIGHT, 0);
-    camera.rotation.set(0, 0, 0);
+    camera.position.set(sx, EYE_HEIGHT, sz);
+    camera.rotation.set(0, sy, 0);
   }
 
   // Health pickup: pickups.js emits "pickup" {kind} — this module has no

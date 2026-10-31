@@ -57,6 +57,46 @@
  * - applyScreenState: a "paused" state with the pause reason "shop" ONLY
  *   (gamestate.hasPause("user") false) keeps the pause MENU hidden — the shop
  *   overlay must not stack above a pause panel; the world is still frozen.
+ *
+ * NIGHT 30 P1 wiring (docs/EXPANSION-P1.md §5.6 — everything below is
+ * additive; the pre-existing creation order keeps its relative sequence):
+ * - city = createCity(scene, level) right after zones (gates + colliders must
+ *   exist before waves/player); missions = createMissions(bus, city, economy,
+ *   scene, level) after shop, BEFORE waves (§5.1.3: scene + level are the
+ *   additive 4th/5th params that materialize the POI meshes + colliders);
+ *   dialogue = createDialogue(uiRoot, bus, i18n) after menus; waves receives
+ *   `city` as its new optional 5th argument (district spawn pools, cap 60,
+ *   density multipliers).
+ * - Player spawn story (§5.6.2.2): every fresh run plants the player at the
+ *   safehouse yard (−75, 8) facing east (the compound gate) through the
+ *   additive player.reset(yaw, x, z) hook — (0, 0) now only ever happens via
+ *   a bare player.reset() (none left in main.js).
+ * - Story flow (§5.6.2.3 + §5.6.3): PLAY (from the menu, or PLAY AGAIN at
+ *   mission 1) = fresh story → "intro" slides → beginPlay() + missions.begin().
+ *   PLAY AGAIN after a death at mission ≥ 2 of a story run keeps the mission
+ *   progress AND the money (the "story-keep" window — §5.6.3: they are kept
+ *   or wiped together, never split), skips the intro, respawns at the
+ *   safehouse and re-announces the live mission for the HUD tracker. PLAY
+ *   AGAIN after a free-roam death replays free-roam (no intro). CHƠI TỰ DO =
+ *   fresh run + missions.begin() immediately, story-mode left off (legacy
+ *   zones behavior).
+ * - "gate-open" {from, to} → city.setGateOpen (missions is the only emitter);
+ *   "mission-complete" → economy.add(reward), done-dialogue (none for m9 —
+ *   the outro plays instead), M6 additionally unlocks north/east via
+ *   zones.unlockForWave; "mission-start" → start-dialogue + an M8 boss spawn
+ *   through the same mechanics as debug spawnBoss. A fresh story re-seals
+ *   every city gate (missions.reset() owns the story side only).
+ * - Fresh story arms the zones story-guard ("story-mode" events, §5.6.4) so
+ *   wave-clear can no longer open north/east — they are quarantine interior,
+ *   sealed until mission 6.
+ * - Main loop: missions.update(dt, player.position) after waves.update while
+ *   playing; hud.update extras gain `district` (city.districtAt, zero-alloc);
+ *   "intro" updates the world exactly like "menu" (atmosphere + render) with
+ *   the camera parked at the story spawn.
+ * - Debug API additions (§5.6.5): startStory(), skipToMission(n),
+ *   completeObjective(), fillQuota(), teleportDistrict(id) (BFS route, opens
+ *   each gate on the shortest path, drops at the district center) and
+ *   getState() += { story, currentDistrict, unlockedDistricts }.
  */
 
 import * as THREE from "three";
@@ -66,22 +106,25 @@ import * as i18n from "./core/i18n.js";
 import { createAudio } from "./core/audio.js";
 import { createInput } from "./core/input.js";
 import { createLevel } from "./world/level.js";
+import { createCity } from "./world/city.js";
 import { createAtmosphere } from "./world/atmosphere.js";
 import { createParticles } from "./systems/particles.js";
 import { createPickups } from "./systems/pickups.js";
 import { createExplosives } from "./systems/explosives.js";
 import { createEconomy } from "./systems/economy.js";
 import { createShop } from "./systems/shop.js";
+import { createMissions, STORY_DIALOGUE } from "./systems/missions.js";
 import { createPlayer } from "./player/controller.js";
 import { createWeapons } from "./player/weapons.js";
 import { createCombat } from "./systems/combat.js";
 import { createWaves } from "./zombies/waves.js";
 import { Zombie } from "./zombies/zombie.js";
-import { BOSS_CLASSES } from "./zombies/bosses.js";
+import { BOSS_CLASSES, bossTypeForWave } from "./zombies/bosses.js";
 import { createZones } from "./world/zones.js";
 import { createHud } from "./ui/hud.js";
 import { createShopUI } from "./ui/shop.js";
 import { createMenus } from "./ui/menus.js";
+import { createDialogue } from "./ui/dialogue.js";
 import { bus, createGamestate } from "./systems/gamestate.js";
 import { createDebugHook } from "./core/debug.js";
 
@@ -119,6 +162,11 @@ const level = createLevel(scene);
 // fresh-run wave-start{n:1} → reset. Created BEFORE waves so the wave
 // director can take it as its optional 4th argument.
 const zones = createZones(scene, level);
+// NIGHT 30 P1 (§5.6.2.1): the open city builds itself around the legacy
+// quarantine arena — pushes its colliders into level, registers the 12 gate
+// waypoints + open state into level through the private hooks, and arms the
+// dev-guard. Must exist before waves (district spawn pools) and the player.
+const city = createCity(scene, level);
 const atmosphere = createAtmosphere(scene);
 const particles = createParticles(scene);
 const pickups = createPickups(scene, bus);
@@ -136,11 +184,41 @@ const combat = createCombat(camera, scene, zombies, particles, audio, bus);
 const explosives = createExplosives(scene, camera, zombies, particles, audio, bus);
 // EXPANSION B1/B2: money + shop. The shop writes ownership flags onto
 // weapons.list entries and heals the player — created after both.
+//
+// NIGHT 30 P1 §5.6.3 story-keep CAPTURE — registered BEFORE economy so that,
+// during the "ui-play"/"ui-restart" dispatch, the nested "story-keep" event
+// reaches economy's hold flag BEFORE its own defensive fresh-run reset runs
+// (listener order = registration order). The decision: a PLAY AGAIN from the
+// gameover screen of a STORY run that reached mission ≥ 2 keeps the mission
+// progress AND the money (§5.6.3 — kept or wiped together, never split);
+// everything else resets clean. `missions`/`gamestate` are referenced lazily
+// (TDZ-safe: no ui-* event can fire before the bootstrap finishes).
+let storyRun = false; // the last run was started as STORY (PLAY), not free-roam
+let keepStory = false; // decision for the ui-play currently being dispatched
+bus.addEventListener("ui-play", () => {
+  keepStory =
+    gamestate.state === "gameover" && storyRun && missions.current >= 2;
+  bus.dispatchEvent(
+    new CustomEvent("story-keep", { detail: { hold: keepStory } })
+  );
+});
+bus.addEventListener("ui-restart", () => {
+  // Pause-menu RESTART is a clean reset — always lift the hold (§5.6.3 only
+  // redefines the gameover PLAY AGAIN path).
+  keepStory = false;
+  bus.dispatchEvent(new CustomEvent("story-keep", { detail: { hold: false } }));
+});
 const economy = createEconomy(bus);
 const shop = createShop(bus, economy, weapons, player);
+// NIGHT 30 P1 (§5.6.2.1): missions after economy/shop, BEFORE waves. Scene +
+// level passed through the additive params (§5.1.3) so the POI meshes, the
+// beacon and the POI colliders are real; headless otherwise.
+const missions = createMissions(bus, city, economy, scene, level);
 // EXPANSION C5: the wave director now takes `zones` so boss waves (every 5th)
-// spawn one boss at the zone anchor.
-const waves = createWaves(scene, level, bus, zones);
+// spawn one boss at the zone anchor. NIGHT 30 P1 §4.2: `city` as the new
+// optional 5th argument — district spawn pools, 60-alive cap, density
+// multipliers (legacy pool when absent, which the debug harness relies on).
+const waves = createWaves(scene, level, bus, zones, city);
 
 // --- 14-16. hud + menus + gamestate ---------------------------------------------
 const hud = createHud(uiRoot, bus, audio, i18n);
@@ -149,6 +227,9 @@ const hud = createHud(uiRoot, bus, audio, i18n);
 const shopUI = createShopUI(uiRoot, bus, economy, shop, i18n);
 const menus = createMenus(uiRoot, bus, settings, i18n);
 const gamestate = createGamestate(bus, settings);
+// NIGHT 30 P1 (§5.6.2.1): dialogue after menus — the bottom dialogue box, the
+// intro slides and the outro overlay (self-styled inside #ui).
+const dialogue = createDialogue(uiRoot, bus, i18n);
 
 // --- bus wiring -------------------------------------------------------------------
 
@@ -242,6 +323,12 @@ function applyScreenState(state) {
       menus.show(null);
       hud.show(true);
       break;
+    case "intro":
+      // NIGHT 30 P1 (§5.6.1): the story slides run over the dimmed world — no
+      // menus, no HUD; input.js already freed the cursor for slide clicks.
+      menus.show(null);
+      hud.show(false);
+      break;
     case "paused":
       // EXPANSION: pause is reason-based. A shop-only pause (the shop overlay
       // is open) keeps the world frozen but shows NO pause menu — the overlay
@@ -272,7 +359,36 @@ bus.addEventListener("state-changed", (e) => {
 
 // Menu buttons. Everything below stays inside the click's synchronous dispatch,
 // so input.lockPointer() keeps the browser's user activation (Pointer Lock).
-function freshRun() {
+//
+// NIGHT 30 P1 story spawn (§5.6.2.2, WORLD.md §11): the safehouse yard, camera
+// facing EAST — toward the compound gate at x −55. yaw −π/2 faces +X
+// (forward = (−sin yaw, −cos yaw)). Applied to EVERY fresh run (story AND
+// free-roam: mission 1 needs the generators); the origin is debug-only now.
+const STORY_SPAWN_YAW = -Math.PI / 2;
+const STORY_SPAWN_X = -75;
+const STORY_SPAWN_Z = 8;
+
+/** P1: a fresh world (story OR free) starts with every city gate re-sealed —
+ * missions.reset() owns the story bookkeeping but never un-fires gate-open,
+ * so main closes them here. Idempotent: already-closed gates are no-ops. */
+function closeAllCityGates() {
+  for (let i = 0; i < city.districts.length; i++) {
+    const d = city.districts[i];
+    for (let g = 0; g < d.gates.length; g++) {
+      city.setGateOpen(d.id, d.gates[g].to, false);
+    }
+  }
+}
+
+/**
+ * Reset the whole world for a new run. `keepStoryProgress` (NIGHT 30 P1
+ * §5.6.3) is true ONLY for the death-restart of a story run at mission ≥ 2:
+ * the world resets but the mission chain + money stay (economy's hold window
+ * is armed by the story-keep capture above), the safehouse spawn re-plants,
+ * and — if the run is already past mission 6 — the north/east interiors are
+ * re-opened (zones.reset() below re-sealed them).
+ */
+function freshRun(keepStoryProgress) {
   waves.reset(); // disposes every zombie + announces "zombie-despawned" per one
   // Debug-spawned zombies are outside the wave director's tracked list —
   // despawn them the same way (announce, then dispose) so the shared array
@@ -285,15 +401,26 @@ function freshRun() {
   }
   debugZombies.length = 0;
   pickups.reset(); // clear dropped items
-  player.reset(); // hp 100, alive, position (0,0,0), camera to spawn facing
+  player.reset(STORY_SPAWN_YAW, STORY_SPAWN_X, STORY_SPAWN_Z); // P1 story spawn
   weapons.reset(); // full mags/reserves, pistol out (beyond-contract extra)
   // particles: the pool drains itself (lifetime ≤ 0.8 s) — nothing to clear.
   // --- EXPANSION fresh-run resets (beyond-contract extras, idempotent) -----
-  economy.reset(); // money to 0 (economy also self-resets on ui-play/restart)
+  if (!keepStoryProgress) economy.reset(); // §5.6.3: kept when story keeps
   shop.reset(); // forget bought guns — weapons.reset() just un-owned them
   explosives.reset(); // clear live grenades + pending blast FX/shake
   zones.reset(); // re-lock both areas ("wave-start"{n:1} repeats this no-op)
+  if (keepStoryProgress && missions.current > 6) {
+    // Past mission 6 the interiors belong to the run — unseal again (the
+    // unlockForWave path is the same one mission 6's completion used).
+    zones.unlockForWave(Number.MAX_SAFE_INTEGER);
+  }
   bossRef = null;
+  if (!keepStoryProgress) {
+    closeAllCityGates(); // fresh world: every gate back to red/locked
+    missions.reset(); // §5.6.2.5 (skipped when §5.6.3 keeps the progress)
+  }
+  dialogue.hide(); // drop any mid-flight dialogue from the previous run
+  resetDialogueQueue(); // hide() drops the onDone — the queue must forget too
   // Drop run-scoped HUD overlays (boss bar, toast, hint, kill feed) so a
   // restart mid-boss never resurrects a dead boss bar: the "playing"
   // state-changed below deliberately does NOT clear them (resume() passes
@@ -301,9 +428,97 @@ function freshRun() {
   hud.show(false);
 }
 
+// --- NIGHT 30 P1 story flow (§5.6.2.3, §5.6.4) ---------------------------------
+
+/** Arm/disarm the zones story-guard (§5.6.4). */
+function storyMode(active) {
+  bus.dispatchEvent(new CustomEvent("story-mode", { detail: { active } }));
+}
+
+/** STORY_DIALOGUE m{n} lines → dialogue.show() payloads (§5.1.5 + STORY.md
+ * §0: {speakerKey, text}; dialogue resolves the label + portrait tint). */
+function dialogueLines(kind, index) {
+  const entry = STORY_DIALOGUE["m" + index];
+  if (!entry) return [];
+  const list = kind === "done" ? entry.done : entry.start;
+  const lines = [];
+  for (let i = 0; i < list.length; i++) {
+    lines.push({
+      speakerKey: "speaker_" + list[i].speaker,
+      text: i18n.t(list[i].key),
+    });
+  }
+  return lines;
+}
+
+/** Full fresh story: world reset (gates re-sealed, zones re-locked, missions
+ * reset) → story-mode armed → state "intro" (the state-changed listener below
+ * plays the slides and calls missions.begin() after them). */
+function beginFreshStory() {
+  storyMode(false); // §5.6.4 order: {active:false} → zones.reset → missions.reset → {active:true}
+  freshRun(false); // zones.reset() + closeAllCityGates() + missions.reset() inside
+  storyRun = true;
+  keepStory = false;
+  storyMode(true);
+  gamestate.startStory(); // → "intro"; intro listener drives slides → beginPlay
+}
+
+/** §5.6.3 keep-progress death-restart: the HUD cleared its story widgets on
+ * gameover (mission-reset never fired — missions state is intact), so rebuild
+ * the tracker/quota chip from the live mission. The re-announced
+ * "mission-start" also re-arms waves' m7–m8 horde density after waves.reset().
+ * Dialogue is suppressed (the player already heard the mission briefing). */
+let suppressStartDialogue = false;
+function reAnnounceMission() {
+  const s = missions.getState();
+  if (!(s.mission >= 1 && s.mission <= 9)) return;
+  suppressStartDialogue = true;
+  bus.dispatchEvent(
+    new CustomEvent("mission-start", {
+      detail: {
+        index: s.mission,
+        titleKey: s.titleKey,
+        objectives: missions.objectives, // the LIVE array — HUD stays in sync
+      },
+    })
+  );
+}
+
 bus.addEventListener("ui-play", () => {
-  freshRun();
-  gamestate.start();
+  if (keepStory) {
+    // PLAY AGAIN after a death at mission ≥ 2 of a story run (§5.6.3):
+    // world reset, story + money kept, straight back into the fight — the
+    // intro is a story-START experience, not a respawn experience.
+    freshRun(true);
+    storyMode(true); // re-assert (idempotent) after the zones.reset above
+    gamestate.start(); // → playing directly
+    reAnnounceMission();
+  } else if (gamestate.state === "gameover" && !storyRun) {
+    // PLAY AGAIN after a FREE-ROAM death (§5.6.3 "từ CHƠI TỰ DO": clean reset
+    // like before) — free replay, no intro slides, mission 1 re-activated.
+    storyMode(false);
+    freshRun(false);
+    storyRun = false;
+    keepStory = false;
+    gamestate.start();
+    missions.begin();
+  } else {
+    // PLAY from the menu — and PLAY AGAIN of a story run that never got past
+    // mission 1 (§5.6.3 "chưa hoàn thành gì": clean reset). Story start.
+    beginFreshStory();
+  }
+  input.lockPointer();
+});
+bus.addEventListener("ui-play-free", () => {
+  // NIGHT 30 P1 (§5.5.2 + §5.6.2.3): CHƠI TỰ DO — fresh run, NO intro slides,
+  // mission 1 active immediately. story-mode stays OFF: legacy zones behavior
+  // (wave-clear may unlock north/east) is part of the old free-run shape.
+  storyMode(false);
+  freshRun(false);
+  storyRun = false;
+  keepStory = false;
+  gamestate.start(); // → playing directly
+  missions.begin(); // m1 active + mission-start (its dialogue shows — contract)
   input.lockPointer();
 });
 bus.addEventListener("ui-resume", () => {
@@ -318,6 +533,93 @@ bus.addEventListener("ui-restart", () => {
 bus.addEventListener("ui-quit", () => {
   freshRun();
   gamestate.toMenu();
+});
+
+// §5.6.2.3: entering "intro" plays the New Game slides; finishing (or
+// skipping through) them flips to playing and activates mission 1.
+bus.addEventListener("state-changed", (e) => {
+  const st = e && e.detail ? e.detail.state : null;
+  if (st !== "intro") return;
+  dialogue.showIntro(
+    ["intro_s1", "intro_s2", "intro_s3", "intro_s4"].map((k) => i18n.t(k)),
+    () => {
+      gamestate.beginPlay();
+      missions.begin(); // m1 active + mission-start → start-dialogue
+    }
+  );
+});
+
+// --- NIGHT 30 P1 mission/gate wiring (§5.6.2.3, §6) -----------------------------
+
+// missions is the ONLY "gate-open" emitter (§4.3) — the world obeys here.
+bus.addEventListener("gate-open", (e) => {
+  const d = e && e.detail ? e.detail : {};
+  city.setGateOpen(d.from, d.to, true);
+});
+
+// Dialogue sequencing (integration fix): missions.checkMissionComplete fires
+// "mission-complete" AND the next "mission-start" in ONE synchronous cascade —
+// showing the briefing immediately would REPLACE the done-lines before the
+// player reads them. The queue plays the done sequence out, then the briefing.
+let dialogueBusy = false;
+let queuedDialogue = null;
+function showDialogue(lines) {
+  if (!lines || lines.length === 0) return;
+  if (dialogueBusy) {
+    queuedDialogue = lines;
+    return;
+  }
+  dialogueBusy = true;
+  dialogue.show(lines, () => {
+    dialogueBusy = false;
+    if (queuedDialogue) {
+      const next = queuedDialogue;
+      queuedDialogue = null;
+      showDialogue(next);
+    }
+  });
+}
+/** freshRun drops the box through dialogue.hide() (no onDone) — the queue
+ * flags must reset with it or every later dialogue would pile up queued. */
+function resetDialogueQueue() {
+  dialogueBusy = false;
+  queuedDialogue = null;
+}
+
+// Mission briefings (dialogue) + the M8 warden spawn. The re-announce path
+// (§5.6.3) suppresses only the dialogue — waves still re-arms its horde flag.
+bus.addEventListener("mission-start", (e) => {
+  const d = e && e.detail ? e.detail : {};
+  const idx = Math.round(Number(d.index));
+  if (!suppressStartDialogue && idx >= 1 && idx <= 9) {
+    showDialogue(dialogueLines("start", idx));
+  }
+  suppressStartDialogue = false;
+  if (idx === 8) spawnStoryBoss(); // §5.6.2.3: M8 activation → one boss
+});
+
+// Rewards are main's job (§8: missions never touches economy). m1–m8 play
+// their done-dialogue; m9 has none (STORY.md §3) — the outro plays instead.
+// M6 completion also unseals the quarantine interiors (§5.6.2.3, WORLD.md
+// §12.1) through zones.unlockForWave — the story-guard only gates the
+// wave-clear automation, never this direct path.
+bus.addEventListener("mission-complete", (e) => {
+  const d = e && e.detail ? e.detail : {};
+  const idx = Math.round(Number(d.index));
+  const reward = Math.max(0, Math.round(Number(d.reward) || 0));
+  economy.add(reward);
+  if (idx === 6) zones.unlockForWave(Number.MAX_SAFE_INTEGER);
+  if (idx >= 1 && idx <= 8) showDialogue(dialogueLines("done", idx));
+  if (idx === 9) {
+    dialogue.showOutro(
+      ["story_outro_line1", "story_outro_line2", "story_outro_line3"].map(
+        (k) => i18n.t(k)
+      ),
+      () => {
+        /* free-roam continues (WF-3 replaces the outro with the real ending) */
+      }
+    );
+  }
 });
 
 // Live volume from the settings screen (menus already persisted it).
@@ -372,12 +674,14 @@ function updateGrowls(dt) {
   if (d < 20 && Math.random() < 0.8) audio.zombieGrowl();
 }
 
-// --- hud.update HudExtras (EXPANSION C6, zero per-frame allocation) -----------
+// --- hud.update HudExtras (EXPANSION C6 + NIGHT 30 P1, zero per-frame alloc) --
 // The optional 4th hud.update() argument: the live boss (position/hp for the
-// boss bar drain) + camera yaw (the out-of-view boss arrow is a 2D guide).
-// Without a live boss the boss field is null — the bar then relies purely on
-// its "boss-spawned"/"zombie-killed" events and the arrow stays hidden.
-const hudExtrasScratch = { boss: null, yaw: 0 };
+// boss bar drain) + camera yaw (the out-of-view boss arrow is a 2D guide) +
+// the player's current district (P1 §5.4.5 — the quota chip "🧟 12/20" only
+// shows while the player stands in the quota district). Without a live boss
+// the boss field is null; `district` is ALWAYS present (string|null) so the
+// HUD's hasOwnProperty gate stays true.
+const hudExtrasScratch = { boss: null, yaw: 0, district: null };
 const hudBossScratch = { position: null, hp: 0, maxHp: 0, type: "" };
 
 function hudExtras() {
@@ -391,6 +695,10 @@ function hudExtras() {
     hudExtrasScratch.boss = null;
   }
   hudExtrasScratch.yaw = camera.rotation.y; // controller writes yaw (order "YXZ")
+  hudExtrasScratch.district = city.districtAt(
+    player.position.x,
+    player.position.z
+  );
   return hudExtrasScratch;
 }
 
@@ -409,10 +717,11 @@ function frame() {
     if (player.alive) weapons.update(dt); // layers recoil DELTA on top; fires
     updateZombies(dt); // chase/attack (attacks call player.damage → death can flip state here)
     waves.update(dt, player.position);
+    missions.update(dt, player.position); // NIGHT 30 P1 §5.6.2.4: after waves.update
     pickups.update(dt, player.position);
     explosives.update(dt); // EXPANSION B5: grenade flight/detonation + shake decay
     particles.update(dt);
-    atmosphere.update(dt);
+    atmosphere.update(dt, player.position); // P1 §5.7: moon shadow follows
     gamestate.update(dt);
     hud.update(player, weapons.getState(), gamestate, hudExtras());
     updateGrowls(dt);
@@ -422,9 +731,11 @@ function frame() {
     // dead player) and no wave logic runs.
     updateZombies(dt);
     particles.update(dt);
-    atmosphere.update(dt);
-  } else if (st === "menu") {
-    atmosphere.update(dt); // zombies deliberately do NOT update in the menu
+    atmosphere.update(dt, player.position);
+  } else if (st === "menu" || st === "intro") {
+    // NIGHT 30 P1 §5.6.2.6: "intro" updates the world exactly like "menu" —
+    // atmosphere only (the story slides render over the parked spawn view).
+    atmosphere.update(dt, player.position); // zombies deliberately do NOT update
   }
   // paused: render only.
 
@@ -476,6 +787,123 @@ function findFrontSpawn() {
   return best ? { x: best.x, z: best.z } : { x: 0, z: 0 }; // origin is clear by layout
 }
 
+// --- NIGHT 30 P1 district-graph helpers (§5.6.5) --------------------------------
+
+/**
+ * BFS shortest route between two districts over the gate graph (open state is
+ * IGNORED — the debug teleport opens what it walks through). Returns the list
+ * of gates to open in order, [] when already there, null when unreachable.
+ * @returns {Array<{from: string, to: string}>|null}
+ */
+function districtRoute(fromId, toId) {
+  if (fromId === toId) return [];
+  /** @type {Map<string, {via: string, gate: {from: string, to: string}}|null>} */
+  const prev = new Map([[fromId, null]]);
+  const queue = [fromId];
+  while (queue.length > 0) {
+    const cur = queue.shift();
+    const d = city.districts.find((x) => x.id === cur);
+    if (!d) continue;
+    for (let i = 0; i < d.gates.length; i++) {
+      const to = d.gates[i].to;
+      if (prev.has(to)) continue;
+      prev.set(to, { via: cur, gate: { from: cur, to } });
+      if (to === toId) {
+        const path = [];
+        let step = toId;
+        while (step !== fromId) {
+          const rec = prev.get(step);
+          path.push(rec.gate);
+          step = rec.via;
+        }
+        return path.reverse();
+      }
+      queue.push(to);
+    }
+  }
+  return null;
+}
+
+/** Districts reachable from `startId` through OPEN gates only (BFS). */
+function reachableDistricts(startId) {
+  const seen = new Set([startId]);
+  const queue = [startId];
+  while (queue.length > 0) {
+    const cur = queue.shift();
+    const d = city.districts.find((x) => x.id === cur);
+    if (!d) continue;
+    for (let i = 0; i < d.gates.length; i++) {
+      const to = d.gates[i].to;
+      if (seen.has(to)) continue;
+      const gate = city.gateBetween(cur, to);
+      if (gate && gate.open) {
+        seen.add(to);
+        queue.push(to);
+      }
+    }
+  }
+  return Array.from(seen);
+}
+
+/**
+ * One boss through the debug mechanics (§5.6.5: "dùng cơ chế spawnBoss hiện
+ * có") — shared by the debug spawnBoss() API and the mission-8 activation.
+ * Enters the shared array via "zombie-spawned", announced with "boss-spawned",
+ * tracked in debugZombies so freshRun() drains it. Wave accounting untouched.
+ */
+function spawnBossInternal(type, inFront) {
+  const Ctor = BOSS_CLASSES[type];
+  if (typeof Ctor !== "function") {
+    return { error: "unknown-boss-type", valid: Object.keys(BOSS_CLASSES) };
+  }
+  let x;
+  let z;
+  let zoneId = "main";
+  if (inFront) {
+    camera.updateMatrixWorld();
+    camera.getWorldDirection(tmpDir);
+    tmpDir.y = 0;
+    if (tmpDir.lengthSq() < 1e-4) tmpDir.set(0, 0, -1); // looking straight up/down
+    tmpDir.normalize();
+    let spot = null;
+    for (const d of [12, 10, 8, 6, 4]) {
+      const tx = camera.position.x + tmpDir.x * d;
+      const tz = camera.position.z + tmpDir.z * d;
+      if (!level.isBlocked(tx, tz, 0.6)) {
+        spot = { x: tx, z: tz };
+        break;
+      }
+    }
+    if (!spot) spot = findFrontSpawn();
+    x = spot.x;
+    z = spot.z;
+  } else {
+    const anchor = zones.bossAnchorFor(Math.max(1, gamestate.wave));
+    zoneId = anchor.zoneId;
+    x = anchor.x;
+    z = anchor.z;
+    if (level.isBlocked(x, z, 0.6)) {
+      const p = findFrontSpawn();
+      x = p.x;
+      z = p.z;
+      zoneId = "main";
+    }
+  }
+  const boss = new Ctor(scene, Math.max(1, gamestate.wave), tmpPos.set(x, 0, z), bus);
+  debugZombies.push(boss);
+  bus.dispatchEvent(new CustomEvent("zombie-spawned", { detail: { zombie: boss } }));
+  bus.dispatchEvent(
+    new CustomEvent("boss-spawned", { detail: { type: boss.type, zoneId, hp: boss.hp } })
+  );
+  return { type: boss.type, hp: boss.hp, maxHp: boss.maxHp, zoneId, x, z };
+}
+
+/** §5.6.2.3: the mission-8 activation spawns ONE warden at the current boss
+ * anchor (type follows the wave cycle — any boss satisfies the objective). */
+function spawnStoryBoss() {
+  return spawnBossInternal(bossTypeForWave(Math.max(1, gamestate.wave)), false);
+}
+
 const debugApi = {
   startGame() {
     freshRun();
@@ -513,6 +941,14 @@ const debugApi = {
         .filter((zn) => zn.unlocked)
         .map((zn) => zn.id),
       ownedWeapons: shop.owned(),
+      // NIGHT 30 P1 additions (docs/EXPANSION-P1.md §5.6.5): the story
+      // snapshot (missions.getState() = {mission, titleKey, quotaDone,
+      // quotaNeed, quotaDistrict, objectives}), the district the player
+      // stands in, and everything reachable from the safehouse through
+      // OPEN gates (BFS).
+      story: missions.getState(),
+      currentDistrict: city.districtAt(player.position.x, player.position.z),
+      unlockedDistricts: reachableDistricts("safehouse"),
     };
   },
 
@@ -631,52 +1067,11 @@ const debugApi = {
    * closer when blocked (isBlocked covers the zones too). Debug bosses are
    * drained by freshRun() like every debug spawn and never affect wave
    * accounting (no `summoned` flag, not in the wave director's list).
+   * NIGHT 30 P1: the body moved to spawnBossInternal() so the mission-8
+   * activation (§5.6.2.3) drives the exact same mechanics.
    */
   spawnBoss(type, inFront) {
-    const Ctor = BOSS_CLASSES[type];
-    if (typeof Ctor !== "function") {
-      return { error: "unknown-boss-type", valid: Object.keys(BOSS_CLASSES) };
-    }
-    let x;
-    let z;
-    let zoneId = "main";
-    if (inFront) {
-      camera.updateMatrixWorld();
-      camera.getWorldDirection(tmpDir);
-      tmpDir.y = 0;
-      if (tmpDir.lengthSq() < 1e-4) tmpDir.set(0, 0, -1); // looking straight up/down
-      tmpDir.normalize();
-      let spot = null;
-      for (const d of [12, 10, 8, 6, 4]) {
-        const tx = camera.position.x + tmpDir.x * d;
-        const tz = camera.position.z + tmpDir.z * d;
-        if (!level.isBlocked(tx, tz, 0.6)) {
-          spot = { x: tx, z: tz };
-          break;
-        }
-      }
-      if (!spot) spot = findFrontSpawn();
-      x = spot.x;
-      z = spot.z;
-    } else {
-      const anchor = zones.bossAnchorFor(Math.max(1, gamestate.wave));
-      zoneId = anchor.zoneId;
-      x = anchor.x;
-      z = anchor.z;
-      if (level.isBlocked(x, z, 0.6)) {
-        const p = findFrontSpawn();
-        x = p.x;
-        z = p.z;
-        zoneId = "main";
-      }
-    }
-    const boss = new Ctor(scene, Math.max(1, gamestate.wave), tmpPos.set(x, 0, z), bus);
-    debugZombies.push(boss);
-    bus.dispatchEvent(new CustomEvent("zombie-spawned", { detail: { zombie: boss } }));
-    bus.dispatchEvent(
-      new CustomEvent("boss-spawned", { detail: { type: boss.type, zoneId, hp: boss.hp } })
-    );
-    return { type: boss.type, hp: boss.hp, maxHp: boss.maxHp, zoneId, x, z };
+    return spawnBossInternal(type, inFront);
   },
 
   /** Damage the live boss (default 100); golem applies its −25% inside. */
@@ -743,6 +1138,95 @@ const debugApi = {
       unlocked: zones.list.filter((zn) => zn.unlocked).map((zn) => zn.id),
       openedByThisCall: opened,
     };
+  },
+
+  // --- NIGHT 30 P1 debug API (docs/EXPANSION-P1.md §5.6.5) ----------------
+
+  /** Fresh story run: world reset → story-mode armed → intro slides (identical
+   * to pressing PLAY; pointer lock silently fails outside a gesture — fine). */
+  startStory() {
+    beginFreshStory();
+    return { state: gamestate.state };
+  },
+
+  /**
+   * Mark m1..m(n−1) done (missions fires their gate-open + synthetic
+   * quota-done so the world opens and waves' density matches), then activate
+   * mission n + emit "mission-start". Without a live run it first boots a
+   * debug story run (intro slides skipped — this is a debug jump, not a show).
+   */
+  skipToMission(n) {
+    const st = gamestate.state;
+    if (st !== "playing" && st !== "paused") {
+      if (st === "intro") {
+        gamestate.beginPlay();
+        dialogue.hide(); // debug jump: no slides over the fight
+      } else {
+        beginFreshStory();
+        gamestate.beginPlay();
+        dialogue.hide();
+      }
+    }
+    const ok = missions.skipToMission(n);
+    return { ok, mission: missions.current, state: gamestate.state };
+  },
+
+  /** Force-complete the first unfinished objective of the active mission. */
+  completeObjective() {
+    const ok = missions.completeObjective();
+    return { ok, story: missions.getState() };
+  },
+
+  /** Fill the active mission's quota objective (+ quota-done when it lands). */
+  fillQuota() {
+    const ok = missions.fillQuota();
+    return { ok, story: missions.getState() };
+  },
+
+  /**
+   * Teleport to a district center, opening EVERY gate along the BFS shortest
+   * route (debug-only — mission bookkeeping untouched). The quarantine center
+   * (0, 0) IS the vault door (solid, §3.2), so blocked centers step out to the
+   * nearest clear offset (main.js:696-726 open-before-teleport pattern).
+   */
+  teleportDistrict(id) {
+    const wanted = String(id == null ? "" : id);
+    const to = city.districts.find((d) => d.id === wanted);
+    if (!to) {
+      return {
+        error: "unknown-district",
+        valid: city.districts.map((d) => d.id),
+      };
+    }
+    const from =
+      city.districtAt(player.position.x, player.position.z) || "safehouse";
+    const route = districtRoute(from, wanted);
+    if (route === null) {
+      return { error: "unreachable", from, target: wanted };
+    }
+    const opened = [];
+    for (let i = 0; i < route.length; i++) {
+      if (city.setGateOpen(route[i].from, route[i].to, true)) {
+        opened.push(route[i].from + "->" + route[i].to);
+      }
+    }
+    let cx = to.center.x;
+    let cz = to.center.z;
+    if (level.isBlocked(cx, cz, 0.5)) {
+      const offs = [
+        [0, 4], [0, -4], [4, 0], [-4, 0], [0, 8], [0, -8], [8, 0], [-8, 0],
+      ];
+      for (const [ox, oz] of offs) {
+        if (!level.isBlocked(cx + ox, cz + oz, 0.5)) {
+          cx += ox;
+          cz += oz;
+          break;
+        }
+      }
+    }
+    player.velocity.set(0, 0, 0);
+    player.position.set(cx, 0, cz); // camera follows on the next player.update
+    return { from, target: wanted, opened, x: cx, z: cz };
   },
 };
 

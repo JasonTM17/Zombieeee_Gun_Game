@@ -88,6 +88,16 @@ export const bus = new EventTarget();
  *   they only act from the matching situation and emit "state-changed" on the
  *   actual transition, exactly like before. A player death also clears every
  *   reason (the gameover screen has no pause contexts).
+ * - NIGHT 30 P1 "intro" state (docs/EXPANSION-P1.md §5.6.1): startStory()
+ *   zeroes the run counters exactly like freshRun() but lands in "intro"
+ *   (story slides play over the dimmed world; main.js drives dialogue and
+ *   calls beginPlay() at the end). beginPlay() flips ONLY "intro" → "playing"
+ *   and emits; from any other state it is a no-op, which makes the slides'
+ *   onDone callback safe to fire twice. pause-by-reason is untouched: a
+ *   "pause-toggle"/"shop-open" while in "intro" records nothing and flips
+ *   nothing (addPause only transitions from "playing"), and the intro screen
+ *   needs the free cursor — input.js already releases the lock for every
+ *   state ≠ "playing".
  * - Fresh-run money reset (EXPANSION): economy.reset() handles it — main.js
  *   calls economy.reset() in its freshRun(), and economy additionally
  *   listens "ui-play"/"ui-restart" itself (this module holds no economy ref;
@@ -104,7 +114,11 @@ export const bus = new EventTarget();
  */
 
 /**
- * @typedef {("menu"|"playing"|"paused"|"gameover")} GameStateName
+ * @typedef {("menu"|"intro"|"playing"|"paused"|"gameover")} GameStateName
+ * NIGHT 30 P1 (docs/EXPANSION-P1.md §5.6.1): "intro" — the New Game story
+ * slides run while the world renders dimmed behind them; nothing simulates
+ * (main.js treats it like "menu": atmosphere + render only). Entering it via
+ * startStory(), leaving it via beginPlay(). Every other state is untouched.
  */
 
 /**
@@ -130,6 +144,12 @@ export const bus = new EventTarget();
  *   pause reason; the last one flips paused → playing.
  * @property {(reason: PauseReason) => boolean} hasPause - EXPANSION: true
  *   while `reason` is recorded (main.js: hide the pause menu under the shop).
+ * @property {() => void} startStory - NIGHT 30 P1 (§5.6.1): fresh-run counters
+ *   (like start()) but → state "intro" (story slides; main.js plays them and
+ *   calls beginPlay() when the last slide is done/skipped).
+ * @property {() => void} beginPlay - NIGHT 30 P1 (§5.6.1): ONLY from "intro"
+ *   → state "playing" + emit. A no-op from any other state (guards the
+ *   intro-slides onDone double-call).
  */
 
 export function createGamestate(busArg, settings) {
@@ -143,6 +163,8 @@ export function createGamestate(busArg, settings) {
     wave: 1,
     kills: 0,
     start,
+    startStory,
+    beginPlay,
     pause,
     resume,
     restart,
@@ -242,6 +264,22 @@ export function createGamestate(busArg, settings) {
     // Fresh run from wherever we are (menu / gameover / even playing — the
     // counters reset either way; main.js resets the world before calling).
     freshRun();
+  }
+
+  // NIGHT 30 P1 (§5.6.1): the story entry — same zeroed counters as a fresh
+  // run, but the run begins behind the intro slides, not in the fight. main.js
+  // resets the world before calling (same contract as start()).
+  function startStory() {
+    freshRun();
+    gamestate.state = "intro";
+    emit();
+  }
+
+  /** "intro" → "playing" ONLY (idempotent-guarded; slides onDone safe). */
+  function beginPlay() {
+    if (gamestate.state !== "intro") return;
+    gamestate.state = "playing";
+    emit();
   }
 
   function restart() {
