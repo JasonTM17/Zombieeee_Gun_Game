@@ -1,0 +1,784 @@
+/* ============================================================================
+   Gun Game — HUD + menu theme (scoped to #ui; index.html owns base page CSS).
+   Night-ops look: deep blue-black, moonlight-blue accent, blood-red damage.
+   ========================================================================== */
+
+#ui {
+  --gg-accent: #7fb2ff;
+  --gg-accent-dim: rgba(127, 178, 255, 0.35);
+  --gg-danger: #ff4d4d;
+  --gg-danger-dim: rgba(255, 77, 77, 0.4);
+  --gg-gold: #ffd35e;
+  --gg-text: #dbe6f5;
+  --gg-text-dim: #8fa1b8;
+  --gg-panel: rgba(9, 13, 21, 0.92);
+  --gg-line: #24334d;
+  --gg-chip: rgba(6, 10, 16, 0.55);
+  color-scheme: dark;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#ui,
+#ui * {
+  box-sizing: border-box;
+}
+
+/* ==========================================================================
+   HUD ROOT — never interactive, hides entirely when shown(false)
+   ========================================================================== */
+
+.hud-root {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.hud-root.hidden {
+  display: none;
+}
+
+/* --- damage overlays ------------------------------------------------------ */
+
+.vignette,
+.lowhp,
+.flash {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.vignette {
+  background: radial-gradient(
+    ellipse at center,
+    rgba(255, 0, 0, 0) 42%,
+    rgba(150, 0, 0, 0.6) 100%
+  );
+  opacity: 0;
+}
+
+.lowhp {
+  background: radial-gradient(
+    ellipse at center,
+    rgba(255, 0, 0, 0) 30%,
+    rgba(190, 0, 0, 0.75) 100%
+  );
+  opacity: 0;
+}
+
+.hud-root.crit .lowhp {
+  animation: gg-vig-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes gg-vig-pulse {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+.flash {
+  background: radial-gradient(
+    ellipse at center,
+    rgba(255, 60, 60, 0.5) 0%,
+    rgba(190, 0, 0, 0.78) 100%
+  );
+  opacity: 0;
+}
+
+.flash.on {
+  animation: gg-flash 0.45s ease-out forwards;
+}
+
+@keyframes gg-flash {
+  0% {
+    opacity: var(--flash, 0.6);
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* --- wave banner ------------------------------------------------------------ */
+
+.banner {
+  position: absolute;
+  top: 26%;
+  left: 0;
+  right: 0;
+  z-index: 5;
+  text-align: center;
+  font-size: clamp(42px, 7vw, 84px);
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #ffe9e9;
+  text-shadow:
+    0 0 24px rgba(255, 60, 60, 0.8),
+    0 2px 6px rgba(0, 0, 0, 0.8);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.banner.clear {
+  color: #d6ffe0;
+  text-shadow:
+    0 0 24px rgba(90, 255, 140, 0.6),
+    0 2px 6px rgba(0, 0, 0, 0.8);
+}
+
+.banner.show {
+  animation: gg-banner 2.4s ease-out forwards;
+}
+
+@keyframes gg-banner {
+  0% {
+    opacity: 0;
+    transform: scale(1.15);
+  }
+  10% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  75% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.02);
+  }
+}
+
+/* --- top center: wave + score ------------------------------------------------ */
+
+.topinfo {
+  position: absolute;
+  top: 18px;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  gap: 14px;
+}
+
+.chip {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 16px;
+  background: var(--gg-chip);
+  border: 1px solid var(--gg-line);
+  border-radius: 6px;
+}
+
+.chip .lbl {
+  font-size: 12px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--gg-text-dim);
+}
+
+.chip .val {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--gg-text);
+  min-width: 2ch;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- kill feed (top right, 3 lines, self-fading) ----------------------------- */
+
+.killfeed {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.feed-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  color: var(--gg-text);
+  background: var(--gg-chip);
+  border: 1px solid var(--gg-line);
+  border-right: 3px solid var(--gg-accent);
+  border-radius: 4px;
+  animation: gg-feed 3s ease forwards;
+}
+
+.feed-line.hs {
+  border-right-color: var(--gg-danger);
+  color: #ffd9d9;
+}
+
+.feed-line .tag {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  color: #fff;
+  background: var(--gg-danger);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+@keyframes gg-feed {
+  0% {
+    opacity: 0;
+    transform: translateX(14px);
+  }
+  7% {
+    opacity: 1;
+    transform: none;
+  }
+  78% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* --- crosshair (gap driven by --gap custom property) -------------------------- */
+
+.crosshair {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: 0;
+  --gap: 10px;
+}
+
+.crosshair .tick {
+  position: absolute;
+  background: #e6f1ff;
+  box-shadow: 0 0 3px rgba(0, 0, 0, 0.9);
+}
+
+.tick-up {
+  width: 2px;
+  height: 8px;
+  left: -1px;
+  bottom: var(--gap);
+}
+
+.tick-down {
+  width: 2px;
+  height: 8px;
+  left: -1px;
+  top: var(--gap);
+}
+
+.tick-left {
+  height: 2px;
+  width: 8px;
+  top: -1px;
+  right: var(--gap);
+}
+
+.tick-right {
+  height: 2px;
+  width: 8px;
+  top: -1px;
+  left: var(--gap);
+}
+
+.crosshair .dot {
+  position: absolute;
+  width: 2px;
+  height: 2px;
+  left: -1px;
+  top: -1px;
+  background: #e6f1ff;
+}
+
+/* --- hitmarker (X; red + bolder on headshot) ---------------------------------- */
+
+.hitmarker {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: 0;
+  opacity: 0;
+}
+
+.hitmarker .leg {
+  position: absolute;
+  width: 2px;
+  height: 10px;
+  left: -1px;
+  top: -5px;
+  background: #fff;
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.9);
+}
+
+.leg1 {
+  transform: translate(-8px, -8px) rotate(45deg);
+}
+
+.leg2 {
+  transform: translate(8px, -8px) rotate(-45deg);
+}
+
+.leg3 {
+  transform: translate(-8px, 8px) rotate(-45deg);
+}
+
+.leg4 {
+  transform: translate(8px, 8px) rotate(45deg);
+}
+
+.hitmarker.hs .leg {
+  height: 13px;
+  top: -6.5px;
+  background: #ff4040;
+  box-shadow: 0 0 6px rgba(255, 50, 50, 0.9);
+}
+
+.hitmarker.show {
+  animation: gg-hit 0.22s ease-out forwards;
+}
+
+@keyframes gg-hit {
+  0% {
+    opacity: 1;
+    transform: scale(1.25);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1);
+  }
+}
+
+/* --- health (bottom left) ------------------------------------------------------ */
+
+.hp-wrap {
+  position: absolute;
+  left: 22px;
+  bottom: 22px;
+  width: 240px;
+}
+
+.hp-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 6px;
+}
+
+.hp-lbl {
+  font-size: 11px;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--gg-text-dim);
+}
+
+.hp-num {
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--gg-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.hp-bar {
+  height: 10px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid var(--gg-line);
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.hp-fill {
+  height: 100%;
+  width: 100%;
+  background: linear-gradient(90deg, #3ecf6e, #7ee89b);
+  border-radius: 4px;
+  transition: width 0.15s ease-out;
+}
+
+.hp-fill.warn {
+  background: linear-gradient(90deg, #e0a23c, #f4c96b);
+}
+
+.hp-fill.low {
+  background: linear-gradient(90deg, #d33333, #ff6b5e);
+}
+
+/* --- ammo (bottom right) -------------------------------------------------------- */
+
+.ammo-wrap {
+  position: absolute;
+  right: 22px;
+  bottom: 22px;
+  text-align: right;
+}
+
+.wname {
+  font-size: 12px;
+  letter-spacing: 0.26em;
+  text-transform: uppercase;
+  color: var(--gg-text-dim);
+  margin-bottom: 2px;
+}
+
+.ammo-line {
+  font-size: 30px;
+  font-weight: 800;
+  color: var(--gg-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.ammo-line .sep {
+  margin: 0 6px;
+  color: var(--gg-text-dim);
+  font-weight: 400;
+}
+
+.ammo-line .reserve {
+  font-size: 20px;
+  color: var(--gg-text-dim);
+}
+
+.reload-note {
+  font-size: 12px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--gg-gold);
+  margin-top: 4px;
+  opacity: 0;
+}
+
+.ammo-wrap.reloading .reload-note {
+  animation: gg-blink 0.9s ease-in-out infinite;
+}
+
+@keyframes gg-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+
+/* ==========================================================================
+   MENUS — interactive screens (each re-enables pointer-events on itself)
+   ========================================================================== */
+
+.menu-root {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.screen {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  background: radial-gradient(
+    ellipse at center,
+    rgba(5, 8, 14, 0.62) 0%,
+    rgba(2, 4, 8, 0.88) 100%
+  );
+  backdrop-filter: blur(5px);
+  -webkit-backdrop-filter: blur(5px);
+}
+
+.screen.visible {
+  display: flex;
+}
+
+.screen-pause {
+  background: radial-gradient(
+    ellipse at center,
+    rgba(5, 8, 14, 0.45) 0%,
+    rgba(2, 4, 8, 0.75) 100%
+  );
+}
+
+.screen-gameover {
+  background: radial-gradient(
+    ellipse at center,
+    rgba(30, 4, 4, 0.7) 0%,
+    rgba(4, 1, 2, 0.92) 100%
+  );
+}
+
+/* --- panel + typography ------------------------------------------------------- */
+
+.panel {
+  width: min(480px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  background: var(--gg-panel);
+  border: 1px solid var(--gg-line);
+  border-radius: 12px;
+  padding: 34px 38px;
+  box-shadow:
+    0 18px 60px rgba(0, 0, 0, 0.6),
+    inset 0 0 0 1px rgba(127, 178, 255, 0.05);
+}
+
+.kicker {
+  font-size: 11px;
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: var(--gg-accent);
+  text-align: center;
+  margin-bottom: 6px;
+}
+
+.kicker.danger {
+  color: var(--gg-danger);
+}
+
+.game-title {
+  margin: 0 0 6px;
+  text-align: center;
+  font-size: 52px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  color: #f2f7ff;
+  text-shadow: 0 0 28px rgba(127, 178, 255, 0.35);
+}
+
+.tagline {
+  margin: 0 0 26px;
+  text-align: center;
+  font-size: 14px;
+  color: var(--gg-text-dim);
+}
+
+.screen-title {
+  margin: 0 0 18px;
+  text-align: center;
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #f2f7ff;
+}
+
+.died-title {
+  color: #ff6b5e;
+  text-shadow: 0 0 26px rgba(255, 60, 60, 0.4);
+}
+
+.hint {
+  margin: 18px 0 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--gg-text-dim);
+  line-height: 1.6;
+}
+
+.settings-tip {
+  margin: 14px 0 0;
+  text-align: center;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--gg-text-dim);
+}
+
+/* --- buttons ---------------------------------------------------------------------- */
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.btn {
+  appearance: none;
+  width: 100%;
+  padding: 13px 18px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--gg-text);
+  background: #101a2b;
+  border: 1px solid #2b3d5c;
+  border-radius: 8px;
+  cursor: pointer;
+  transition:
+    background 0.12s,
+    border-color 0.12s,
+    box-shadow 0.12s,
+    transform 0.06s;
+}
+
+.btn:hover {
+  background: #182641;
+  border-color: var(--gg-accent);
+  box-shadow: 0 0 14px var(--gg-accent-dim);
+}
+
+.btn:active {
+  transform: translateY(1px);
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--gg-accent);
+  outline-offset: 2px;
+}
+
+.btn-primary {
+  background: linear-gradient(180deg, #3d69b8, #2a4a86);
+  border-color: #5f8ede;
+  color: #fff;
+}
+
+.btn-primary:hover {
+  background: linear-gradient(180deg, #4a7ad0, #31569b);
+  box-shadow: 0 0 18px var(--gg-accent-dim);
+}
+
+.btn-small {
+  width: auto;
+  align-self: center;
+  padding: 8px 14px;
+  font-size: 12px;
+}
+
+.lang-btn {
+  min-width: 130px;
+  text-align: center;
+}
+
+/* --- settings rows ------------------------------------------------------------------ */
+
+.settings-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-bottom: 6px;
+}
+
+.setting-row {
+  display: grid;
+  grid-template-columns: 150px 1fr 64px;
+  align-items: center;
+  gap: 12px;
+}
+
+.setting-label {
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  color: var(--gg-text);
+}
+
+.setting-input {
+  width: 100%;
+  accent-color: var(--gg-accent);
+  cursor: pointer;
+  margin: 0;
+}
+
+.setting-value {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--gg-accent);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- how-to-play key table ------------------------------------------------------------ */
+
+.keytable {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 6px;
+}
+
+.keytable th {
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--gg-text-dim);
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--gg-line);
+}
+
+.keytable td {
+  padding: 8px 10px;
+  border-bottom: 1px dashed rgba(36, 51, 77, 0.6);
+  font-size: 14px;
+  color: var(--gg-text);
+}
+
+.keytable tr:last-child td {
+  border-bottom: none;
+}
+
+.kbd {
+  display: inline-block;
+  padding: 2px 10px;
+  background: #0b1322;
+  border: 1px solid #33465f;
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12.5px;
+  color: #cfe0ff;
+  white-space: nowrap;
+}
+
+/* --- game-over stats --------------------------------------------------------------------- */
+
+.stats {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 4px 0 22px;
+}
+
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--gg-line);
+  border-radius: 8px;
+}
+
+.stat-label {
+  font-size: 12px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--gg-text-dim);
+}
+
+.stat-value {
+  font-size: 26px;
+  font-weight: 800;
+  color: var(--gg-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-row.high .stat-value {
+  color: var(--gg-gold);
+}
