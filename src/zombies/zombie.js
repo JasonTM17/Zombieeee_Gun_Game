@@ -26,6 +26,16 @@
  *   player.damage(dmg) once every 1 s (per-zombie attack timer).
  * - a dead zombie only runs its death animation and ignores everything else.
  *
+ * EXPANSION (docs/EXPANSION.md C3) — gate pathing: when the straight line to
+ * the player is wall-blocked (sampled exactly like _hasLineOfSight) AND the
+ * two are in DIFFERENT areas (level.sameArea: arena vs north vs east zone),
+ * the zombie heads for a gate waypoint first (level.getGateWaypoints) and
+ * only then resumes the direct chase — a cheap 2-step path. The waypoint is
+ * picked among the gates reachable in a straight line, nearest to the PLAYER
+ * (falling back to the nearest gate overall). Same-area chases keep the old
+ * steering + collider-slide untouched; the decision is replanned every
+ * GATE_RECHECK seconds per zombie, never per frame.
+ *
  * takeDamage(d, headshot):
  * - hp -= d; flash red 100 ms.
  * - The HIT SOUND is played by combat.js (audio.zombieHit) — this method must
@@ -75,6 +85,9 @@ const DEATH_TIME = 1.5; // spec: fall + sink + fade over 1.5 s
 const BASE_RADIUS = 0.4; // collider radius at scale 1 (scaled per type)
 const TORSO_Y = 0.78; // waist pivot height in model space
 const GAIT_RATE = 3.4; // walk-phase radians per meter actually travelled
+// --- expansion C3: gate pathing (docs/EXPANSION.md) ---------------------------
+const GATE_RECHECK = 0.3; // seconds between gate-path replans (cheap, staggered)
+const GATE_REACH2 = 0.8 * 0.8; // squared: "at the waypoint" → chase the player again
 
 // Geometries are shared across ALL zombie instances (allocated once per page —
 // the contract explicitly allows sharing geometries). Materials are
@@ -201,6 +214,11 @@ export class Zombie {
     this.deathT = -1; // >= 0 while the death animation runs
     this._torn = false; // teardown guard (dispose is idempotent)
     this._gone = false; // "zombie-despawned" already emitted
+
+    // Gate pathing state (expansion C3): current {x, z} waypoint target or
+    // null; _gateT is the replan countdown (0 → plan on the first update).
+    this._gateT = 0;
+    this._gateTarget = null;
   }
 
   /**
@@ -240,13 +258,35 @@ export class Zombie {
       dist = Math.sqrt(dx * dx + dz * dz);
     }
 
-    // --- steering: approach the player + separation from the horde ----------
+    // --- gate pathing (expansion C3): reroute through a fence gate when a ---
+    // wall separates this zombie from the player. Replanned every
+    // GATE_RECHECK seconds; the cached waypoint drops once reached.
+    let gate = null;
+    if (canChase && level && typeof level.getGateWaypoints === "function") {
+      const t = this._gateTarget;
+      if (t) {
+        const gdx = t.x - pos.x;
+        const gdz = t.z - pos.z;
+        if (gdx * gdx + gdz * gdz < GATE_REACH2) this._gateTarget = null; // arrived
+      }
+      this._gateT -= dt;
+      if (this._gateT <= 0) {
+        this._gateT = GATE_RECHECK;
+        this._gateTarget = this._planGatePath(ppos.x, ppos.z, level);
+      }
+      gate = this._gateTarget;
+    }
+
+    // --- steering: approach the player (or the gate waypoint) + separation --
     let vx = 0;
     let vz = 0;
-    if (canChase && dist > HOLD_RANGE) {
-      const inv = this.speed / (dist || 1);
-      vx = dx * inv;
-      vz = dz * inv;
+    const tx = gate ? gate.x - pos.x : dx;
+    const tz = gate ? gate.z - pos.z : dz;
+    const tl = Math.sqrt(tx * tx + tz * tz);
+    if (canChase && (dist > HOLD_RANGE || gate) && tl > 1e-6) {
+      const inv = this.speed / tl;
+      vx = tx * inv;
+      vz = tz * inv;
     }
     if (others && others.length > 0) {
       const minD2 = SEPARATION_DIST * SEPARATION_DIST;
@@ -287,9 +327,9 @@ export class Zombie {
     const mz = pos.z - oldZ;
     const moved = Math.sqrt(mx * mx + mz * mz);
 
-    // --- face the player (shortest-arc smoothing) ----------------------------
-    if (canChase && dist > 1e-6) {
-      const target = Math.atan2(dx, dz); // model faces +Z at yaw 0
+    // --- face the steering target (player, or the gate while pathing) -------
+    if (canChase && tl > 1e-6) {
+      const target = Math.atan2(tx, tz); // model faces +Z at yaw 0
       let dYaw = target - this.group.rotation.y;
       dYaw = Math.atan2(Math.sin(dYaw), Math.cos(dYaw));
       this.group.rotation.y += dYaw * Math.min(1, dt * 8);
@@ -331,6 +371,59 @@ export class Zombie {
       if (level.isBlocked(pos.x + dx * t, pos.z + dz * t, 0.15)) return false;
     }
     return true;
+  }
+
+  /**
+   * Expansion C3 — decide whether this zombie must path through a gate and,
+   * if so, which waypoint to head for first. Returns null when the old
+   * straight chase applies. Called at most every GATE_RECHECK per zombie.
+   *
+   * Order of checks (cheap first):
+   * 1. zombie + player in the SAME area (level.sameArea) → old behavior; the
+   *    collider slide already handles props between them.
+   * 2. straight line to the player clear (sampled like _hasLineOfSight) →
+   *    straight chase (this includes walking through a gate gap directly).
+   * 3. otherwise pick among the gates reachable in a straight line the one
+   *    NEAREST THE PLAYER (contract C3); if none is reachable, the gate
+   *    nearest this zombie so the slide still makes progress.
+   *
+   * @param {number} px - player X
+   * @param {number} pz - player Z
+   * @param {import("../world/level.js").Level} level
+   * @returns {{x: number, z: number} | null} the waypoint target, if any
+   */
+  _planGatePath(px, pz, level) {
+    const pos = this.position;
+    if (typeof level.sameArea === "function" && level.sameArea(pos.x, pos.z, px, pz)) {
+      return null; // same connected area → original steering (contract C3)
+    }
+    if (this._hasLineOfSight(px, pz, level)) return null; // nothing between us
+    const gates = typeof level.getGateWaypoints === "function" ? level.getGateWaypoints() : null;
+    if (!gates || gates.length === 0) return null;
+    let best = null;
+    let bestPlayerD = Infinity;
+    let near = null;
+    let nearSelfD = Infinity;
+    for (let i = 0; i < gates.length; i++) {
+      const g = gates[i];
+      const sdx = g.x - pos.x;
+      const sdz = g.z - pos.z;
+      const sd = sdx * sdx + sdz * sdz;
+      if (sd < nearSelfD) {
+        nearSelfD = sd;
+        near = g;
+      }
+      if (this._hasLineOfSight(g.x, g.z, level)) {
+        const pdx = g.x - px;
+        const pdz = g.z - pz;
+        const pd = pdx * pdx + pdz * pdz;
+        if (pd < bestPlayerD) {
+          bestPlayerD = pd;
+          best = g;
+        }
+      }
+    }
+    return best || near;
   }
 
   /**
