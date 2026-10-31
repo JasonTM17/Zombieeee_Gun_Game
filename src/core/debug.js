@@ -41,6 +41,45 @@
  * }) => void} register - install the real api onto window.__game.
  */
 
+const DEBUG_KEYS = [
+  "startGame",
+  "getState",
+  "spawnZombie",
+  "damagePlayer",
+  "fireWeapon",
+  "switchWeapon",
+  "reload",
+  "giveAmmo",
+];
+
 export function createDebugHook() {
-  throw new Error("TODO: implement");
+  /** @type {Record<string, Function>} */
+  const methods = {};
+  for (const key of DEBUG_KEYS) {
+    methods[key] = () => ({ error: "not-registered" });
+  }
+
+  const hook = {
+    /**
+     * Install the real api. Later registrations win; unknown keys are
+     * ignored; already-registered methods are only replaced by functions.
+     * @param {Record<string, Function>} [api]
+     */
+    register(api) {
+      if (!api || typeof api !== "object") return;
+      for (const key of DEBUG_KEYS) {
+        if (typeof api[key] === "function") {
+          methods[key] = api[key];
+        }
+      }
+    },
+  };
+
+  // Exposed immediately (before register) as the SAME object that register
+  // mutates, so console calls never crash and upgrades apply in place.
+  if (typeof window !== "undefined") {
+    window.__game = methods;
+  }
+
+  return hook;
 }
