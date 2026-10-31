@@ -12,33 +12,115 @@
  *   Headshot pays +50% (×1.5), rounded to an integer. Unknown types pay 0.
  * - EVERY change emits "money-changed" {money, delta} on the bus:
  *   money = the NEW balance, delta = the signed amount just applied
- *   (negative for spend).
- * - get() → the current balance (number, starts at 0).
- * - add(n) → balance += n (emits "money-changed").
+ *   (negative for spend). A no-op (delta 0) emits nothing.
+ * - get() → the current balance (number, starts at 0, always an integer ≥ 0).
+ * - add(n) → balance += n (emits "money-changed"); non-finite n is ignored,
+ *   the balance is rounded to an integer and clamped at 0.
  * - spend(n) → boolean: true when the balance covered n and it was deducted
  *   (emits "money-changed" with a negative delta); false when insufficient —
- *   the balance is left untouched and NO event is emitted.
- * - reset() → balance back to 0. Fresh runs reset money (main.js either calls
- *   economy.reset() or gamestate listens for the restart).
+ *   the balance is left untouched and NO event is emitted. Non-finite / n ≤ 0
+ *   → false.
+ * - reset() → balance back to 0 (emits once when the balance was non-zero).
  *
- * Bus events consumed: "zombie-killed" (money rewards).
+ * Fresh-run reset: main.js calls economy.reset() on fresh runs; this module
+ * ALSO listens "ui-play" / "ui-restart" (menu PLAY / PLAY AGAIN / RESTART —
+ * the only fresh-run entry points on the bus) as a defensive duplicate.
+ * reset() is idempotent, so double-resetting is harmless. It deliberately does
+ * NOT listen "state-changed": resume of a kill-less run also reports
+ * state "playing" with score 0 and must not wipe the balance.
+ *
+ * The balance is intentionally kept as an integer (rewards are integers,
+ * the +50% headshot rounds once) so HUD/shop display never shows fractions.
+ *
+ * Bus events consumed: "zombie-killed" (money rewards), "ui-play"/"ui-restart"
+ * (defensive fresh-run reset).
  * Bus events emitted: "money-changed" {money, delta}.
  *
- * @param {EventTarget} bus - the shared bus exported by src/systems/gamestate.js.
+ * @param {EventTarget} bus - the shared bus exported by src/systems/gamestate.js
+ *   (falls back to the module-level shared bus when omitted, like gamestate).
  * @returns {Economy}
  */
 
 /**
  * @typedef {Object} Economy
- * @property {() => number} get - the current money balance (starts at 0).
+ * @property {() => number} get - the current money balance (integer ≥ 0).
  * @property {(n: number) => void} add - add n to the balance (emits
- *   "money-changed" {money, delta}).
+ *   "money-changed" {money, delta} when the balance actually changes).
  * @property {(n: number) => boolean} spend - deduct n when affordable
  *   (true + "money-changed"); otherwise false, balance untouched, no event.
  * @property {() => void} reset - balance back to 0.
  */
 
+import { bus as sharedBus } from "./gamestate.js";
+
+// Money reward per kill TYPE (spec — walker/runner/brute + the four bosses).
+const REWARDS = {
+  walker: 50,
+  runner: 75,
+  brute: 200,
+  butcher: 1000,
+  spitter: 800,
+  screamer: 700,
+  golem: 1500,
+};
+
+const HEADSHOT_MULT = 1.5; // +50% for a headshot kill, rounded once below
+
 export function createEconomy(bus) {
-  void bus;
-  throw new Error("TODO: implement");
+  const B = bus || sharedBus;
+
+  let money = 0;
+
+  /** One "money-changed" {money, delta} for an applied (non-zero) delta. */
+  function emit(delta) {
+    if (delta === 0) return; // no change → no event
+    B.dispatchEvent(
+      new CustomEvent("money-changed", { detail: { money, delta } })
+    );
+  }
+
+  function get() {
+    return money;
+  }
+
+  function add(n) {
+    const v = Number(n);
+    if (!Number.isFinite(v) || v === 0) return;
+    const prev = money;
+    money = Math.max(0, Math.round(prev + v));
+    emit(money - prev);
+  }
+
+  function spend(n) {
+    const v = Number(n);
+    if (!Number.isFinite(v) || v <= 0) return false;
+    if (money < v) return false; // insufficient — untouched, no event
+    money = Math.round(money - v);
+    emit(-Math.round(v));
+    return true;
+  }
+
+  function reset() {
+    if (money === 0) return; // idempotent (main may also call reset())
+    const prev = money;
+    money = 0;
+    emit(-prev);
+  }
+
+  // Kills pay money by TYPE (score is the point value — deliberately unused).
+  B.addEventListener("zombie-killed", (e) => {
+    const d = e && e.detail ? e.detail : {};
+    const base = REWARDS[d.type];
+    if (!base) return; // unknown type pays 0
+    const amount = Math.round(base * (d.headshot ? HEADSHOT_MULT : 1));
+    add(amount);
+  });
+
+  // Defensive fresh-run reset (main.js's economy.reset() stays the canonical
+  // call — both paths are idempotent). "ui-play" covers PLAY and PLAY AGAIN.
+  const freshRun = () => reset();
+  B.addEventListener("ui-play", freshRun);
+  B.addEventListener("ui-restart", freshRun);
+
+  return { get, add, spend, reset };
 }
