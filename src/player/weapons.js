@@ -39,6 +39,11 @@
  *    no auto reload. Pistol reserve is Infinity → always > 0 (Infinity-safe:
  *    only comparisons and Math.min are ever used on it).
  *
+ *    The debug fire path (__game.fireWeapon in main.js) does NOT run fire()
+ *    — main.js decrements the mag and routes combat/explosives itself — so
+ *    main.js arms the same pending reload through the armAutoReloadAfterShot()
+ *    extra to stay at feature-A parity with the live trigger.
+ *
  * MINIGUN (expansion integration note 4): holding the trigger spins the
  * barrels for 0.6 s before the first round leaves; while spinning below the
  * threshold no shot is emitted. The spin state RESETS when the trigger is
@@ -153,6 +158,12 @@
  *   mark the weapon `name` owned and hand it a full mag + startReserve.
  *   Idempotent; returns false for an unknown name. The shop's weapon
  *   purchases and the debug buyWeapon() call this (or set owned directly).
+ * @property {() => void} armAutoReloadAfterShot
+ *   EXPANSION debug surface (beyond the frozen contract, like reset()/
+ *   unlock()): arm the one-shot pending auto-reload exactly as fire() would
+ *   after a shot that empties the ACTIVE weapon's mag (feature A case 1) —
+ *   no-op unless mag === 0 && reserve > 0. __game.fireWeapon() in main.js
+ *   bypasses fire(), so main.js calls this after each debug shot.
  * @property {() => WeaponState} getState
  *   The ACTIVE weapon's state; HUD/debug use at least
  *   {name, mag, magSize, reserve, reloading, spread}.
@@ -641,6 +652,17 @@ export function createWeapons(camera, input, audio, bus) {
   vmRoot.add(muzzleLight);
 
   // --- firing -----------------------------------------------------------------
+  // FEATURE A case 1 (shared): a shot that empties the mag with spare ammo
+  // arms the ONE-SHOT pending auto-reload 0.35 s out (Infinity-safe: the
+  // pistol's reserve is Infinity and only a comparison is ever used on it).
+  // Called from fire() after every real trigger shot AND exposed as the
+  // armAutoReloadAfterShot() extra for __game.fireWeapon() — that debug path
+  // in main.js bypasses fire() and must keep feature-A parity on its own.
+  function armAutoReloadAfterShot() {
+    const w = list[current];
+    if (w.mag === 0 && w.reserve > 0) autoReloadT = AUTO_RELOAD_DELAY;
+  }
+
   function fire() {
     const w = list[current];
     const cfg = WEAPONS[current];
@@ -662,7 +684,7 @@ export function createWeapons(camera, input, audio, bus) {
     else audio.gunshot(w.name);
     // FEATURE A case 1: the shot that emptied the mag arms a one-shot
     // auto-reload 0.35 s out (reserve > 0; Infinity-safe comparison).
-    if (w.mag === 0 && w.reserve > 0) autoReloadT = AUTO_RELOAD_DELAY;
+    armAutoReloadAfterShot();
   }
 
   // --- switching / reloading ----------------------------------------------------
@@ -902,6 +924,7 @@ export function createWeapons(camera, input, audio, bus) {
     reload,
     reset,   // extra, beyond the contract — see note above
     unlock,  // extra, beyond the contract — shop integration (see header)
+    armAutoReloadAfterShot, // extra — debug fire path (see note above fire())
     getState: () => list[current],
   };
 }

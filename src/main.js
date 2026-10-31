@@ -563,6 +563,12 @@ const debugApi = {
     // weapons.js (audio.gunshot has no voice for them — it would fall through
     // to the pistol crack), and the grenade's boom belongs to explosives.js.
     if (!SYNTH_GUNS[w.name]) audio.gunshot(w.name);
+    // FEATURE A case 1 parity: the live trigger arms its one-shot auto-reload
+    // inside weapons.fire(); this debug shot bypassed fire(), so arm it here
+    // under the same condition (mag just hit 0, reserve > 0 — weapons.js
+    // checks, main.js does not duplicate the rule). A mag-emptying debug shot
+    // must reload 0.35 s later exactly like a live one.
+    weapons.armAutoReloadAfterShot();
     return { fired: true, ammo: w.mag };
   },
 
