@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gun Game</title>
+    <link rel="stylesheet" href="/src/style.css" />
+    <style>
+      /* Base look only — src/style.css (written later by the UI agent)
+         overrides/extends this. Dark night background per scaffold spec. */
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #05070c;
+        overflow: hidden;
+      }
+      canvas {
+        display: block;
+      }
+      /* Overlay root for HUD + menus. Interactive panels (menus) must
+         re-enable pointer-events themselves — see src/ui/menus.js contract. */
+      #ui {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        font-family: system-ui, sans-serif;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="ui"></div>
+    <canvas id="game"></canvas>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
