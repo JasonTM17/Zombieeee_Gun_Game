@@ -3,8 +3,11 @@
  *
  * Key identifiers are `KeyboardEvent.code` strings: "KeyW", "KeyA", "KeyS",
  * "KeyD", "ShiftLeft"/"ShiftRight", "Space", "KeyR", "KeyP", "Escape",
- * "Digit1", "Digit2", "Digit3". Mouse buttons are addressable as "Mouse0"
+ * "KeyB", "Digit1"…"Digit7". Mouse buttons are addressable as "Mouse0"
  * (left / fire), "Mouse1" (middle), "Mouse2" (right) for isDown().
+ * Digit4…Digit7 need NO extra plumbing (EXPANSION C7): wasPressed() already
+ * forwards EVERY KeyboardEvent.code one-shot, so weapons.js polls Digit4..7
+ * exactly like the existing Digit1..3.
  *
  * Bus events emitted (the shared bus lives in src/systems/gamestate.js):
  * - "pause-toggle" — exactly ONCE per Esc or P press. NOTE: the browser
@@ -12,6 +15,26 @@
  *   that keydown), so the implementation must also watch pointerlockchange
  *   and emit through that path, deduplicated so one Esc press yields exactly
  *   one event (P always emits via keydown; auto-repeat must not re-emit).
+ * - "shop-toggle" — per keydown of B (auto-repeat ignored) while a run is
+ *   live (state "playing") and the shop is NOT already open.
+ *
+ * Shop coordination (EXPANSION C7 + integration note 1 in docs/EXPANSION.md):
+ * - This module tracks the overlay via bus "shop-open" / "shop-closed"
+ *   (emitted by the shop UI per its own spec).
+ * - While the shop is open the pointer lock is EXPECTED to be released (the
+ *   overlay needs the cursor), so the pointerlockchange path must NOT emit
+ *   "pause-toggle" — that would strand an orphan "user" pause reason. Esc and
+ *   B likewise do not pause / re-lock: the shop UI owns BOTH keys while it is
+ *   open ("Esc/B khi shop mở = đóng shop") and this module stays silent, so
+ *   one keypress can never toggle the overlay twice.
+ * - B is only forwarded from a live run ("playing"): the main menu and the
+ *   game-over screen have no shop, and from the pause menu the shop overlay
+ *   would stack on top of the pause panel.
+ * - On "shop-closed" while the run is playing, the pointer is re-locked
+ *   inside the same synchronous bus dispatch (= the same user gesture — the
+ *   same pattern as the Esc/P resume path), so closing the shop hands the
+ *   cursor straight back to the game instead of leaving it unlocked until
+ *   the next canvas click.
  *
  * Wiring note: `createInput` intentionally takes NO bus parameter (signature
  * frozen by spec) — the shared `bus` singleton is imported below from
@@ -81,6 +104,7 @@ export function createInput(canvas, settings) {
   let wheel = 0;
   let lastPauseEmit = -Infinity;
   let lastKnownState = "menu";
+  let shopOpen = false; // tracked via bus "shop-open"/"shop-closed" — see header
 
   const isLockedNow = () =>
     typeof document !== "undefined" && document.pointerLockElement === canvas;
@@ -111,13 +135,17 @@ export function createInput(canvas, settings) {
     down.add(e.code);
     pressed.add(e.code);
     if (e.code === "Escape") {
-      // Usually swallowed by the browser when it exits pointer lock, but if
-      // it IS delivered (unlocked menu), emit here; the pointerlockchange
-      // path below dedupes against it. Esc from the pause menu resumes, so
-      // re-grab the lock with this same keypress gesture.
-      const wasState = lastKnownState;
-      emitPauseOnce();
-      if (wasState === "paused") lockPointer();
+      // While the shop overlay is open, Esc belongs to the shop UI (close the
+      // shop) — no pause emission and no re-lock from here.
+      if (!shopOpen) {
+        // Usually swallowed by the browser when it exits pointer lock, but if
+        // it IS delivered (unlocked menu), emit here; the pointerlockchange
+        // path below dedupes against it. Esc from the pause menu resumes, so
+        // re-grab the lock with this same keypress gesture.
+        const wasState = lastKnownState;
+        emitPauseOnce();
+        if (wasState === "paused") lockPointer();
+      }
     } else if (e.code === "KeyP") {
       // P while playing -> pause: free the cursor for the pause menu.
       // P while paused -> resume: re-grab the lock with the same gesture
@@ -126,6 +154,13 @@ export function createInput(canvas, settings) {
       emitPauseOnce(); // synchronously flips lastKnownState via state-changed
       if (wasState === "playing") releasePointerLock();
       else if (wasState === "paused") lockPointer();
+    } else if (e.code === "KeyB") {
+      // B = shop toggle (EXPANSION C7). Only from a live run and only when
+      // the shop is closed — while it is open the shop UI handles B itself
+      // (see the shop-coordination notes in the header).
+      if (!shopOpen && lastKnownState === "playing") {
+        bus.dispatchEvent(new CustomEvent("shop-toggle"));
+      }
     }
   });
 
@@ -174,6 +209,10 @@ export function createInput(canvas, settings) {
   document.addEventListener("pointerlockchange", () => {
     const locked = isLockedNow();
     if (!locked) {
+      // The shop releasing the lock is EXPECTED (its overlay needs the
+      // cursor) — treating it as a pause would strand an orphan "user"
+      // pause reason (docs/EXPANSION.md integration note 1).
+      if (shopOpen) return;
       // Lock lost: an Esc press the page never saw, or our own release on
       // pause/state change. Emit exactly once — the dedupe window absorbs
       // the case where the Esc keydown was also delivered.
@@ -185,12 +224,27 @@ export function createInput(canvas, settings) {
   bus.addEventListener("state-changed", (e) => {
     const detail = e && e.detail ? e.detail : {};
     lastKnownState = detail.state || lastKnownState;
+    if (lastKnownState === "menu") shopOpen = false; // safety: no shop outside a run
     if (lastKnownState !== "playing") releasePointerLock();
+  });
+
+  // Shop overlay lifecycle (see the header for the full protocol). The
+  // "shop-closed" re-lock runs inside the same synchronous bus dispatch as
+  // the shop UI's keydown handler → same user gesture → valid Pointer Lock
+  // request (double-request with any main.js wiring is harmless — the
+  // rejection is swallowed below).
+  bus.addEventListener("shop-open", () => {
+    shopOpen = true;
+  });
+  bus.addEventListener("shop-closed", () => {
+    shopOpen = false;
+    if (lastKnownState === "playing") lockPointer();
   });
 
   // Recovery path: playing but lock was refused (e.g. re-lock cooldown right
   // after Esc) — a click on the canvas is a fresh user gesture.
   canvas.addEventListener("click", () => {
+    if (shopOpen) return; // clicks belong to the shop overlay buttons
     if (lastKnownState === "playing" && !isLockedNow()) lockPointer();
   });
 
