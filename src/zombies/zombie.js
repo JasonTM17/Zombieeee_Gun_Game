@@ -52,6 +52,17 @@
  *   emits "zombie-despawned" {zombie} on the bus (main.js drops it from the
  *   shared array; waves drops it from its internal list).
  *
+ * NIGHT 30 P2 (docs/EXPANSION-P2.md §5) — ZOMBIE VOICES (additive): at every
+ * state transition + takeDamage + death this zombie emits
+ * "zombie-voice" {kind: "idle"|"alert"|"chase"|"attack"|"pain"|"death",
+ * type, position: Vector3 clone} on the bus; src/core/audio.js synthesizes
+ * the actual 3D-mixed sound (volume + stereo pan, cap 8 — no files). Idle
+ * moans run on a random 6–14 s timer while alive; chase calls cycle per type
+ * (walker 2.4 / runner 1.3 / brute 3.2 s); pain is throttled ≥ 0.4 s per
+ * zombie (P2-K4) and skipped on the killing blow (the death voice covers that
+ * moment) — the P1 rule above still holds: takeDamage NEVER plays a sound
+ * directly. Steering / animation / collision paths are untouched.
+ *
  * Instance surface consumed by other modules (waves/combat/main):
  *   type, hp, alive, group (THREE.Group), position (Vector3, mirrors group),
  *   update(dt, player, level, others), takeDamage(d, headshot), dispose().
@@ -88,6 +99,13 @@ const GAIT_RATE = 3.4; // walk-phase radians per meter actually travelled
 // --- expansion C3: gate pathing (docs/EXPANSION.md) ---------------------------
 const GATE_RECHECK = 0.3; // seconds between gate-path replans (cheap, staggered)
 const GATE_REACH2 = 0.8 * 0.8; // squared: "at the waypoint" → chase the player again
+// --- NIGHT 30 P2 (docs/EXPANSION-P2.md §5.1): voice pacing --------------------
+const VOICE_CHASE_CYCLE = { walker: 2.4, runner: 1.3, brute: 3.2 }; // s between chase calls
+const VOICE_BOSS_SCALE = 1.5; // bosses talk less: cycles ×1.5 (idle 9–21 s, chase 4.8 s)
+const VOICE_ALERT_RANGE = 18; // first-sight growl inside this + line of sight
+const VOICE_ALERT_REARM = 30; // the alert growl re-arms beyond this distance
+const VOICE_CHASE_RANGE = 30; // chase calls (and idle deferral) use this range
+const VOICE_PAIN_CD = 0.4; // pain-voice throttle per zombie (P2-K4)
 
 // Geometries are shared across ALL zombie instances (allocated once per page —
 // the contract explicitly allows sharing geometries). Materials are
@@ -219,6 +237,14 @@ export class Zombie {
     // null; _gateT is the replan countdown (0 → plan on the first update).
     this._gateT = 0;
     this._gateTarget = null;
+
+    // Voice emit state (NIGHT 30 P2 §5.1, additive — no behavior change):
+    // idle-moan countdown (6–14 s), chase-call cycle, pain throttle and the
+    // one-shot alert arming flag. Bosses retune the cycles in _voiceTick.
+    this._voiceIdleT = 6 + Math.random() * 8;
+    this._voiceChaseT = 0;
+    this._voicePainCd = 0;
+    this._voiceAlertArmed = true;
   }
 
   /**
@@ -327,6 +353,10 @@ export class Zombie {
     const mz = pos.z - oldZ;
     const moved = Math.sqrt(mx * mx + mz * mz);
 
+    // NIGHT 30 P2 §5.1: voice state machine (idle moan / alert / chase calls).
+    // Reads only — it never touches the steering or animation state below.
+    this._voiceTick(dt, canChase, dist, moved, ppos, level);
+
     // --- face the steering target (player, or the gate while pathing) -------
     if (canChase && tl > 1e-6) {
       const target = Math.atan2(tx, tz); // model faces +Z at yaw 0
@@ -339,6 +369,7 @@ export class Zombie {
     if (canChase && dist < ATTACK_RANGE && this.attackCd <= 0 && this._hasLineOfSight(ppos.x, ppos.z, level)) {
       this.attackCd = ATTACK_COOLDOWN;
       this.attackAnimT = ATTACK_ANIM;
+      this._voiceEmit("attack"); // NIGHT 30 P2 §5.1: voice at the swing
       if (typeof player.damage === "function") player.damage(this.dmg);
     }
 
@@ -426,6 +457,85 @@ export class Zombie {
     return best || near;
   }
 
+  // --- NIGHT 30 P2 §5.1: voice emit helpers (additive) ------------------------
+
+  /**
+   * Emit one "zombie-voice" event (P2-K16 payload shape). audio.js owns all
+   * synthesis + 3D mixing — this only announces WHAT to play and WHERE.
+   * @param {"idle"|"alert"|"chase"|"attack"|"pain"|"death"} kind
+   * @returns {void}
+   */
+  _voiceEmit(kind) {
+    if (!this.bus || typeof this.bus.dispatchEvent !== "function") return;
+    this.bus.dispatchEvent(
+      new CustomEvent("zombie-voice", {
+        detail: { kind, type: this.type, position: this.position.clone() },
+      })
+    );
+  }
+
+  /** Idle-moan period: 6–14 s; ×1.5 for boss subclasses (9–21 s, P2 §5.2). */
+  _voiceIdleSpan() {
+    const base = 6 + Math.random() * 8;
+    return VOICE_CHASE_CYCLE[this.type] ? base : base * VOICE_BOSS_SCALE;
+  }
+
+  /** Chase-call period: walker 2.4 / runner 1.3 / brute 3.2 s; bosses ×1.5. */
+  _voiceChaseSpan() {
+    const base = VOICE_CHASE_CYCLE[this.type] || VOICE_CHASE_CYCLE.brute;
+    return VOICE_CHASE_CYCLE[this.type] ? base : base * VOICE_BOSS_SCALE;
+  }
+
+  /**
+   * Voice state machine, called from update() once movement is resolved.
+   * Purely additive: reads state, throttles, emits bus events — it never
+   * writes anything the steering/animation/collision paths consume.
+   * @param {number} dt - seconds
+   * @param {boolean} canChase - false while the player is dead/absent
+   * @param {number} dist - XZ distance to the player (Infinity when !canChase)
+   * @param {number} moved - metres moved this frame (part of the §5.1
+   *   signature — the spitter call site passes it too; unused today)
+   * @param {import("three").Vector3|null} ppos - player position (may be null)
+   * @param {import("../world/level.js").Level|null} level - for LOS checks
+   * @returns {void}
+   */
+  _voiceTick(dt, canChase, dist, moved, ppos, level) {
+    if (this._voicePainCd > 0) this._voicePainCd -= dt; // takeDamage has no dt
+
+    // idle: a random 6–14 s moan while alive; DEFERRED while chasing close
+    // (dist < 30) so idle and chase calls never overlap (contract §5.1).
+    this._voiceIdleT -= dt;
+    if (this._voiceIdleT <= 0 && (!canChase || dist >= VOICE_CHASE_RANGE)) {
+      this._voiceIdleT = this._voiceIdleSpan();
+      this._voiceEmit("idle");
+    }
+
+    // alert: one growl per approach — close + line of sight; re-arms once the
+    // player falls far away again (or is gone).
+    if (!canChase || dist > VOICE_ALERT_REARM) {
+      this._voiceAlertArmed = true;
+    } else if (
+      this._voiceAlertArmed &&
+      dist < VOICE_ALERT_RANGE &&
+      ppos &&
+      this._hasLineOfSight(ppos.x, ppos.z, level)
+    ) {
+      this._voiceAlertArmed = false;
+      this._voiceEmit("alert");
+    }
+
+    // chase: periodic calls while actively running the player down.
+    if (canChase && dist < VOICE_CHASE_RANGE && this.gait > 0.5) {
+      this._voiceChaseT += dt;
+      if (this._voiceChaseT >= this._voiceChaseSpan()) {
+        this._voiceChaseT = 0;
+        this._voiceEmit("chase");
+      }
+    } else {
+      this._voiceChaseT = 0;
+    }
+  }
+
   /**
    * @param {number} d - damage amount
    * @param {boolean} headshot - true when the hit landed on the head (x2 already applied by combat)
@@ -439,6 +549,15 @@ export class Zombie {
     // Hurt flash — per-instance materials; NO sound here (combat.js owns it).
     this.flashT = FLASH_TIME;
     for (let i = 0; i < this._mats.length; i++) this._mats[i].emissive.setHex(0xd02020);
+    // NIGHT 30 P2 (§5.1, P2-K4): the pain voice is a BUS EVENT, not a direct
+    // sound — the rule above still holds (combat.js owns hit audio; one
+    // shotgun blast = 8 takeDamage calls). Throttled to ≥ 0.4 s per zombie
+    // (counted down in _voiceTick) and skipped on the killing blow — the
+    // death voice covers that moment, so a kill never stacks two voices.
+    if (this.hp > 0 && this._voicePainCd <= 0) {
+      this._voicePainCd = VOICE_PAIN_CD;
+      this._voiceEmit("pain");
+    }
     if (this.hp <= 0) {
       this._die(headshot === true);
       return true;
@@ -506,6 +625,7 @@ export class Zombie {
         })
       );
     }
+    this._voiceEmit("death"); // NIGHT 30 P2 §5.1: right after "zombie-killed"
   }
 
   /** Fall ~90° around local X, sink below the floor, fade — over 1.5 s. */

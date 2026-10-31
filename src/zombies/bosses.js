@@ -29,6 +29,17 @@
  *   {type, action} for main.js to route to audio (e.g. audio.zombieGrowl());
  *   again additive and unlistened by default.
  *
+ * NIGHT 30 P2 (docs/EXPANSION-P2.md §5.2) — BOSS VOICES (additive): bosses
+ * inherit the full "zombie-voice" state machine from Zombie (their cycles run
+ * ×1.5 — idle 9–21 s, chase 4.8 s; death voice comes free through the
+ * inherited _die). The three bosses that reuse Zombie.prototype.update
+ * (butcher/screamer/golem) get it for free; the SPITTER, which drives its own
+ * _act, calls _voiceTick explicitly. Specials emit "boss-roar" {type, action}
+ * with a NEW action "spit" (P2-K14) — since P2 audio.js listens to
+ * "boss-roar" itself and plays the per-boss recipes (windup → metal roar,
+ * spit → wet spit, shriek → high wail, slam → stone groan), so main.js no
+ * longer routes the event. Attack logic is untouched.
+ *
  * THE 4 BOSSES (spec numbers — DO NOT change):
  *
  *   butcher  — hp 1200×(1+wave/20), speed 2.0: every 6 s it WINDS UP for
@@ -555,12 +566,13 @@ export class SpitterBoss extends BossZombie {
     let vx = 0;
     let vz = 0;
     const canAct = !!(player && player.position && player.alive !== false);
+    let dist = Infinity; // NIGHT 30 P2 §5.2: hoisted for the _voiceTick call below
     if (canAct) {
       const px = player.position.x;
       const pz = player.position.z;
       const dx = px - this.position.x;
       const dz = pz - this.position.z;
-      const dist = Math.sqrt(dx * dx + dz * dz) || 1e-6;
+      dist = Math.sqrt(dx * dx + dz * dz) || 1e-6;
       const ux = dx / dist;
       const uz = dz / dist;
       // C3 parity (the other three bosses get this via Zombie.prototype.update):
@@ -598,12 +610,17 @@ export class SpitterBoss extends BossZombie {
     }
     const moved = this._moveXZ(vx, vz, dt, level);
     this._stepGait(moved, dt);
+    // NIGHT 30 P2 §5.2: the spitter bypasses the base update, so the voice
+    // state machine runs here — the same call the base update makes for the
+    // other three bosses (idle 9–21 s / chase 4.8 s cycles are ×1.5 inside).
+    this._voiceTick(dt, canAct, dist, moved, canAct ? player.position : null, level);
     this._updateShots(dt, player);
     this._updatePools(dt, player);
   }
 
   /** Launch a pooled acid projectile on a parabola that lands on the player. */
   _fireSpit(player, dist) {
+    this._roar("spit"); // NIGHT 30 P2 (P2-K14): the wet spit gets its own voice
     const geo = bossGeometries();
     let shot = null;
     for (let i = 0; i < this._shots.length; i++) {
