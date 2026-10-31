@@ -556,19 +556,38 @@ export class SpitterBoss extends BossZombie {
     let vz = 0;
     const canAct = !!(player && player.position && player.alive !== false);
     if (canAct) {
-      const dx = player.position.x - this.position.x;
-      const dz = player.position.z - this.position.z;
+      const px = player.position.x;
+      const pz = player.position.z;
+      const dx = px - this.position.x;
+      const dz = pz - this.position.z;
       const dist = Math.sqrt(dx * dx + dz * dz) || 1e-6;
       const ux = dx / dist;
       const uz = dz / dist;
-      // Keep the contract band: retreat inside 10 m, close beyond 16 m, hold
-      // inside the band (bosses do not take part in minion separation).
-      if (dist < KEEP_MIN) {
-        vx = -ux * this.speed;
-        vz = -uz * this.speed;
-      } else if (dist > KEEP_MAX) {
-        vx = ux * this.speed;
-        vz = uz * this.speed;
+      // C3 parity (the other three bosses get this via Zombie.prototype.update):
+      // when a wall separates the spitter from the player, steer for the gate
+      // waypoint instead — the raw toward/away vector grinds into the fence
+      // and sticks there forever (still spitting through the wall), breaking
+      // the spec'd "GIỮ khoảng cách 10–16 m". Replanning is cheap and the
+      // helpers self-guard (sameArea / LOS / missing level APIs → null).
+      const gate = level ? this._planGatePath(px, pz, level) : null;
+      if (gate) {
+        const gx = gate.x - this.position.x;
+        const gz = gate.z - this.position.z;
+        const gd = Math.sqrt(gx * gx + gz * gz) || 1e-6;
+        vx = (gx / gd) * this.speed;
+        vz = (gz / gd) * this.speed;
+        this._face(gx, gz, dt);
+      } else {
+        // Keep the contract band: retreat inside 10 m, close beyond 16 m, hold
+        // inside the band (bosses do not take part in minion separation).
+        if (dist < KEEP_MIN) {
+          vx = -ux * this.speed;
+          vz = -uz * this.speed;
+        } else if (dist > KEEP_MAX) {
+          vx = ux * this.speed;
+          vz = uz * this.speed;
+        }
+        this._face(dx, dz, dt);
       }
       this._tryMelee(player, level);
       this._spitCd -= dt;
@@ -576,7 +595,6 @@ export class SpitterBoss extends BossZombie {
         this._spitCd = SPIT_CD; // spec: every 2.5 s
         this._fireSpit(player, dist);
       }
-      this._face(dx, dz, dt);
     }
     const moved = this._moveXZ(vx, vz, dt, level);
     this._stepGait(moved, dt);

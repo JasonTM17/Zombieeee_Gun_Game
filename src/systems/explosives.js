@@ -33,9 +33,16 @@
  *   the shared zombie geometries; this module's contract has no dispose()).
  * - Zombie contact: fresh pass over the shared `zombies` array each update
  *   (never cached) — horizontal distance within (0.55·scale + 0.15) m and the
- *   shell below the zombie's head. Ground contact at y ≤ 0.08; walls are NOT
- *   a detonator (the spec lists zombie/ground/fuse only, and this factory's
- *   frozen signature has no level reference).
+ *   shell below the zombie's head. Ground contact at y ≤ 0.08.
+ * - Wall contact (review fix): SOLID LEVEL SURFACES ARE DETONATORS TOO. The
+ *   factory signature has no level reference, but level.js flags every static
+ *   surface mesh with userData.solid — walls, props, floors, gate frames — so
+ *   the projectile's per-frame segment is raycast against those meshes and a
+ *   hit snaps the blast to the wall face. Without it a grenade fired into
+ *   cover flew THROUGH the prop and detonated up to ~29 m away, making the
+ *   1200 $ launcher useless against cover. A backward ray catches shells that
+ *   spawned inside geometry (point-blank muzzles) which FrontSide culling
+ *   would let tunnel through.
  * - Blast damage basis: XZ distance from the blast center to the zombie's
  *   feet position — the arena is a flat ground plane and grenades land at
  *   ground level, so feet distance is the fair "mép vùng" measure.
@@ -257,6 +264,58 @@ export function createExplosives(scene, camera, zombies, particles, audio, bus) 
     return false;
   }
 
+  // --- solid level geometry (walls / props / floors / gates) --------------------
+  // The frozen signature has no level reference, but level.js marks every
+  // static surface mesh with userData.solid — those meshes ARE the walls.
+  const raycaster = new THREE.Raycaster();
+  const segOrigin = new THREE.Vector3();
+  const segDir = new THREE.Vector3();
+  let solidCache = null; // rescanned per shot (scene membership is dynamic)
+
+  /** Top-level scene meshes flagged userData.solid. */
+  function solidTargets() {
+    if (!solidCache) {
+      solidCache = [];
+      for (let i = 0; i < scene.children.length; i++) {
+        const o = scene.children[i];
+        if (o.userData && o.userData.solid === true) solidCache.push(o);
+      }
+    }
+    return solidCache;
+  }
+
+  /**
+   * True when the segment old → dest crosses a solid surface; dest is snapped
+   * to the hit point so the blast lands at the wall face, never behind it.
+   * @param {number} ox
+   * @param {number} oy
+   * @param {number} oz
+   * @param {import("three").Vector3} dest - mutated on a hit
+   */
+  function hitSolid(ox, oy, oz, dest) {
+    const dx = dest.x - ox;
+    const dy = dest.y - oy;
+    const dz = dest.z - oz;
+    const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (len < 1e-9) return false;
+    raycaster.near = 0;
+    raycaster.far = len;
+    raycaster.set(segOrigin.set(ox, oy, oz), segDir.set(dx / len, dy / len, dz / len));
+    const hits = raycaster.intersectObjects(solidTargets(), false);
+    if (hits.length > 0) {
+      dest.copy(hits[0].point);
+      return true;
+    }
+    // Forward ray clean but the segment STARTED inside geometry (point-blank
+    // muzzle): FrontSide culling let the exit face pass — ray back toward the
+    // origin to catch the missed entry.
+    raycaster.set(segOrigin.set(dest.x, dest.y, dest.z), segDir.set(-dx / len, -dy / len, -dz / len));
+    const back = raycaster.intersectObjects(solidTargets(), false);
+    if (back.length === 0) return false;
+    dest.copy(back[0].point);
+    return true;
+  }
+
   /**
    * Detonate at `pos`: AoE damage (linear falloff), particle burst, flash
    * light, camera shake, dedicated boom, "explosion" on the bus.
@@ -324,6 +383,7 @@ export function createExplosives(scene, camera, zombies, particles, audio, bus) 
       oz + dz * LAUNCH_OFFSET
     );
     scene.add(mesh);
+    solidCache = null; // rescan the solid meshes for this shot
     live.push({ mesh, vx: dx * SPEED, vy: dy * SPEED, vz: dz * SPEED, t: 0 });
   }
 
@@ -335,7 +395,11 @@ export function createExplosives(scene, camera, zombies, particles, audio, bus) 
     for (let i = live.length - 1; i >= 0; i--) {
       const p = live[i];
       const m = p.mesh;
+      let wallHit = false;
       if (dt > 0) {
+        const ox = m.position.x;
+        const oy = m.position.y;
+        const oz = m.position.z;
         p.t += dt;
         p.vy -= GRAVITY * dt;
         m.position.x += p.vx * dt;
@@ -343,8 +407,12 @@ export function createExplosives(scene, camera, zombies, particles, audio, bus) 
         m.position.z += p.vz * dt;
         m.rotation.x += dt * 9;
         m.rotation.z += dt * 7;
+        // Solid level surfaces (walls/props/floors/gates — userData.solid set
+        // by level.js) detonate the shell AT the surface; the ray covers the
+        // whole per-frame segment so 24 m/s cannot tunnel through a wall.
+        wallHit = hitSolid(ox, oy, oz, m.position);
       }
-      if (p.t >= FUSE || m.position.y <= GROUND_Y || hitZombie(m.position)) {
+      if (wallHit || p.t >= FUSE || m.position.y <= GROUND_Y || hitZombie(m.position)) {
         explode(m.position);
         scene.remove(m);
         const last = live.pop();

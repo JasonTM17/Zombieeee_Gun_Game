@@ -42,8 +42,46 @@ const DROP_CHANCE = 0.18;
 const AMMO_WEIGHT = 0.7; // of drops; the rest are health
 const MAGNET_RADIUS = 2;
 const COLLECT_RADIUS = 1;
-const ARENA_LIMIT = 29; // keep drops inside the playable area
 const BASE_Y = 0.55;
+
+// Playable rectangles: the main arena (1 m inside the wall face — the legacy
+// ARENA_LIMIT=29 clamp) plus the two expansion zones (feature C1). Bosses and
+// zombies can die inside a zone, so their GUARANTEED/rolled drops must land
+// there — clamping the old way to ±29 teleported a zone kill's drop up to
+// 16 m onto the main arena floor (C4 "Rơi CHẮC 1 medkit và 1 ammo" at the
+// wrong spot). MUST stay in sync with AREA_RECTS in src/world/level.js and
+// ZONE_DEFS in src/world/zones.js.
+const PLAY_RECTS = [
+  { minX: -29, maxX: 29, minZ: -29, maxZ: 29 }, // main arena
+  { minX: -15, maxX: 15, minZ: -54, maxZ: -30 }, // north zone "Sân sau"
+  { minX: 30, maxX: 54, minZ: -15, maxZ: 15 }, // east zone "Kho"
+];
+
+/**
+ * Nearest point of the union of PLAY_RECTS to (x, z): per rect, clamp the
+ * point onto it and keep the closest candidate. A point already inside any
+ * rect returns unchanged (distance 0) — legacy behavior for arena deaths.
+ * @param {number} x
+ * @param {number} z
+ * @returns {{x: number, z: number}}
+ */
+function clampToPlay(x, z) {
+  let bx = x;
+  let bz = z;
+  let best = Infinity;
+  for (let i = 0; i < PLAY_RECTS.length; i++) {
+    const r = PLAY_RECTS[i];
+    const cx = Math.min(r.maxX, Math.max(r.minX, x));
+    const cz = Math.min(r.maxZ, Math.max(r.minZ, z));
+    const d2 = (x - cx) * (x - cx) + (z - cz) * (z - cz);
+    if (d2 < best) {
+      best = d2;
+      bx = cx;
+      bz = cz;
+    }
+  }
+  return { x: bx, z: bz };
+}
 
 export function createPickups(scene, bus) {
   // --- shared geometry + materials (created once, reused for every drop) ------
@@ -101,11 +139,8 @@ export function createPickups(scene, bus) {
   function spawn(position, kind) {
     if (!position || (kind !== "ammo" && kind !== "health")) return;
     const item = acquire(kind);
-    item.group.position.set(
-      Math.min(ARENA_LIMIT, Math.max(-ARENA_LIMIT, position.x)),
-      item.baseY,
-      Math.min(ARENA_LIMIT, Math.max(-ARENA_LIMIT, position.z))
-    );
+    const at = clampToPlay(position.x, position.z);
+    item.group.position.set(at.x, item.baseY, at.z);
     item.group.rotation.set(0, Math.random() * Math.PI * 2, 0);
     scene.add(item.group);
     items.push(item);

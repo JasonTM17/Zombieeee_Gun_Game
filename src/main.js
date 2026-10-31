@@ -713,6 +713,10 @@ const debugApi = {
         };
       }
       zone = target.id;
+      // Locked zones are SEALED (feature C1: solid rect incl. the gate until
+      // unlockForWave) — a debug teleport would trap the player inside, so
+      // open the zone first (idempotent; same path as unlockZone()).
+      zones.unlockForWave(target.unlockWave);
       x = (target.bounds.minX + target.bounds.maxX) / 2;
       z = (target.bounds.minZ + target.bounds.maxZ) / 2;
     }

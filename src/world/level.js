@@ -26,8 +26,9 @@
  *   keeps its ORIGINAL steering whenever this is true.
  *
  * spawnPoints: the 12 arena ring points (legacy layout, untouched) followed
- * by the 6 zone spawn points (3 per zone) — wave spawning can then also use
- * the new areas.
+ * by the zone spawn points (3 per zone) of the UNLOCKED zones only — a locked
+ * zone (feature C1, setZoneLocked) is sealed by isBlocked and stays out of
+ * the wave-spawn pool until zones.js opens it.
  *
  * dispose(): remove everything from the scene and dispose geometries,
  * materials and the CanvasTextures (called on restart/teardown if needed).
@@ -47,6 +48,11 @@
  *   EXPANSION C2/C3: the two gate waypoints (INSIDE the gaps).
  * @property {(x1: number, z1: number, x2: number, z2: number) => boolean} sameArea
  *   EXPANSION C3: true when both points are in the same walkable rectangle.
+ * @property {(id: "north"|"east", locked: boolean) => boolean} setZoneLocked
+ *   EXPANSION C1: seal (locked = true) or open (false) one expansion zone —
+ *   the sealed rect is solid to isBlocked (gate gap included) and its spawn
+ *   points leave level.spawnPoints. zones.js drives this; returns true when
+ *   the state changed.
  * @property {() => void} dispose - remove + dispose all level resources.
  */
 
@@ -264,6 +270,23 @@ function makeGateIconTexture() {
 /** Axis-aligned XZ collider from a center + full extents. */
 function colliderOf(x, z, sx, sz) {
   return { minX: x - sx / 2, maxX: x + sx / 2, minZ: z - sz / 2, maxZ: z + sz / 2 };
+}
+
+/**
+ * Circle-vs-AABB (XZ): clamp the circle center to the box, compare distances.
+ * Shared by isBlocked for real colliders AND for the sealed locked-zone rects.
+ * @param {number} x
+ * @param {number} z
+ * @param {number} r2 - squared circle radius
+ * @param {{minX: number, maxX: number, minZ: number, maxZ: number}} c
+ * @returns {boolean}
+ */
+function circleHitsRect(x, z, r2, c) {
+  const cx = x < c.minX ? c.minX : x > c.maxX ? c.maxX : x;
+  const cz = z < c.minZ ? c.minZ : z > c.maxZ ? c.maxZ : z;
+  const dx = x - cx;
+  const dz = z - cz;
+  return dx * dx + dz * dz < r2;
 }
 
 /**
@@ -559,8 +582,9 @@ export function createLevel(scene) {
     }
   }
 
-  // --- spawn points (12 arena ring + 6 zone points) ----------------------------
+  // --- spawn points (12 arena ring + the UNLOCKED zones' points) ---------------
   const R = 26; // ring radius, 4 m inside the playable wall face
+  const ARENA_SPAWN_COUNT = 12;
   const spawnPoints = [
     new THREE.Vector3(R, 0, 0),
     new THREE.Vector3(-R, 0, 0),
@@ -575,7 +599,16 @@ export function createLevel(scene) {
     new THREE.Vector3(-13, 0, R),
     new THREE.Vector3(-13, 0, -R),
   ];
-  for (const p of ZONE_SPAWNS) spawnPoints.push(new THREE.Vector3(p.x, 0, p.z));
+  // Zone points exist in full here and are MIRRORED into spawnPoints by
+  // refreshZoneSpawns() — a locked zone's points must never feed wave
+  // spawning (waves.js reads level.spawnPoints fresh on every spawn). The
+  // Vector3 objects are shared, so the safety-nudge below keeps affecting
+  // them even while they are out of the pool.
+  const zoneSpawnVecs = ZONE_SPAWNS.map((p, i) => ({
+    vec: new THREE.Vector3(p.x, 0, p.z),
+    zone: i < 3 ? "north" : "east", // ZONE_SPAWNS order: 3 north, then 3 east
+  }));
+  for (const zs of zoneSpawnVecs) spawnPoints.push(zs.vec);
   // Safety net: nudge any spawn point that ended up inside a collider toward
   // the area interior (no-op with the layout above, but layout-proof).
   for (const sp of spawnPoints) {
@@ -585,10 +618,7 @@ export function createLevel(scene) {
       let blocked = !inBounds(x, z); // arena OR either zone
       if (!blocked) {
         for (const c of colliders) {
-          const cx = Math.min(Math.max(x, c.minX), c.maxX);
-          const cz = Math.min(Math.max(z, c.minZ), c.maxZ);
-          const dx = x - cx, dz = z - cz;
-          if (dx * dx + dz * dz < 0.8 * 0.8) { blocked = true; break; }
+          if (circleHitsRect(x, z, 0.8 * 0.8, c)) { blocked = true; break; }
         }
       }
       if (!blocked) break;
@@ -598,6 +628,42 @@ export function createLevel(scene) {
   }
 
   // --- queries ---------------------------------------------------------------
+
+  // Zone lock state (feature C1 — "Mở sau khi clear wave 2/4"): a LOCKED zone
+  // is sealed — isBlocked() treats its whole rect (gate gap included) as solid
+  // so neither the player nor a zombie can slip through the open gate, and its
+  // spawn points stay out of the wave pool. zones.js syncs this (locks both at
+  // creation, opens on unlockForWave, re-locks on reset); main.js teleport
+  // opens a zone before dropping the player in. Starts open here so the
+  // zones.js dev-guard check runs against the real walkable geometry — the
+  // locks are applied right after that guard, before any wave can spawn.
+  /** @type {Record<"north"|"east", boolean>} */
+  const zoneLocks = { north: false, east: false };
+  const ZONE_RECT_OF = { north: AREA_RECTS[1], east: AREA_RECTS[2] };
+
+  /**
+   * EXPANSION C1: seal/open one zone. Sealing also rebuilds the zone section
+   * of spawnPoints. Unknown ids are ignored.
+   * @param {"north"|"east"} id
+   * @param {boolean} locked
+   * @returns {boolean} true when the state actually changed
+   */
+  function setZoneLocked(id, locked) {
+    if (id !== "north" && id !== "east") return false;
+    const next = locked !== false;
+    if (zoneLocks[id] === next) return false;
+    zoneLocks[id] = next;
+    refreshZoneSpawns();
+    return true;
+  }
+
+  /** Mirror the unlocked zones' spawn points into the wave-spawn pool. */
+  function refreshZoneSpawns() {
+    spawnPoints.length = ARENA_SPAWN_COUNT;
+    for (let i = 0; i < zoneSpawnVecs.length; i++) {
+      if (!zoneLocks[zoneSpawnVecs[i].zone]) spawnPoints.push(zoneSpawnVecs[i].vec);
+    }
+  }
 
   /**
    * Which walkable rectangle holds the point: 0 = main arena, 1 = north zone,
@@ -625,6 +691,8 @@ export function createLevel(scene) {
 
   /**
    * Circle-vs-AABB: clamp the circle center to the box, compare distances.
+   * A LOCKED zone's rect counts as solid too (feature C1): the whole area —
+   * gate gap included — is untouchable until setZoneLocked(id, false).
    * @param {number} x
    * @param {number} z
    * @param {number=} r
@@ -634,13 +702,11 @@ export function createLevel(scene) {
     if (!Number.isFinite(x) || !Number.isFinite(z)) return true; // NaN-safe
     if (!inBounds(x, z)) return true; // outside arena AND both zones
     const r2 = r * r;
+    for (const id in zoneLocks) {
+      if (zoneLocks[id] && circleHitsRect(x, z, r2, ZONE_RECT_OF[id])) return true;
+    }
     for (let i = 0; i < colliders.length; i++) {
-      const c = colliders[i];
-      const cx = x < c.minX ? c.minX : x > c.maxX ? c.maxX : x;
-      const cz = z < c.minZ ? c.minZ : z > c.maxZ ? c.maxZ : z;
-      const dx = x - cx;
-      const dz = z - cz;
-      if (dx * dx + dz * dz < r2) return true;
+      if (circleHitsRect(x, z, r2, colliders[i])) return true;
     }
     return false;
   }
@@ -681,5 +747,5 @@ export function createLevel(scene) {
     spawnPoints.length = 0;
   }
 
-  return { colliders, isBlocked, spawnPoints, getGateWaypoints, sameArea, dispose };
+  return { colliders, isBlocked, spawnPoints, getGateWaypoints, sameArea, setZoneLocked, dispose };
 }

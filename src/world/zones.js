@@ -133,7 +133,9 @@ export function createZones(scene, level) {
   }));
 
   // One-time dev guard: a declared point must be walkable in the built level
-  // (catches level.js / zones.js layout drift). Warns, never throws.
+  // (catches level.js / zones.js layout drift). Warns, never throws. Runs
+  // BEFORE the locks below are applied — a locked zone is sealed in level.js
+  // and would report every declared point as blocked.
   if (level && typeof level.isBlocked === "function") {
     for (const z of list) {
       const pts = [
@@ -147,6 +149,16 @@ export function createZones(scene, level) {
         }
       }
     }
+  }
+
+  // Feature C1 enforcement: push the initial lock state into the level. A
+  // locked zone is SEALED there (isBlocked solid across the whole rect, gate
+  // gap included) and its spawn points stay out of the wave pool — without
+  // this the player could walk through the open gates before wave 2/4 and
+  // waves could spawn minions inside an unopened area. unlockForWave/reset
+  // keep the two sides in sync below.
+  if (level && typeof level.setZoneLocked === "function") {
+    for (const z of ZONE_DEFS) level.setZoneLocked(z.id, true);
   }
 
   /**
@@ -163,6 +175,11 @@ export function createZones(scene, level) {
       if (!state[z.id] && w >= z.unlockWave) {
         state[z.id] = true;
         opened.push(z.id);
+        // Unseal the zone in the level (gate passable, spawn points back in
+        // the wave pool) — see the setZoneLocked sync at construction.
+        if (level && typeof level.setZoneLocked === "function") {
+          level.setZoneLocked(z.id, false);
+        }
         bus.dispatchEvent(
           new CustomEvent("zone-unlocked", {
             detail: { id: z.id, name: i18n.t(z.nameKey) },
@@ -189,9 +206,14 @@ export function createZones(scene, level) {
     return { zoneId: zone.id, x: zone.bossAnchor.x, z: zone.bossAnchor.z };
   }
 
-  /** Lock both zones again — fresh run. No events. */
+  /** Lock both zones again — fresh run. No events. Re-seals the level too. */
   function reset() {
-    for (const z of ZONE_DEFS) state[z.id] = false;
+    for (const z of ZONE_DEFS) {
+      state[z.id] = false;
+      if (level && typeof level.setZoneLocked === "function") {
+        level.setZoneLocked(z.id, true);
+      }
+    }
   }
 
   // Clearing wave n unlocks what it earned (idempotent — main.js calling
