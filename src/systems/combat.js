@@ -39,6 +39,140 @@
  *   Perform one shot with the given active weapon descriptor.
  */
 
+import * as THREE from "three";
+
+const MAX_DISTANCE = 100;   // ray cap (spec: ~100 m)
+const HEADSHOT_MULT = 2;    // userData.part === "head" → damage x2
+
 export function createCombat(camera, scene, zombies, particles, audio, bus) {
-  throw new Error("TODO: implement");
+  // The weapons viewmodel + muzzle flash light are CHILDREN of the camera, and
+  // three.js only renders camera children when the camera itself is in the
+  // scene graph — engine.js does not add it. Do it here (createCombat runs
+  // once during bootstrap, before any gameplay frame; a no-op if main.js
+  // already added the camera).
+  if (!camera.parent && scene) scene.add(camera);
+
+  const raycaster = new THREE.Raycaster();
+  raycaster.far = MAX_DISTANCE;
+  const CENTER = new THREE.Vector2(0, 0); // screen center → setFromCamera basis
+
+  // Reused buffers — no per-shot steady-state allocation beyond event objects.
+  const targets = [];        // live zombie root groups (this shot)
+  const targetZombies = [];  // parallel: targets[i] ↔ targetZombies[i]
+  const hitBuf = [];         // intersectObjects output (cleared per pellet)
+  const camDir = new THREE.Vector3();
+  const rightB = new THREE.Vector3();
+  const upB = new THREE.Vector3();
+  const pelletDir = new THREE.Vector3();
+  const camPos = new THREE.Vector3();
+  const muzzlePos = new THREE.Vector3();
+
+  // Walk up from a hit mesh to its zombie root group; record the first
+  // userData.part seen on the way (head/body tagging lives on the meshes).
+  let foundZombie = null;
+  let foundPart = null;
+  function resolveTarget(obj) {
+    foundZombie = null;
+    foundPart = null;
+    let o = obj;
+    while (o) {
+      if (foundPart === null && o.userData && o.userData.part) {
+        foundPart = o.userData.part;
+      }
+      const idx = targets.indexOf(o);
+      if (idx !== -1) {
+        foundZombie = targetZombies[idx];
+        return true;
+      }
+      o = o.parent;
+    }
+    return false;
+  }
+
+  function shoot(weapon) {
+    if (!weapon) return;
+    const damage = Math.max(0, Number(weapon.damage) || 0);
+    const pellets = Math.max(1, Math.floor(Number(weapon.pellets) || 1));
+    const spread = Math.max(0, Number(weapon.spread) || 0);
+
+    // Fresh target list every shot — never cache length or liveness.
+    targets.length = 0;
+    targetZombies.length = 0;
+    for (let i = 0; i < zombies.length; i++) {
+      const z = zombies[i];
+      if (z && z.alive && z.group) {
+        targets.push(z.group);
+        targetZombies.push(z);
+      }
+    }
+
+    // The controller/weapons wrote camera transform this frame; make the
+    // world matrices current before casting.
+    camera.updateMatrixWorld();
+    raycaster.setFromCamera(CENTER, camera);
+    camDir.copy(raycaster.ray.direction);
+    rightB.set(1, 0, 0).applyQuaternion(camera.quaternion);
+    upB.set(0, 1, 0).applyQuaternion(camera.quaternion);
+
+    let landed = false;
+    let anyHead = false;
+    let anyKilled = false;
+
+    for (let p = 0; p < pellets; p++) {
+      if (pellets > 1) {
+        // Shotgun: uniform jitter inside a cone of half-angle `spread`
+        // (sqrt for uniform disc distribution, tan to project onto the plane).
+        const ang = Math.random() * Math.PI * 2;
+        const rad = Math.tan(spread) * Math.sqrt(Math.random());
+        pelletDir
+          .copy(camDir)
+          .addScaledVector(rightB, Math.cos(ang) * rad)
+          .addScaledVector(upB, Math.sin(ang) * rad)
+          .normalize();
+      } else {
+        pelletDir.copy(camDir);
+      }
+      raycaster.ray.direction.copy(pelletDir);
+
+      hitBuf.length = 0;
+      raycaster.intersectObjects(targets, true, hitBuf);
+      if (hitBuf.length === 0) continue;
+      const hit = hitBuf[0]; // closest intersection takes the pellet
+      if (!resolveTarget(hit.object)) continue;
+      if (!foundZombie.alive) continue; // died from an earlier pellet this shot
+
+      const headshot = foundPart === "head";
+      const dmg = headshot ? damage * HEADSHOT_MULT : damage;
+      const killed = foundZombie.takeDamage(dmg, headshot) === true;
+      if (particles) {
+        particles.spawnBlood(hit.point, 8 + Math.floor(Math.random() * 7)); // 8..14
+      }
+      landed = true;
+      if (headshot) anyHead = true;
+      if (killed) anyKilled = true;
+    }
+
+    // One hit feedback per shoot() call that landed something — never per
+    // pellet (one shotgun blast = one hitmarker, one flesh sound).
+    if (landed) {
+      if (audio) {
+        audio.zombieHit();
+        audio.hitmarker(anyHead);
+      }
+      bus.dispatchEvent(
+        new CustomEvent("hit", { detail: { headshot: anyHead, killed: anyKilled } })
+      );
+    }
+
+    // Muzzle blast particles per shot (the light flash lives in weapons.js).
+    camera.getWorldPosition(camPos);
+    muzzlePos
+      .copy(camPos)
+      .addScaledVector(camDir, 0.5)
+      .addScaledVector(rightB, 0.1)
+      .addScaledVector(upB, -0.07);
+    if (particles) particles.spawnMuzzle(muzzlePos, camDir);
+  }
+
+  return { shoot };
 }
