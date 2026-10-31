@@ -1,7 +1,8 @@
 /**
  * Night atmosphere for the 60 x 60 m arena:
  * - near-black blue night sky (scene.background);
- * - FogExp2 with a dark color and density ~0.022;
+ * - FogExp2 with a dark color (density 0.026 — NIGHT 30 P1 §5.7: thickened
+ *   from 0.022 so the far city melts into fog before the draw limit);
  * - moon: DirectionalLight, pale blue, LOW intensity, castShadow with a
  *   shadow frustum sized to cover the arena;
  * - very weak ambient + hemisphere light (shadows stay readable);
@@ -11,20 +12,32 @@
  *
  * update(dt) advances the flicker timers (dt in seconds).
  *
+ * NIGHT 30 P1 (docs/EXPANSION-P1.md §5.7 — ADDITIVE, Builder WORLD scope that
+ * the integrator implements; behavior without the new argument is unchanged):
+ * update(dt, playerPos) also DRAGS THE MOON SHADOW FRUSTUM along with the
+ * player — `moon.position = player + (40, 70, −25)` and
+ * `moon.target = player`, both quantized to 2 m steps so the shadow map does
+ * not shimmer as the frustum re-centers (map size / bias untouched). Without
+ * the second argument the moon stays parked over the legacy arena, exactly as
+ * before. The 84 × 84 frustum keeps covering everything the fog lets you see
+ * of the near streets; far silhouettes are deliberately unshadowed.
+ *
  * @param {import("three").Scene} scene
  * @returns {Atmosphere}
  */
 
 /**
  * @typedef {Object} Atmosphere
- * @property {(dt: number) => void} update - advance flicker animation.
+ * @property {(dt: number, playerPos?: {x: number, z: number}) => void} update
+ *   advance flicker animation; optional playerPos re-centers the moon shadow
+ *   frustum on the player (NIGHT 30 P1 §5.7 — omitted → legacy arena parking).
  */
 
 import * as THREE from "three";
 
 const SKY = 0x05070c;
 const FOG_COLOR = 0x0a0e16;
-const FOG_DENSITY = 0.022;
+const FOG_DENSITY = 0.026; // §3.7/§5.7: 0.022 → 0.026 (hides the draw limit)
 
 export function createAtmosphere(scene) {
   // --- sky + fog ---------------------------------------------------------------
@@ -135,13 +148,38 @@ export function createAtmosphere(scene) {
 
   // --- per-frame -------------------------------------------------------------------
   const tmpColor = new THREE.Color();
+  // Moon follow scratch (§5.7): quantize the anchor to 2 m so the shadow map
+  // does not crawl every frame. Zero allocation.
+  const MOON_OFFSET_X = 40;
+  const MOON_OFFSET_Y = 70;
+  const MOON_OFFSET_Z = -25;
+  const MOON_QUANT = 2;
+  let moonQX = 0;
+  let moonQZ = 0;
 
   /**
-   * Advance lamp flicker (dt seconds). Allocation-free.
+   * Advance lamp flicker (dt seconds) + optional moon-shadow follow (§5.7).
+   * Allocation-free.
    * @param {number} dt
+   * @param {{x: number, z: number}} [playerPos] - player feet position; the
+   *   moon shadow frustum re-centers on it (quantized). Omitted → no follow.
    */
-  function update(dt) {
+  function update(dt, playerPos) {
     if (!Number.isFinite(dt) || dt <= 0) return;
+    if (
+      playerPos &&
+      Number.isFinite(playerPos.x) &&
+      Number.isFinite(playerPos.z)
+    ) {
+      const qx = Math.round(playerPos.x / MOON_QUANT) * MOON_QUANT;
+      const qz = Math.round(playerPos.z / MOON_QUANT) * MOON_QUANT;
+      if (qx !== moonQX || qz !== moonQZ) {
+        moonQX = qx;
+        moonQZ = qz;
+        moon.position.set(qx + MOON_OFFSET_X, MOON_OFFSET_Y, qz + MOON_OFFSET_Z);
+        moon.target.position.set(qx, 0, qz);
+      }
+    }
     for (let i = 0; i < lamps.length; i++) {
       const f = flicker[i];
       f.t += dt;

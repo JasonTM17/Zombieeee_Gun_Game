@@ -16,19 +16,36 @@
  * isBlocked(x, z, r): true if a circle of radius r (DEFAULT 0.4 m) centered
  * at (x, z) intersects any collider — standard circle-vs-AABB test (clamp the
  * circle center to the box, compare distances). Positions outside the walkable
- * rectangles (arena + the two zones) are blocked too.
+ * bounds are blocked too (void).
+ *
+ * NIGHT 30 PART 1 (docs/EXPANSION-P1.md §3.5) extends the walkable world to
+ * the full 260×260 m city: the union of AREA_RECTS (quarantine, via its 3
+ * frozen sub-rects) and DISTRICT_RECTS (the 6 outer districts, same table as
+ * city.js — contract checklist §10). Everything outside both is void, the 3
+ * notches inside the quarantine bbox included. Five legacy wall spans are cut
+ * for the new district gates (south ×3 segments, west ×2, north-zone west
+ * side ×2, north-zone back ×2, east-zone back ×2) and the mission-9 VAULT
+ * DOOR (Ø 4 m steel disc, top y 0.3, collider −2..2 × −2..2) is built at the
+ * arena origin. Quarantine's own numbers stay byte-identical (§3.2).
  *
  * EXPANSION (docs/EXPANSION.md C2/C3) added API:
- * - getGateWaypoints() → [{x, z}] — one frozen waypoint INSIDE each gate gap;
+ * - getGateWaypoints() → [{x, z}] — frozen waypoints INSIDE the gate gaps;
  *   zombie.js routes through the nearest one when a wall blocks its path.
+ *   NIGHT 30: 14 waypoints — the 2 legacy internal quarantine gates + the 12
+ *   district gates that city.js registers through the private hooks below
+ *   (contract decision K7).
  * - sameArea(x1, z1, x2, z2) → boolean — true when both points sit in the
- *   same connected rectangle (main arena, north zone or east zone); zombie.js
+ *   same connected rectangle (main arena, north zone or east zone — quarantine
+ *   keeps its 3-way granularity so the internal gate pathing survives,
+ *   decision K7) OR in districts connected through ≥ 1 OPEN city gate
+ *   (transitive union-find, rebuilt lazily on gate state changes). zombie.js
  *   keeps its ORIGINAL steering whenever this is true.
  *
  * spawnPoints: the 12 arena ring points (legacy layout, untouched) followed
  * by the zone spawn points (3 per zone) of the UNLOCKED zones only — a locked
  * zone (feature C1, setZoneLocked) is sealed by isBlocked and stays out of
- * the wave-spawn pool until zones.js opens it.
+ * the wave-spawn pool until zones.js opens it. The 6 outer districts keep
+ * their spawn pools in city.js (§3.6.6), NOT here.
  *
  * dispose(): remove everything from the scene and dispose geometries,
  * materials and the CanvasTextures (called on restart/teardown if needed).
@@ -45,9 +62,12 @@
  *   true if the circle (x, z, r = 0.4) intersects any collider.
  * @property {import("three").Vector3[]} spawnPoints - 12 arena ring points + 6 zone points.
  * @property {() => Array<{x: number, z: number}>} getGateWaypoints
- *   EXPANSION C2/C3: the two gate waypoints (INSIDE the gaps).
+ *   EXPANSION C2/C3 + NIGHT 30 (K7): 14 gate waypoints INSIDE the gaps — the
+ *   2 legacy internal quarantine gates + the 12 city district gates registered
+ *   by city.js (locked gates included; sameArea gates the pathing).
  * @property {(x1: number, z1: number, x2: number, z2: number) => boolean} sameArea
- *   EXPANSION C3: true when both points are in the same walkable rectangle.
+ *   EXPANSION C3 + NIGHT 30: true when both points are in the same walkable
+ *   rectangle OR in districts connected through an open city gate.
  * @property {(id: "north"|"east", locked: boolean) => boolean} setZoneLocked
  *   EXPANSION C1: seal (locked = true) or open (false) one expansion zone —
  *   the sealed rect is solid to isBlocked (gate gap included) and its spawn
@@ -150,15 +170,29 @@ const ZONE_PROPS = [
 /**
  * Every wall box as an XZ span: the OLD 4-box fence (south + west solid,
  * north + east) with the two GATE GAPS cut out (north wall split at
- * x ∈ [-2, 2], east wall split at z ∈ [-2, 2]) plus the 6 new zone perimeter
+ * x ∈ [-2, 2], east wall split at z ∈ [-2, 2]) plus the 6 zone perimeter
  * boxes. Box ends overlap or bury into their neighbour so no coplanar faces
  * z-fight (same trick the original corners used).
+ *
+ * NIGHT 30 PART 1 (docs/EXPANSION-P1.md §3.4): five of the legacy spans are
+ * additionally CUT for the new district gates — the arena south wall into
+ * three segments (D-Q gap x −24.5..−19.5, P-Q gap x −2.5..2.5), the arena
+ * west wall into two (S-Q gap z −2..2), the north-zone west side wall into
+ * two (R-Q gap z −44..−40), the north-zone back wall into two (C-Q gap
+ * x −2..2) and the east-zone back wall into two (H-Q gap z −2..2). Geometry
+ * and colliders both derive from these spans (see the wall builder below).
  * @type {Array<{x1: number, x2: number, z1: number, z2: number}>}
  */
 const WALL_SPANS = [
   // Main arena fence.
-  { x1: -HALF - WALL_T / 2, x2: HALF + WALL_T / 2, z1: HALF - WALL_T / 2, z2: HALF + WALL_T / 2 },
-  { x1: -HALF - WALL_T / 2, x2: -HALF + WALL_T / 2, z1: -HALF, z2: HALF },
+  // South wall (z = +30) — THREE segments: D-Q gap x ∈ [-24.5, -19.5] (5 m),
+  // P-Q gap x ∈ [-2.5, 2.5] (5 m).
+  { x1: -HALF - WALL_T / 2, x2: -24.5, z1: HALF - WALL_T / 2, z2: HALF + WALL_T / 2 },
+  { x1: -19.5, x2: -2.5, z1: HALF - WALL_T / 2, z2: HALF + WALL_T / 2 },
+  { x1: 2.5, x2: HALF + WALL_T / 2, z1: HALF - WALL_T / 2, z2: HALF + WALL_T / 2 },
+  // West wall (x = -30) — TWO segments around the S-Q gate gap z ∈ [-2, 2].
+  { x1: -HALF - WALL_T / 2, x2: -HALF + WALL_T / 2, z1: -HALF, z2: -2 },
+  { x1: -HALF - WALL_T / 2, x2: -HALF + WALL_T / 2, z1: 2, z2: HALF },
   // North wall — TWO segments around the north gate gap x ∈ [-GATE_HALF, GATE_HALF].
   { x1: -HALF - WALL_T / 2, x2: -GATE_HALF, z1: -HALF - WALL_T / 2, z2: -HALF + WALL_T / 2 },
   { x1: GATE_HALF, x2: HALF + WALL_T / 2, z1: -HALF - WALL_T / 2, z2: -HALF + WALL_T / 2 },
@@ -166,13 +200,40 @@ const WALL_SPANS = [
   { x1: HALF - WALL_T / 2, x2: HALF + WALL_T / 2, z1: -HALF, z2: -GATE_HALF },
   { x1: HALF - WALL_T / 2, x2: HALF + WALL_T / 2, z1: GATE_HALF, z2: HALF },
   // North zone: side walls (south ends buried in the arena north wall) + back.
-  { x1: -15 - WALL_T / 2, x2: -15 + WALL_T / 2, z1: -54 - WALL_T / 2, z2: -HALF },
+  // West side — TWO segments around the R-Q gate gap z ∈ [-44, -40].
+  { x1: -15 - WALL_T / 2, x2: -15 + WALL_T / 2, z1: -54 - WALL_T / 2, z2: -44 },
+  { x1: -15 - WALL_T / 2, x2: -15 + WALL_T / 2, z1: -40, z2: -HALF },
   { x1: 15 - WALL_T / 2, x2: 15 + WALL_T / 2, z1: -54 - WALL_T / 2, z2: -HALF },
-  { x1: -15, x2: 15, z1: -54 - WALL_T / 2, z2: -54 + WALL_T / 2 },
+  // North zone back wall — TWO segments around the C-Q gate gap x ∈ [-2, 2].
+  { x1: -15, x2: -2, z1: -54 - WALL_T / 2, z2: -54 + WALL_T / 2 },
+  { x1: 2, x2: 15, z1: -54 - WALL_T / 2, z2: -54 + WALL_T / 2 },
   // East zone: north + south walls (west ends buried in the arena east wall).
   { x1: HALF, x2: 54 + WALL_T / 2, z1: -15 - WALL_T / 2, z2: -15 + WALL_T / 2 },
   { x1: HALF, x2: 54 + WALL_T / 2, z1: 15 - WALL_T / 2, z2: 15 + WALL_T / 2 },
-  { x1: 54 - WALL_T / 2, x2: 54 + WALL_T / 2, z1: -15, z2: 15 },
+  // East zone back wall — TWO segments around the H-Q gate gap z ∈ [-2, 2].
+  { x1: 54 - WALL_T / 2, x2: 54 + WALL_T / 2, z1: -15, z2: -2 },
+  { x1: 54 - WALL_T / 2, x2: 54 + WALL_T / 2, z1: 2, z2: 15 },
+];
+
+/**
+ * NIGHT 30 PART 1 (docs/EXPANSION-P1.md §3.1/§3.5.2): the six OUTER district
+ * rects — MUST stay in sync with OUTER_RECTS in src/world/city.js and the
+ * §3.1 table (contract checklist §10). isBlocked treats the union of these
+ * plus AREA_RECTS (quarantine, via its 3 sub-rects) as the walkable city;
+ * everything else is void. The R-Q strip x −30..−15, z −54..−30 falls inside
+ * the residential rect, exactly as §3.1 rule 3 requires. The three VOID
+ * notches (N-B1 x 15..30 z −54..−30, N-B2 x 30..54 z −54..−15, N-B3
+ * x 30..54 z 15..30) sit inside the quarantine bbox but OUTSIDE all rects
+ * below → blocked, per §3.1 rule 4.
+ * @type {Array<{id: string, minX: number, maxX: number, minZ: number, maxZ: number}>}
+ */
+const DISTRICT_RECTS = [
+  { id: "safehouse", minX: -130, maxX: -30, minZ: -30, maxZ: 30 },
+  { id: "residential", minX: -130, maxX: -15, minZ: -130, maxZ: -30 },
+  { id: "commercial", minX: -15, maxX: 130, minZ: -130, maxZ: -54 },
+  { id: "hospital", minX: 54, maxX: 130, minZ: -54, maxZ: 30 },
+  { id: "park", minX: -15, maxX: 130, minZ: 30, maxZ: 130 },
+  { id: "docks", minX: -130, maxX: -15, minZ: 30, maxZ: 130 },
 ];
 
 /**
@@ -513,6 +574,31 @@ export function createLevel(scene) {
     scene.add(mesh);
   }
 
+  // --- vault door (NIGHT 30 PART 1, docs/EXPANSION-P1.md §3.2): the final ---
+  // steel disc of mission 9, built HERE because (0,0) is quarantine territory.
+  // Ø 4 m disc, 0.6 thick, half-buried (top edge at y = 0.3), cold emissive.
+  // The position is clear in the legacy layout (nearest obstacle (−8,−6)).
+  {
+    const vaultGeo = new THREE.CylinderGeometry(2, 2, 0.6, 24);
+    vaultGeo.translate(0, 0, 0); // centered on y=0 → spans −0.3..+0.3 (half-buried)
+    geometries.push(vaultGeo);
+    const vaultMat = new THREE.MeshStandardMaterial({
+      color: 0x0d2430,
+      emissive: 0x4fd8ff,
+      emissiveIntensity: 0.9,
+      roughness: 0.4,
+      metalness: 0.7,
+    });
+    materials.push(vaultMat);
+    const vault = new THREE.Mesh(vaultGeo, vaultMat);
+    vault.castShadow = true; // §3.7: the vault door is an explicit shadow caster
+    vault.receiveShadow = true;
+    vault.userData.solid = true; // combat.js: steel stops bullets
+    objects.push(vault);
+    scene.add(vault);
+    colliders.push({ minX: -2, maxX: 2, minZ: -2, maxZ: 2 }); // §3.2 collider
+  }
+
   // --- gate frames (expansion C1/C2): glowing portal + icon over each gap -----
   // Posts + lintel merge into ONE mesh per gate. Posts get colliders (they sit
   // flush with the wall ends); the lintel is overhead so it gets NO collider —
@@ -681,12 +767,34 @@ export function createLevel(scene) {
   }
 
   /**
+   * NIGHT 30 PART 1 (§3.5.2): node id for the 9-way connectivity graph used by
+   * sameArea — 0/1/2 = the quarantine sub-rects (AREA_RECTS, legacy granularity
+   * preserved), 3..8 = the outer districts (DISTRICT_RECTS, §3.1 table order),
+   * -1 = void. Quarantine is tested FIRST so the R-Q strip x −30..−15,
+   * z −54..−30 resolves to residential (§3.1 rule 3) and the 3 void notches
+   * inside the quarantine bbox stay void (rule 4).
    * @param {number} x
    * @param {number} z
-   * @returns {boolean} true when the point is inside the arena or a zone.
+   * @returns {number}
+   */
+  function areaNodeAt(x, z) {
+    const a = areaOf(x, z);
+    if (a !== -1) return a;
+    for (let i = 0; i < DISTRICT_RECTS.length; i++) {
+      const r = DISTRICT_RECTS[i];
+      if (x >= r.minX && x <= r.maxX && z >= r.minZ && z <= r.maxZ) return i + 3;
+    }
+    return -1;
+  }
+
+  /**
+   * @param {number} x
+   * @param {number} z
+   * @returns {boolean} true when the point is inside ANY of the 7 district
+   *   bounds (quarantine via its 3 sub-rects) — i.e. not void.
    */
   function inBounds(x, z) {
-    return areaOf(x, z) !== -1;
+    return areaNodeAt(x, z) !== -1;
   }
 
   /**
@@ -700,7 +808,7 @@ export function createLevel(scene) {
    */
   function isBlocked(x, z, r = 0.4) {
     if (!Number.isFinite(x) || !Number.isFinite(z)) return true; // NaN-safe
-    if (!inBounds(x, z)) return true; // outside arena AND both zones
+    if (!inBounds(x, z)) return true; // void — outside all 7 district bounds
     const r2 = r * r;
     for (const id in zoneLocks) {
       if (zoneLocks[id] && circleHitsRect(x, z, r2, ZONE_RECT_OF[id])) return true;
@@ -711,9 +819,100 @@ export function createLevel(scene) {
     return false;
   }
 
+  // --- city gate registration (NIGHT 30 PART 1, §3.5.3-3.5.4) -------------------
+  // city.js registers its 12 district gates + flips their live open state
+  // through the PRIVATE hooks below (non-enumerable on the returned API — NOT
+  // part of the frozen Level contract). sameArea then reports two points as
+  // "same area" when they sit in districts connected through OPEN gates, and
+  // getGateWaypoints() returns the 12 city gap centers + the 2 legacy internal
+  // ones (14 total — contract decision K7).
+
   /**
-   * EXPANSION C3 helper: true when both points sit in the SAME walkable
-   * rectangle (the gate band z = -30 / x = 30 inside a gap counts as arena).
+   * Registered city gates: {x, z, axis, width, a, b, open} where a/b are the
+   * area-node ids on each side of the gap (sampled ±1.6 m across the wall).
+   * @type {Array<{x: number, z: number, axis: string, width: number,
+   *               a: number, b: number, open: boolean}>}
+   */
+  const cityGates = [];
+  /** @type {Array<number>|null} union-find parent table over nodes 0..8 */
+  let cityComponents = null;
+  let cityComponentsDirty = true;
+  /** Waypoints returned by getGateWaypoints(): 2 legacy + 12 registered. */
+  const gateWaypoints = [GATE_WAYPOINTS[0], GATE_WAYPOINTS[1]];
+
+  /**
+   * PRIVATE (city.js only): register the district gates. Recomputes nothing —
+   * components rebuild lazily on the next sameArea query.
+   * @param {Array<{x: number, z: number, axis: string, width: number,
+   *                open?: boolean}>} list
+   */
+  function cityRegisterGates(list) {
+    if (!Array.isArray(list)) return;
+    for (const g of list) {
+      if (!g || !Number.isFinite(g.x) || !Number.isFinite(g.z)) continue;
+      const off = 1.6; // past the 0.5 m wall band + 0.6 m post depth
+      const a = g.axis === "x" ? areaNodeAt(g.x, g.z - off) : areaNodeAt(g.x - off, g.z);
+      const b = g.axis === "x" ? areaNodeAt(g.x, g.z + off) : areaNodeAt(g.x + off, g.z);
+      cityGates.push({ x: g.x, z: g.z, axis: g.axis, width: g.width, a, b, open: g.open === true });
+      gateWaypoints.push({ x: g.x, z: g.z });
+    }
+    cityComponentsDirty = true;
+  }
+
+  /**
+   * PRIVATE (city.js only): flip one registered gate's open state (called when
+   * the barrier sink/raise finishes — passability matches the collider, not
+   * the command). Unknown gaps are ignored.
+   * @param {number} x
+   * @param {number} z
+   * @param {boolean} open
+   * @returns {boolean} true when a gate was found and the state changed
+   */
+  function cityGateOpenAt(x, z, open) {
+    for (let i = 0; i < cityGates.length; i++) {
+      const g = cityGates[i];
+      if (g.x === x && g.z === z) {
+        const next = open === true;
+        if (g.open === next) return false;
+        g.open = next;
+        cityComponentsDirty = true;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Rebuild the union-find over the 9 area nodes using the OPEN city gates as
+   * edges. Runs at most once between gate-state changes.
+   */
+  function rebuildCityComponents() {
+    const comp = [0, 1, 2, 3, 4, 5, 6, 7, 8];
+    const find = (i) => {
+      while (comp[i] !== i) {
+        comp[i] = comp[comp[i]];
+        i = comp[i];
+      }
+      return i;
+    };
+    for (const g of cityGates) {
+      if (g.open && g.a >= 0 && g.b >= 0) {
+        const ra = find(g.a);
+        const rb = find(g.b);
+        if (ra !== rb) comp[ra] = rb;
+      }
+    }
+    for (let i = 0; i < 9; i++) comp[i] = find(i);
+    cityComponents = comp;
+    cityComponentsDirty = false;
+  }
+
+  /**
+   * EXPANSION C3 helper, extended (§3.5.4): true when both points sit in the
+   * SAME area — legacy granularity for quarantine (arena / north / east stay
+   * three separate nodes so the internal gate waypoints keep working, decision
+   * K7) — OR in districts connected through ≥ 1 OPEN city gate (transitive;
+   * recomputed lazily only when a gate state flips).
    * @param {number} x1
    * @param {number} z1
    * @param {number} x2
@@ -721,17 +920,25 @@ export function createLevel(scene) {
    * @returns {boolean}
    */
   function sameArea(x1, z1, x2, z2) {
-    const a = areaOf(x1, z1);
-    return a !== -1 && a === areaOf(x2, z2);
+    const a = areaNodeAt(x1, z1);
+    if (a === -1) return false;
+    const b = areaNodeAt(x2, z2);
+    if (a === b) return true;
+    if (b === -1 || cityGates.length === 0) return false;
+    if (cityComponentsDirty) rebuildCityComponents();
+    return cityComponents[a] === cityComponents[b];
   }
 
   /**
-   * EXPANSION C2: the frozen gate waypoints (INSIDE the gaps) — zombie.js
-   * paths through the nearest reachable one when a wall blocks the chase.
+   * EXPANSION C2 + NIGHT 30 (K7): the frozen gate waypoints (INSIDE the gaps)
+   * — the 2 legacy internal quarantine gates first, then the 12 city district
+   * gates registered by city.js. zombie.js paths through the nearest reachable
+   * one when a wall blocks the chase. Waypoints of LOCKED gates stay in the
+   * list; the extended sameArea keeps zombies from pathing through them.
    * @returns {Array<{x: number, z: number}>} the shared array — do not mutate.
    */
   function getGateWaypoints() {
-    return GATE_WAYPOINTS;
+    return gateWaypoints;
   }
 
   function dispose() {
@@ -747,5 +954,11 @@ export function createLevel(scene) {
     spawnPoints.length = 0;
   }
 
-  return { colliders, isBlocked, spawnPoints, getGateWaypoints, sameArea, setZoneLocked, dispose };
+  // Public API — the frozen shape from the original contract. The two city.js
+  // registration hooks (§3.5.3-3.5.4) ride along as NON-ENUMERABLE private
+  // members so the documented Level contract is unchanged.
+  const api = { colliders, isBlocked, spawnPoints, getGateWaypoints, sameArea, setZoneLocked, dispose };
+  Object.defineProperty(api, "__cityRegisterGates", { value: cityRegisterGates, enumerable: false, writable: false });
+  Object.defineProperty(api, "__cityGateOpenAt", { value: cityGateOpenAt, enumerable: false, writable: false });
+  return api;
 }

@@ -33,9 +33,16 @@
  * Bus events consumed:
  * - "wave-clear" {n} → unlockForWave(n) (main.js may also call it directly —
  *   idempotency makes the double wiring safe; each zone unlocks exactly once
- *   per run).
+ *   per run). NIGHT 30 P1 story-guard (docs/EXPANSION-P1.md §5.6.4): while a
+ *   story run is active ("story-mode" {active: true}), this listener does
+ *   NOTHING — north/east are the quarantine interior and must stay sealed
+ *   until mission 6 (main.js calls unlockForWave directly there). Direct
+ *   unlockForWave calls always work; only the wave-clear automation is gated.
  * - "wave-start" {n: 1} → reset(). A fresh run always starts at wave 1, so
  *   this re-locks both zones without emitting events.
+ * - "story-mode" {active} (NIGHT 30 P1 §5.6.4/§6) — main.js arms/disarms the
+ *   story guard. {active: false} also arrives on every fresh story BEFORE the
+ *   resets, per the contract ordering.
  * Bus events emitted: "zone-unlocked" {id, name}.
  *
  * The numbers below MUST stay in sync with src/world/level.js (wall spans,
@@ -216,9 +223,20 @@ export function createZones(scene, level) {
     }
   }
 
+  // NIGHT 30 P1 story-guard (§5.6.4): armed by main.js for every story run.
+  // While active, clearing a wave must NOT open north/east — they are the
+  // quarantine interior, sealed until mission 6 unlocks them directly.
+  let storyActive = false;
+
+  bus.addEventListener("story-mode", (e) => {
+    const d = e && e.detail ? e.detail : {};
+    storyActive = d.active === true;
+  });
+
   // Clearing wave n unlocks what it earned (idempotent — main.js calling
-  // unlockForWave directly is equally safe).
+  // unlockForWave directly is equally safe). Skipped entirely in story runs.
   bus.addEventListener("wave-clear", (e) => {
+    if (storyActive) return; // §5.6.4: story opens these via mission 6 only
     const n = e && e.detail ? Number(e.detail.n) : NaN;
     if (Number.isFinite(n)) unlockForWave(n);
   });
