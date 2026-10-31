@@ -18,7 +18,10 @@
  *   still fading for 1.5 s), and unmarked objects (bulbs, pickups —
  *   decorations, not cover).
  * - Damage: weapon.damage per pellet; a hit on userData.part === "head"
- *   doubles it (x2).
+ *   multiplies it by the weapon's headshot multiplier — read from the
+ *   WeaponState def (.headshotMult, expansion feature B6): default x2 for
+ *   every def that does not declare the field (all three launch guns keep
+ *   their legacy x2), sniper x3.
  * - For each landed pellet: zombie.takeDamage(dmg, headshot) (returns true if
  *   this killed it) and particles.spawnBlood(hitPoint, 8..14).
  * - Per shoot() call that landed at least one pellet (NOT per pellet):
@@ -52,7 +55,8 @@
 import * as THREE from "three";
 
 const MAX_DISTANCE = 100;   // ray cap (spec: ~100 m)
-const HEADSHOT_MULT = 2;    // userData.part === "head" → damage x2
+const HEADSHOT_MULT = 2;    // default headshot multiplier (feature B6); weapon
+                            // defs override via .headshotMult — sniper is 3
 
 export function createCombat(camera, scene, zombies, particles, audio, bus) {
   // The weapons viewmodel + muzzle flash light are CHILDREN of the camera, and
@@ -122,9 +126,18 @@ export function createCombat(camera, scene, zombies, particles, audio, bus) {
 
   function shoot(weapon) {
     if (!weapon) return;
+    // Explosive weapons (grenade) never hit-scan: their "fire" must be routed
+    // by main.js to explosives.fire(origin, dir) — expansion integration
+    // note 3. This guard keeps a missed routing harmless under the legacy
+    // "every fire → combat.shoot" wiring (no ray, no blood, no sound).
+    if (weapon.explosive === true) return;
     const damage = Math.max(0, Number(weapon.damage) || 0);
     const pellets = Math.max(1, Math.floor(Number(weapon.pellets) || 1));
     const spread = Math.max(0, Number(weapon.spread) || 0);
+    // Headshot multiplier from the weapon def (feature B6): falls back to the
+    // legacy x2 for any WeaponState without the field.
+    const hm = Number(weapon.headshotMult);
+    const headMult = Number.isFinite(hm) && hm > 0 ? hm : HEADSHOT_MULT;
 
     // Fresh target list every shot — never cache length or liveness.
     targets.length = 0;
@@ -196,7 +209,7 @@ export function createCombat(camera, scene, zombies, particles, audio, bus) {
         if (verdict === 2) break;    // level cover: the pellet stops, silent
         if (!foundZombie.alive) continue; // died from an earlier pellet this shot
         const headshot = foundPart === "head";
-        const dmg = headshot ? damage * HEADSHOT_MULT : damage;
+        const dmg = headshot ? damage * headMult : damage;
         const killed = foundZombie.takeDamage(dmg, headshot) === true;
         if (particles) {
           particles.spawnBlood(hit.point, 8 + Math.floor(Math.random() * 7)); // 8..14
