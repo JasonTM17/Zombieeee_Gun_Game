@@ -82,6 +82,34 @@
  * module renders before those owners register; i18n merges per key and
  * identical values make registration order irrelevant.
  *
+ * P2 widgets (docs/EXPANSION-P2.md §4.3 — additive, every old element keeps
+ * its behavior):
+ * - Compass strip, very top center (top: 6px, min(560px, 72vw) × 16px, drawn
+ *   on one small canvas): projects the current mission (gold diamond) and the
+ *   running event (red/amber/green by type) onto the SAME camera basis as the
+ *   boss arrow (right/fwd formula below); a center tick is the player's
+ *   heading; markers beyond the ±0.8 rad half-FOV clamp to the edge as
+ *   outward chevrons. Data comes from update()'s extras (`mission`, `event`,
+ *   `yaw` — main derives, P2-K13/K7; the HUD never guesses). Hidden when: no
+ *   yaw, no marker, the M map is open ("map-visibility" {open}), or the HUD
+ *   is hidden.
+ * - Event banner: big centered text on "event-start" (key
+ *   "event_"+type+"_banner"), 2.5 s via WAAPI, on its OWN node (never the
+ *   wave banner node).
+ * - Event toasts on "event-end" (shared toast node): reason "opened" →
+ *   event_supply_opened (+{money}$ from the payload), "rescued" →
+ *   event_survivor_rescued, "lost" → event_survivor_lost.
+ * - Bloodmoon chip: red countdown chip in the top-left corner
+ *   ("event_bloodmoon_timer", seconds ticked down by the measured update()
+ *   dt), armed by "bloodmoon-active" {active:true}, released by
+ *   {active:false} (with the event_bloodmoon_end toast) or by the bloodmoon
+ *   "event-end". Frozen while paused (update() is not called — same principle
+ *   as the events scheduler).
+ * - P2 event_* i18n keys are CONSUMED (owner events.js §7.1); this module
+ *   registers an identical-text fallback bundle (HUD_P2_BUNDLE) exactly like
+ *   the P1 one above. All P2 widgets clear on run end (gameover/menu) and on
+ *   show(false).
+ *
  * update(player, weapons, gamestate[, extras]) — called by the main loop
  * EVERY FRAME while playing:
  *   @param player    - the Player object (read hp, alive, position).
@@ -111,7 +139,9 @@
  * "state-changed" {state} (run-end cleanup). Bus-driven sounds:
  * audio.waveBanner() on "wave-start". P1 story events (§6 table):
  * "mission-start", "objective-progress", "mission-complete", "mission-reset",
- * "quota-done", "gate-open", "interact-near".
+ * "quota-done", "gate-open", "interact-near". P2 event widgets (§4.3):
+ * "event-start" {type,...}, "event-end" {type, reason, money?},
+ * "bloodmoon-active" {active, duration}, "map-visibility" {open}.
  *
  * Implementation notes:
  * - No object allocation in the per-frame path: DOM writes are gated on value
@@ -156,6 +186,10 @@
  *   "YXZ"). Aliases: "camYaw", or a "camera" object (its .rotation.y is read),
  *   or a "forward" {x, z} view vector. No yaw source → arrow hidden.
  * @property {number} [hp] - legacy shortcut: live boss hp (same as extras.boss.hp).
+ * @property {{x: number, z: number}|null} [mission] - P2 (§4.3): current
+ *   mission marker (main derives per P2-K13); null/absent → no gold marker.
+ * @property {{type: string, x: number, z: number}|null} [event] - P2 (§4.3):
+ *   the running event marker; x/z are null for bloodmoon → no strip marker.
  */
 
 /**
@@ -201,6 +235,15 @@ const KNOWN_TYPES = {
   golem: "killGolem",
 };
 const BOSS_TYPES = { butcher: 1, spitter: 1, screamer: 1, golem: 1 };
+
+// P2 (§4.3): compass strip marker color per event type (§4.2 palette).
+const EVENT_STRIP_COLORS = {
+  horde: "#ff4d3d",
+  supply: "#ffab3d",
+  survivor: "#6fe08a",
+  bloodmoon: "#ff4d3d",
+};
+const STRIP_MISSION_COLOR = "#ffd35e";
 
 // P1 (docs/EXPANSION-P1.md §7.3, decision K1): interact target id / collect
 // item id → i18n display key. Numbered ids ("generator-1", "supply-2", …)
@@ -337,6 +380,42 @@ const HUD_P1_BUNDLE = {
   },
 };
 
+// P2 event keys — FALLBACK copies, verbatim from docs/EXPANSION-P2.md §7.1
+// (owner: events.js; same rationale as HUD_P1_BUNDLE — see the header note).
+// event_survivor_thanks deliberately NOT here: main.js feeds it to dialogue.
+const HUD_P2_BUNDLE = {
+  en: {
+    event_horde: "HORDE",
+    event_supply: "SUPPLY DROP",
+    event_survivor: "SURVIVOR",
+    event_bloodmoon: "BLOODMOON",
+    event_horde_banner: "🚨 HORDE INCOMING",
+    event_supply_banner: "📦 SUPPLY DROP INBOUND",
+    event_survivor_banner: "🆘 SURVIVOR SURROUNDED",
+    event_bloodmoon_banner: "🌕 BLOODMOON RISES",
+    event_bloodmoon_timer: "BLOODMOON {n}s",
+    event_supply_opened: "SUPPLY SECURED +{money}$",
+    event_survivor_rescued: "SURVIVOR RESCUED +300$",
+    event_survivor_lost: "SURVIVOR LOST",
+    event_bloodmoon_end: "BLOODMOON ENDED",
+  },
+  vi: {
+    event_horde: "BỘ ĐÀN",
+    event_supply: "TIẾP TẾ",
+    event_survivor: "NGƯỜI SỐNG SÓT",
+    event_bloodmoon: "TRĂNG MÁU",
+    event_horde_banner: "🚨 HORDE ĐANG TỚI",
+    event_supply_banner: "📦 TIẾP TẾ ĐANG RƠI",
+    event_survivor_banner: "🆘 NGƯỜI SỐNG SÓT BỊ VÂY",
+    event_bloodmoon_banner: "🌕 TRĂNG MÁU NỔI",
+    event_bloodmoon_timer: "TRĂNG MÁU {n}s",
+    event_supply_opened: "ĐÃ NHẬN TIẾP TẾ +{money}$",
+    event_survivor_rescued: "ĐÃ CỨU NGƯỜI SỐNG SÓT +300$",
+    event_survivor_lost: "NGƯỜI SỐNG SÓT ĐÃ NGÃ",
+    event_bloodmoon_end: "TRĂNG MÁU TAN",
+  },
+};
+
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 
 /** Tiny DOM builder (module-local). */
@@ -378,6 +457,7 @@ export function createHud(container, bus, audio, i18n) {
   if (i18n && typeof i18n.registerBundle === "function") {
     i18n.registerBundle(HUD_BUNDLE);
     i18n.registerBundle(HUD_P1_BUNDLE); // P1 fallback keys — see header note
+    i18n.registerBundle(HUD_P2_BUNDLE); // P2 event_* fallback — §7.1 note
   }
 
   const tr = (key, params) =>
@@ -392,6 +472,50 @@ export function createHud(container, bus, audio, i18n) {
   const flash = make("div", "flash", root);
 
   const banner = make("div", "banner", root);
+
+  // P2 compass strip — very top center, created BEFORE the topinfo chips so
+  // they paint over its bottom edge (strip 6..22px vs chips from 18px).
+  // Drawn on one small canvas (§4.3); the wrap hides when inactive.
+  const compassWrap = make("div", "compass-strip", root);
+  css(compassWrap, {
+    position: "absolute",
+    top: "6px",
+    left: "50%",
+    transform: "translateX(-50%)",
+    width: "min(560px, 72vw)",
+    height: "16px",
+    background: "rgba(6, 10, 16, 0.55)",
+    border: "1px solid rgba(122, 142, 170, 0.35)",
+    borderRadius: "4px",
+    overflow: "hidden",
+    display: "none",
+  });
+  const compassCanvas = document.createElement("canvas");
+  css(compassCanvas, { width: "100%", height: "100%", display: "block" });
+  compassWrap.appendChild(compassCanvas);
+  const compassCtx = compassCanvas.getContext("2d");
+
+  // P2 event banner — its OWN node (§4.3: never reuse the wave banner node),
+  // animated with WAAPI (style.css is frozen — no new keyframes).
+  const eventBanner = make("div", "event-banner", root);
+  css(eventBanner, {
+    position: "absolute",
+    top: "26%",
+    left: "0",
+    right: "0",
+    zIndex: "6", // above .banner (z-index 5) when both fire at once
+    textAlign: "center",
+    fontSize: "clamp(30px, 5vw, 58px)",
+    fontWeight: "800",
+    letterSpacing: "0.14em",
+    textTransform: "uppercase",
+    color: "#ffd9d0",
+    textShadow:
+      "0 0 22px rgba(255, 70, 50, 0.85), 0 2px 6px rgba(0, 0, 0, 0.85)",
+    opacity: "0",
+    pointerEvents: "none",
+    display: "none",
+  });
 
   const top = make("div", "topinfo", root);
   // P1 quota chip — FIRST in the row (order: quota · wave · score, §5.4.2).
@@ -553,6 +677,27 @@ export function createHud(container, bus, audio, i18n) {
     transition: "opacity 0.25s ease-out, transform 0.25s ease-out",
   });
 
+  // P2 bloodmoon countdown chip — top-left corner (topinfo is centered, the
+  // killfeed top-right: the corner is the only always-free slot, §4.3).
+  const bloodChip = make("div", "bloodmoon-chip", root);
+  css(bloodChip, {
+    position: "absolute",
+    top: "18px",
+    left: "18px",
+    display: "none",
+    padding: "5px 12px",
+    background: "rgba(64, 8, 8, 0.85)",
+    border: "1px solid #b31212",
+    borderRadius: "6px",
+    color: "#ff9d92",
+    fontSize: "12px",
+    fontWeight: "800",
+    letterSpacing: "0.16em",
+    textTransform: "uppercase",
+    fontVariantNumeric: "tabular-nums",
+    textShadow: "0 1px 3px rgba(0, 0, 0, 0.9)",
+  });
+
   // P1 mission tracker — top right, BELOW the kill feed (the killfeed owns
   // top: 18px; right: 18px with 3 self-fading lines). Gold title row + one
   // row per objective; rebuilt on "mission-start", updated in place by
@@ -683,6 +828,15 @@ export function createHud(container, bus, audio, i18n) {
   let prevArrowShown = false;
   let prevArrowAngle = NaN;
 
+  // P2 event caches (docs/EXPANSION-P2.md §4.3).
+  let mapOpen = false; // the M map owns the top strip while it is up
+  let bloodOn = false; // bloodmoon chip armed ("bloodmoon-active" {active:true})
+  let bloodLeft = 0; // seconds remaining, ticked by the measured update() dt
+  let bloodText = ""; // last painted chip text (DOM writes gated on change)
+  let evBannerAnim = null; // running WAAPI animation of the event banner
+  let compassShown = false; // strip visibility (display toggles gated)
+  let lastCompassPaint = 0; // strip redraw throttle (~10 Hz, per contract)
+
   // P1 story caches (docs/EXPANSION-P1.md §5.4).
   let trkIndex = 0; // mission index shown in the tracker (0 = hidden)
   let trkTitleKey = "";
@@ -705,6 +859,14 @@ export function createHud(container, bus, audio, i18n) {
     type: "",
     visible: /** @type {boolean|null} */ (null),
     yaw: 0,
+    // P2 (§4.3): mission + event markers for the compass strip.
+    hasMission: false,
+    mx: 0,
+    mz: 0,
+    hasEvent: false,
+    etype: "",
+    ex: 0,
+    ez: 0,
   };
 
   // --- i18n (labels cached; refreshed on live language switch) -----------------
@@ -1054,6 +1216,150 @@ export function createHud(container, bus, audio, i18n) {
     }
   }
 
+  // --- P2 event widgets (docs/EXPANSION-P2.md §4.3, additive) -------------------
+
+  /** Big centered event banner, 2.5 s, on its own node (never the wave
+   * banner). WAAPI because style.css is frozen; a restart cancels the
+   * previous animation so overlapping "event-start"s never stack. */
+  function showEventBanner(text) {
+    eventBanner.textContent = text;
+    eventBanner.style.display = "block";
+    if (evBannerAnim) {
+      evBannerAnim.cancel();
+      evBannerAnim = null;
+    }
+    if (typeof eventBanner.animate === "function") {
+      evBannerAnim = eventBanner.animate(
+        [
+          { opacity: 0, transform: "scale(1.12)" },
+          { opacity: 1, transform: "scale(1)", offset: 0.08 },
+          { opacity: 1, transform: "scale(1)", offset: 0.78 },
+          { opacity: 0, transform: "scale(1.02)" },
+        ],
+        { duration: 2500, easing: "ease-out" }
+      );
+      evBannerAnim.addEventListener(
+        "finish",
+        () => {
+          evBannerAnim = null;
+          eventBanner.style.display = "none";
+        },
+        { once: true }
+      );
+    } else {
+      // Ancient browser fallback: static 2.4 s flash, no animation.
+      eventBanner.style.opacity = "1";
+      setTimeout(() => {
+        eventBanner.style.display = "none";
+        eventBanner.style.opacity = "0";
+      }, 2400);
+    }
+  }
+
+  function showBloodChip(seconds) {
+    bloodOn = true;
+    bloodLeft = seconds > 0 ? seconds : 90;
+    bloodText = "";
+    bloodChip.style.display = "block";
+  }
+
+  function hideBloodChip() {
+    if (!bloodOn && bloodChip.style.display === "none") return;
+    bloodOn = false;
+    bloodLeft = 0;
+    bloodText = "";
+    bloodChip.style.display = "none";
+  }
+
+  function hideCompass() {
+    if (compassShown) {
+      compassShown = false;
+      compassWrap.style.display = "none";
+    }
+  }
+
+  /** Run-scoped cleanup for the P2 widgets — gameover/menu + show(false)
+   * (§4.3). NOT on "paused": the bloodmoon chip must survive a pause (the
+   * events scheduler freezes, so the countdown simply stops ticking). */
+  function clearEventWidgets() {
+    hideBloodChip();
+    eventBanner.style.display = "none";
+    if (evBannerAnim) {
+      evBannerAnim.cancel();
+      evBannerAnim = null;
+    }
+    hideCompass();
+    mapOpen = false; // the map closes itself on the same states — stay in sync
+  }
+
+  /** One projected marker on the strip (§4.3): the camera basis of the boss
+   * arrow (hud boss-arrow right/fwd formula), position = mid + ang/0.8 ×
+   * halfW, clamped to the edge as an outward chevron when out of view. */
+  function drawStripMarker(g, mid, halfW, dx, dz, yaw, color) {
+    const cos = Math.cos(yaw);
+    const sin = Math.sin(yaw);
+    const right = dx * cos - dz * sin;
+    const fwd = -dx * sin - dz * cos;
+    const ang = Math.atan2(right, fwd);
+    let p = ang / ARROW_CONE;
+    const off = p > 1 || p < -1;
+    if (p > 1) p = 1;
+    else if (p < -1) p = -1;
+    const x = mid + p * halfW;
+    g.fillStyle = color;
+    g.strokeStyle = "rgba(0, 0, 0, 0.85)";
+    g.lineWidth = 1;
+    g.beginPath();
+    if (off) {
+      const dir = p > 0 ? 1 : -1;
+      g.moveTo(x + 4 * dir, 8);
+      g.lineTo(x - 2 * dir, 3);
+      g.lineTo(x - 2 * dir, 13);
+    } else {
+      g.moveTo(x, 3.5);
+      g.lineTo(x + 4.5, 8);
+      g.lineTo(x, 12.5);
+      g.lineTo(x - 4.5, 8);
+    }
+    g.closePath();
+    g.fill();
+    g.stroke();
+  }
+
+  /** Redraw the compass strip — called from update() while visible (§4.3:
+   * mission gold + event color, center tick = the player's heading). */
+  function drawCompass(player, s) {
+    const wpx = compassWrap.clientWidth | 0;
+    if (wpx < 60) return;
+    if (compassCanvas.width !== wpx) {
+      compassCanvas.width = wpx;
+      compassCanvas.height = 16;
+    }
+    const g = compassCtx;
+    g.clearRect(0, 0, wpx, 16);
+    // Center tick = the player's view direction.
+    g.fillStyle = "rgba(207, 216, 234, 0.85)";
+    g.fillRect(wpx / 2 - 1, 2, 2, 12);
+    if (!player || !player.position) return;
+    const px = player.position.x;
+    const pz = player.position.z;
+    const halfW = wpx / 2 - 7;
+    if (s.hasMission) {
+      drawStripMarker(g, wpx / 2, halfW, s.mx - px, s.mz - pz, s.yaw, STRIP_MISSION_COLOR);
+    }
+    if (s.hasEvent) {
+      drawStripMarker(
+        g,
+        wpx / 2,
+        halfW,
+        s.ex - px,
+        s.ez - pz,
+        s.yaw,
+        EVENT_STRIP_COLORS[s.etype] || "#e8eefc"
+      );
+    }
+  }
+
   // --- bus -----------------------------------------------------------------------
   bus.addEventListener("spread", (e) => {
     const d = e && e.detail ? e.detail : {};
@@ -1224,6 +1530,7 @@ export function createHud(container, bus, audio, i18n) {
       hideToast();
       hideHint();
       clearStoryWidgets(); // P1: tracker + quota + hint E are run-scoped
+      clearEventWidgets(); // P2: banner + bloodmoon chip + compass (§4.3)
       intermission = false;
     }
   });
@@ -1231,6 +1538,52 @@ export function createHud(container, bus, audio, i18n) {
   bus.addEventListener("settings-changed", (e) => {
     const patch = e && e.detail && e.detail.patch ? e.detail.patch : null;
     if (patch && patch.lang) applyLang();
+  });
+
+  // --- P2 event widgets (docs/EXPANSION-P2.md §4.3) ------------------------------
+
+  bus.addEventListener("event-start", (e) => {
+    const d = e && e.detail ? e.detail : {};
+    const type = String(d.type || "");
+    if (!type) return;
+    const key = "event_" + type + "_banner";
+    const text = tr(key);
+    showEventBanner(text === key ? type.toUpperCase() : text);
+    if (type === "bloodmoon") {
+      // events emits both "bloodmoon-active" and this; same data, keep in sync.
+      showBloodChip(Number(d.timeLeft) > 0 ? Number(d.timeLeft) : 90);
+    }
+  });
+
+  bus.addEventListener("event-end", (e) => {
+    const d = e && e.detail ? e.detail : {};
+    if (String(d.type) === "bloodmoon") {
+      hideBloodChip(); // the toast rides "bloodmoon-active" {active:false}
+    }
+    const reason = String(d.reason || "");
+    if (reason === "opened") {
+      showToast(tr("event_supply_opened", { money: fmtInt(d.money) }));
+    } else if (reason === "rescued") {
+      showToast(tr("event_survivor_rescued"));
+    } else if (reason === "lost") {
+      showToast(tr("event_survivor_lost"));
+    }
+  });
+
+  bus.addEventListener("bloodmoon-active", (e) => {
+    const d = e && e.detail ? e.detail : {};
+    if (d && d.active) {
+      showBloodChip(Number(d.duration) > 0 ? Number(d.duration) : 90);
+    } else {
+      hideBloodChip();
+      showToast(tr("event_bloodmoon_end"));
+    }
+  });
+
+  // The M map owns the top strip while it is open (§4.3) — hide the compass.
+  bus.addEventListener("map-visibility", (e) => {
+    const d = e && e.detail ? e.detail : {};
+    mapOpen = !!d.open;
   });
 
   // --- extras parsing (per-frame, zero allocation) -----------------------------
@@ -1244,6 +1597,8 @@ export function createHud(container, bus, audio, i18n) {
     s.maxHp = NaN;
     s.type = "";
     s.visible = null;
+    s.hasMission = false;
+    s.hasEvent = false;
     if (!arg || typeof arg !== "object") return s;
 
     // Yaw: number → alias → camera object (rotation order "YXZ") → forward vec.
@@ -1281,6 +1636,30 @@ export function createHud(container, bus, audio, i18n) {
         if (Number.isFinite(b.maxHp)) s.maxHp = Number(b.maxHp);
         if (typeof b.type === "string") s.type = b.type;
         if (typeof b.visible === "boolean") s.visible = b.visible;
+      }
+    }
+
+    // P2 (§4.3): mission + event markers (main derives — P2-K13). A nested
+    // `position` is tolerated, same as the boss field.
+    const mi = arg.mission;
+    if (mi && typeof mi === "object") {
+      const mp =
+        mi.position && typeof mi.position === "object" ? mi.position : mi;
+      if (Number.isFinite(mp.x) && Number.isFinite(mp.z)) {
+        s.hasMission = true;
+        s.mx = Number(mp.x);
+        s.mz = Number(mp.z);
+      }
+    }
+    const ev = arg.event;
+    if (ev && typeof ev === "object" && typeof ev.type === "string" && ev.type) {
+      const ep =
+        ev.position && typeof ev.position === "object" ? ev.position : ev;
+      if (Number.isFinite(ep.x) && Number.isFinite(ep.z)) {
+        s.hasEvent = true;
+        s.etype = ev.type;
+        s.ex = Number(ep.x);
+        s.ez = Number(ep.z);
       }
     }
     return s;
@@ -1440,6 +1819,34 @@ export function createHud(container, bus, audio, i18n) {
       arrow.style.display = "none";
       prevArrowShown = false;
     }
+
+    // --- P2: bloodmoon countdown chip (ticked by the measured dt, §4.3) ---
+    if (bloodOn) {
+      bloodLeft -= dt;
+      if (bloodLeft <= 0) bloodLeft = 0;
+      const txt = tr("event_bloodmoon_timer", { n: Math.ceil(bloodLeft) });
+      if (txt !== bloodText) {
+        bloodText = txt;
+        bloodChip.textContent = txt;
+      }
+    }
+
+    // --- P2: compass strip (hidden when: no yaw, no marker, map open) -----
+    const wantCompass = s.hasYaw && !mapOpen && (s.hasMission || s.hasEvent);
+    if (wantCompass) {
+      if (!compassShown) {
+        compassShown = true;
+        compassWrap.style.display = "block";
+        lastCompassPaint = now;
+        drawCompass(player, s); // paint immediately on (re)show
+      } else if (now - lastCompassPaint >= 100) {
+        // 10 Hz repaint — a coarse direction guide needs no 60 fps (§4.0).
+        lastCompassPaint = now;
+        drawCompass(player, s);
+      }
+    } else {
+      hideCompass();
+    }
   }
 
   function show(visible) {
@@ -1460,6 +1867,7 @@ export function createHud(container, bus, audio, i18n) {
       hideToast();
       hideHint();
       clearStoryWidgets(); // P1: tracker + quota + hint E
+      clearEventWidgets(); // P2: banner + bloodmoon chip + compass
       intermission = false;
     }
   }

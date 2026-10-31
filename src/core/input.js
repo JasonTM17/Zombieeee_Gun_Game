@@ -3,8 +3,8 @@
  *
  * Key identifiers are `KeyboardEvent.code` strings: "KeyW", "KeyA", "KeyS",
  * "KeyD", "ShiftLeft"/"ShiftRight", "Space", "KeyR", "KeyP", "Escape",
- * "KeyB", "KeyE", "Digit1"…"Digit7". Mouse buttons are addressable as "Mouse0"
- * (left / fire), "Mouse1" (middle), "Mouse2" (right) for isDown().
+ * "KeyB", "KeyE", "KeyM", "Digit1"…"Digit7". Mouse buttons are addressable as
+ * "Mouse0" (left / fire), "Mouse1" (middle), "Mouse2" (right) for isDown().
  * Digit4…Digit7 need NO extra plumbing (EXPANSION C7): wasPressed() already
  * forwards EVERY KeyboardEvent.code one-shot, so weapons.js polls Digit4..7
  * exactly like the existing Digit1..3.
@@ -23,6 +23,11 @@
  *   missions/dialogue each decide whether to listen. The ONE exception is
  *   the shop overlay — while it is open E stays inert (the same rule as B:
  *   the shop UI owns both keys, input.js stays silent).
+ * - "map-toggle" — per keydown of M (auto-repeat ignored), NIGHT 30 P2
+ *   (docs/EXPANSION-P2.md §4/§8.6). Same gating as B: only from a live run
+ *   (state "playing") and the shop is NOT already open. The map overlay
+ *   (src/ui/map.js) listens for this itself and flips its canvas + emits
+ *   "map-visibility" {open} (the HUD hides the compass strip while open).
  *
  * Shop coordination (EXPANSION C7 + integration note 1 in docs/EXPANSION.md):
  * - This module tracks the overlay via bus "shop-open" / "shop-closed"
@@ -174,6 +179,14 @@ export function createInput(canvas, settings) {
       // the key, exactly like B above.
       if (!shopOpen) {
         bus.dispatchEvent(new CustomEvent("interact-press"));
+      }
+    } else if (e.code === "KeyM") {
+      // M = map toggle (NIGHT 30 P2, docs/EXPANSION-P2.md §4). Same gating
+      // as B: only from a live run and only when the shop is closed — the
+      // shop overlay owns both keys while it is open. The map overlay
+      // (src/ui/map.js) listens for this event itself.
+      if (!shopOpen && lastKnownState === "playing") {
+        bus.dispatchEvent(new CustomEvent("map-toggle"));
       }
     }
   });
