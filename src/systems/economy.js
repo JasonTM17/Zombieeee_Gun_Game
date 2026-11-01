@@ -67,6 +67,8 @@
 import { bus as sharedBus } from "./gamestate.js";
 
 // Money reward per kill TYPE (spec — walker/runner/brute + the four bosses).
+// NIGHT 30 P3 §3.6 (additive row): origin pays 2000 (the final-boss drop —
+// headshot ×1.5 and bloodmoon ×2 ride on it like every other type).
 const REWARDS = {
   walker: 50,
   runner: 75,
@@ -75,6 +77,7 @@ const REWARDS = {
   spitter: 800,
   screamer: 700,
   golem: 1500,
+  origin: 2000,
 };
 
 const HEADSHOT_MULT = 1.5; // +50% for a headshot kill, rounded once below

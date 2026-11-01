@@ -104,6 +104,13 @@
  * product. reset() clears the flag. Every other behavior (cap 60, wave
  * composition, intermission, boss cadence) is untouched.
  *
+ * NIGHT 30 P3 (docs/EXPANSION-P3.md §4.7 — ADDITIVE): "ng-plus" {active}
+ * (emitted by main.js) arms the New Game+ rule for NEWLY created units —
+ * regular zombies hp ×1.25 / speed ×1.1, bosses maxHp ×1.25 (hp reset to it)
+ * / speed ×1.1. Units already alive are untouched. reset() clears the flag;
+ * main.js re-emits the current flag value on every fresh run so a death-
+ * restart inside an NG+ run re-arms it (P3-K9).
+ *
  * Internal bookkeeping: once a zombie is dead ("zombie-killed") it no longer
  * counts toward wave-clear; drop it from the internal list when its corpse
  * finishes despawning ("zombie-despawned") or on reset().
@@ -177,6 +184,12 @@ export function createWaves(scene, level, bus, zones, city) {
   // NIGHT 30 P2 §3.6.3: bloodmoon halves the FINAL gap (stacked outside the
   // P1 multiplier — P2-K8). Flag arrives on the bus from systems/events.js.
   let bloodmoonActive = false;
+  // NIGHT 30 P3 §4.7 (P3-K9): New Game+ multipliers for NEWLY created units —
+  // hp ×1.25 / speed ×1.1 (main.js emits "ng-plus" {active}; reset() clears
+  // and main re-emits on every fresh run — see main.js freshRun).
+  let ngPlus = false;
+  const NG_HP_MUL = 1.25;
+  const NG_SPEED_MUL = 1.1;
   /** Reused spawn-pool buffer (§4.2.2) — zero allocation per spawn attempt. */
   const poolScratch = [];
 
@@ -184,6 +197,24 @@ export function createWaves(scene, level, bus, zones, city) {
     const d = e && e.detail ? e.detail : {};
     bloodmoonActive = d.active === true;
   });
+
+  B.addEventListener("ng-plus", (e) => {
+    const d = e && e.detail ? e.detail : {};
+    ngPlus = d.active === true;
+  });
+
+  /** §4.7: apply the NG+ rule to one freshly created unit (no-op otherwise). */
+  function applyNgPlus(z, isBoss) {
+    if (!ngPlus || !z) return;
+    if (isBoss) {
+      z.maxHp = Math.round(z.maxHp * NG_HP_MUL);
+      z.hp = z.maxHp;
+      z.speed = z.speed * NG_SPEED_MUL;
+    } else {
+      z.hp = Math.round(z.hp * NG_HP_MUL);
+      z.speed = z.speed * NG_SPEED_MUL;
+    }
+  }
 
   B.addEventListener("quota-done", (e) => {
     const id = e && e.detail ? e.detail.districtId : null;
@@ -343,6 +374,7 @@ export function createWaves(scene, level, bus, zones, city) {
     if (x === null) return; // no spawn points either: boss-less boss wave (degenerate)
 
     const boss = new Ctor(scene, n, new THREE.Vector3(x, 0, z), B);
+    applyNgPlus(boss, true); // §4.7: NG+ hp ×1.25 / speed ×1.1 (boss shape)
     spawnedThisWave++;
     tracked.push(boss); // the clear check covers the boss via its alive flag
     emit("zombie-spawned", { zombie: boss }); // main.js → shared array → combat
@@ -583,6 +615,7 @@ export function createWaves(scene, level, bus, zones, city) {
       }
     }
     const zombie = new Zombie(scene, type, new THREE.Vector3(x, 0, z), B);
+    applyNgPlus(zombie, false); // §4.7: NG+ hp ×1.25 / speed ×1.1 (regular)
     spawnedThisWave++;
     tracked.push(zombie);
     emit("zombie-spawned", { zombie });
@@ -662,6 +695,7 @@ export function createWaves(scene, level, bus, zones, city) {
     quotaDoneDistricts.clear(); // P1: fresh run, no density bonuses
     hordeActive = false;
     bloodmoonActive = false; // P2 §3.6.3: fresh run, no bloodmoon gap bonus
+    ngPlus = false; // P3 §4.7: main re-emits "ng-plus" per run (NG+ re-arms it)
     phase = "idle"; // next update() starts wave 1 again
   }
 

@@ -233,8 +233,9 @@ const KNOWN_TYPES = {
   spitter: "killSpitter",
   screamer: "killScreamer",
   golem: "killGolem",
+  origin: "killOrigin", // NIGHT 30 P3: final-boss kill-feed label
 };
-const BOSS_TYPES = { butcher: 1, spitter: 1, screamer: 1, golem: 1 };
+const BOSS_TYPES = { butcher: 1, spitter: 1, screamer: 1, golem: 1, origin: 1 }; // P3: the bar must hide on the Origin's kill too
 
 // P2 (§4.3): compass strip marker color per event type (§4.2 palette).
 const EVENT_STRIP_COLORS = {
@@ -278,10 +279,12 @@ const HUD_BUNDLE = {
     bossSpitter: "The Spitter",
     bossScreamer: "The Screamer",
     bossGolem: "The Golem",
+    bossOrigin: "The Origin", // NIGHT 30 P3: final-boss bar name (capKey "boss")
     killButcher: "Butcher down",
     killSpitter: "Spitter down",
     killScreamer: "Screamer down",
     killGolem: "Golem down",
+    killOrigin: "Origin down",
     wSmg: "SMG",
     wSniper: "Sniper",
     wMinigun: "Minigun",
@@ -306,10 +309,12 @@ const HUD_BUNDLE = {
     bossSpitter: "Kẻ Phun Độc",
     bossScreamer: "Kẻ Gào Thét",
     bossGolem: "Golem Đá",
+    bossOrigin: "Nguồn Gốc", // NIGHT 30 P3: final-boss bar name (capKey "boss")
     killButcher: "Hạ gục Butcher",
     killSpitter: "Hạ gục Spitter",
     killScreamer: "Hạ gục Screamer",
     killGolem: "Hạ gục Golem",
+    killOrigin: "Hạ gục Origin",
     wSmg: "SMG",
     wSniper: "Súng bắn tỉa",
     wMinigun: "Minigun",

@@ -171,13 +171,17 @@ Bổ sung cho bảng debug sẵn có trên console (các phím cũ như `spawnZo
 | Method | Hành vi |
 |---|---|
 | `startStory()` | Chạy story mới như bấm PLAY (intro slides) |
-| `skipToMission(n)` | Đánh m1..m(n−1) hoàn thành (cổng tương ứng mở), active nhiệm vụ n |
-| `completeObjective()` | Force-complete mục tiêu đầu tiên chưa xong của nhiệm vụ hiện tại |
+| `skipToMission(n)` | Đánh m1..m(n−1) hoàn thành (cổng tương ứng mở), active nhiệm vụ n — *(Phần 3)* nhận **1..10**: skip 10 mở cổng + active m10 và **trỗi dậy Origin** qua "mission-start" |
+| `completeObjective()` | Force-complete mục tiêu đầu tiên chưa xong của nhiệm vụ hiện tại (m10: hoàn thành mục tiêu boss) |
 | `fillQuota()` | Lấp đầy quota của nhiệm vụ hiện tại |
 | `teleportDistrict(id)` | Mở mọi cổng trên đường BFS ngắn nhất rồi dịch chuyển tới tâm khu (`safehouse`/`residential`/`commercial`/`hospital`/`park`/`docks`/`quarantine`) |
-| `getState()` | Snapshot mở rộng: thêm `story` (nhiệm vụ + objectives), `currentDistrict`, `unlockedDistricts`, `event` (`{type, timeLeft}|null`), `bloodmoon` (`true` khi Trăng Máu đang chạy) |
+| `getState()` | Snapshot mở rộng: thêm `story` (nhiệm vụ + objectives), `currentDistrict`, `unlockedDistricts`, `event` (`{type, timeLeft}|null`), `bloodmoon`; *(Phần 3)* thêm **`origin`** (`{alive, phase}` hoặc `null`) và **`ngPlus`** (boolean) |
 | `forceEvent(type)` | *(Phần 2)* Bắt ngay sự kiện `"horde"|"supply"|"survivor"|"bloodmoon"` — bỏ qua cooldown nhưng vẫn tôn trọng luật loại trừ bloodmoon; type sai → `{ok:false, valid:[…]}` |
 | `audioState()` | *(Phần 2)* Snapshot giọng zombie 3D — `{ctxState, activeVoices}` |
+| `spawnOrigin()` | *(Phần 3)* Nhảy tới nhiệm vụ 10 (mở đủ cổng) và trỗi dậy **Nguồn Gốc** từ vault — `{ok, hp, maxHp, phase}`; Origin sống sẵn thì không spawn trùng |
+| `damageOrigin(n)` | *(Phần 3)* Gây `n` (mặc định 100) lên Origin đang sống — `{hp, maxHp, phase, killed}`; đang rise/chuyển phase là bất tử (trả về trạng thái, không trừ) |
+| `originState()` | *(Phần 3)* Trạng thái Origin — `{alive, phase, hp, maxHp, state}` hoặc `{alive:false}` |
+| `skipToEnding()` | *(Phần 3)* Nhảy thẳng màn kết để kiểm thử: Origin sống → chết qua đường thật (`takeDamage(hp+1)` — đủ mọi event); không có → phát `"origin-defeated" {debug:true}` — `{state, ending}` |
 
 ## ĐÊM THỨ 30 — Phần 2: Sự kiện & Bản đồ & Giọng Zombie
 
@@ -212,7 +216,50 @@ Khi **đóng** bản đồ, một **compass strip** mỏng trên cùng HUD tiế
 
 ### Giọng zombie 3D
 
-Mỗi zombie phát **6 loại tiếng theo trạng thái** — idle (lầu bầu) · alert (gầm gừ dồn dập) · chase (rít) · attack (gằn răng) · pain (rên ngắn, throttle 0.4 s) · death (quẫy tắt dần) — synth WebAudio thuần, không file, cho **7 loại**: walker trầm chậm, runner khàn cao nhanh, brute "cối xay thịt" (thêm distortion), butcher gầm kim loại, spitter khạc ướt, screamer gào men cao, golem rền đá trầm. Trộn 3D: **volume theo khoảng cách** (cắt ở 35 m) và **stereo pan trái–phải** theo hướng so với camera; tối đa **8 giọng đồng thời** ưu tiên con gần nhất (boss luôn thắng chỗ). **Rì rầm bầy** nền dày lên theo số zombie < 20 m, ×1.6 khi horde hoặc bloodmoon.
+Mỗi zombie phát **6 loại tiếng theo trạng thái** — idle (lầu bầu) · alert (gầm gừ dồn dập) · chase (rít) · attack (gằn răng) · pain (rên ngắn, throttle 0.4 s) · death (quẫy tắt dần) — synth WebAudio thuần, không file, cho **7 loại**: walker trầm chậm, runner khàn cao nhanh, brute "cối xay thịt" (thêm distortion), butcher gầm kim loại, spitter khạc ướt, screamer gào men cao, golem rền đá trầm. *(Phần 3: thêm tiếng **Nguồn Gốc** — "cối xay thịt" chạm đáy sub-bass 20–50 Hz, distortion nặng.)* Trộn 3D: **volume theo khoảng cách** (cắt ở 35 m) và **stereo pan trái–phải** theo hướng so với camera; tối đa **8 giọng đồng thời** ưu tiên con gần nhất (boss luôn thắng chỗ). **Rì rầm bầy** nền dày lên theo số zombie < 20 m, ×1.6 khi horde hoặc bloodmoon.
+
+## ĐÊM THỨ 30 — Phần 3: Nguồn Gốc & Kết thúc
+
+Chặng cuối của chuỗi nhiệm vụ: làm xong nhiệm vụ 9 "Cánh Cửa Cuối" (tới cửa thép trung tâm (0,0)), **cửa vault trượt lên trong 2 s** (rền kim loại trầm ~30% + ánh sáng đỏ bên trong), nhiệm vụ 10 "Nguồn Gốc" kích hoạt và **Nguồn Gốc trỗi dậy từ lòng vault** (2.5 s — mọc từ dưới đất, gầm, rung màn hình; bất tử trong lúc trồi). Giết nó để xem màn kết.
+
+### Boss cuối "NGUỒN GỐC" — 3000 HP (không nhân theo wave), 3 phase theo máu
+
+Chuyển phase: **bất tử 1.5 s** + gầm + nhấp nháy trắng + rung màn hình. Đòn cận chiến thường 30 dmg tầm 1.6 m.
+
+| Phase | Máu | Đòn (cd tính từ lần trước; đòn đầu = "first" sau khi vào phase) |
+|---|---|---|
+| **P1** | 100–66% (hp > 1980) | **ĐẬP ĐẤT** cd 5.0 s (first 3.0): vòng sóng nở 8 m / 0.6 s — bị quét đúng 1 lần: 30 dmg + hất bay. **TRIỆU** cd 12.0 s (first 6.0): 4 walker quanh mình |
+| **P2** | 66–33% (990 < hp ≤ 1980) | Giữ P1. Thêm **MƯA ACID** cd 9.0 s (first 4.0): 5 vũng rơi ngẫu nhiên ≤ 15 m quanh bạn, vũng bán kính 1 m sống 4 s — 6 dmg/s. Thêm **HÚC** cd 8.0 s (first 3.0): telegraph 0.7 s đứng yên phát sáng đỏ, rồi lao thẳng 12 m tốc 10 m/s — chạm: 35 dmg + knockback mạnh |
+| **P3** | < 33% (hp ≤ 990) | **NỒNG TỐ**: tốc độ ×1.5 (→ 2.4 m/s), mọi cooldown ×0.7 (đập 3.5 / triệu 8.4 / mưa 6.3 / húc 5.6), thân đỏ rực tới chết. Thêm **SÓNG XUNG KÍCH** cd 3.0 s (first 1.0): vòng 6 m / 0.4 s — 15 dmg, không hất bay |
+
+**3 mẹo đánh:**
+1. **Húc thì né ngang** — telegraph 0.7 s phát sáng đỏ là báo hiệu; bước ngang lúc nó vừa lao là đủ, hướng húc đã khoá.
+2. **Đứng ngoài vũng acid** (bán kính 1 m — mép vũng là an toàn) và đừng dí sát Origin quá 2 m khi mưa acid đang rơi.
+3. **P3 giữ khoảng cách ≥ 7 m** để sóng xung kích 6 m không chạm, nhưng đừng vượt 12 m kẻo nó lại có khoảng lao húc. Triệu hồi của nó là nguồn tiền — dọn khi thấy đông, đừng bỏ chạy quên chúng.
+
+Trong trận: **scheduler sự kiện TẠM DỪNG** (không event mới — event đang chạy vẫn kết tự nhiên); boss wave thường vẫn chạy nhưng **Origin ưu tiên** trên HUD/bản đồ. Chết: nổ lớn + rung mạnh, rơi **$2000** (+ boss drop 1 medkit + 1 ammo). Chết giữa trận (bạn chết) → PLAY AGAIN: **Origin hồi đầy máu, trồi lại từ vault** (tiền + tiến trình nhiệm vụ giữ nguyên theo luật story-keep từ Phần 1).
+
+### Màn kết + NEW GAME+
+
+Giết Origin → chuỗi kết tự động: **2 s slow-zoom** camera + tiếng trực thăng tới dần → **fade trắng 2 s** + sting chiến thắng → màn **"GIẢI CỨU — NGÀY 31"** với 5 hàng thống kê (thời gian chơi · số kill · tổng tiền kiếm được · số lần chết · boss đã hạ) + dòng kết *"Thành phố vẫn thức giấc. Và bạn vẫn ở đây."* và 3 nút:
+
+| Nút | Làm gì |
+|---|---|
+| **CHƠI TIẾP — THẾ GIỚI MỞ** | Roam tiếp thế giới hiện tại: mọi nhiệm vụ done (free-roam), sự kiện vẫn tự nổ, kill vẫn ra tiền |
+| **NEW GAME+** | **Giữ**: tiền + mọi súng đã sở hữu + settings. **Reset**: thế giới, cổng, vault, chuỗi nhiệm vụ về m1. **Khó hơn**: zombie hp **×1.25**, tốc độ **×1.1** (Origin 3000 → 3750, speed 1.6 → 1.76) — chết-restart trong run NG+ vẫn giữ tiền + cờ NG+ |
+| **VỀ MENU** | Về menu chính (chạy lại từ đầu như cũ) |
+
+> Chết ở **NG+ nhiệm vụ 1** mà bấm PLAY AGAIN thì vào lại story mới (intro slides) — tiền/súng NG+ không giữ qua đường reset sạch đó; từ nhiệm vụ ≥ 2 trở đi là giữ (luật story-keep P1).
+
+### Bảng cân bằng tóm tắt (chi tiết + lý do đầy đủ: `docs/BALANCE.md`)
+
+| Chỉ số | Giá trị | Đánh giá |
+|---|---|---|
+| Chuỗi tiền đến m6 | ~16 900$ (ước lượng, kịch bản trung bình) | Mục tiêu "≥ 3/4 súng mới" đạt từ **m3** (7 400$ vs 2 700$) — không cần sửa thưởng |
+| Chuỗi tiền đến Origin | ~25 000$ trước trận | Full arsenal 3900$ + **dư rất nhiều** (~500 là sàn mục tiêu) — phần dư là đạn/medkit cho trận dài + NG+ giữ tiền |
+| Origin 3 phase | P1 1020 / P2 990 / P3 990 máu phải bắn | Chậm nhất (25 dmg/s bảo thủ) mỗi phase **≤ 41 s < 90 s** ✓ — giữ nguyên hp 3000 |
+| Nhịp mỗi khu | quota 20/25/30/25/30, pool 6 điểm/khu (safehouse 5) | ~3–5 phút/khu ✓ — không đổi density/quota |
+| Thay đổi số duy nhất | `REWARDS.origin = 2000` (trước: thiếu) + 1 dòng `RECIPES.origin` + hệ số NG+ | Mọi số khác giữ nguyên từ P1/P2 |
 
 ## Cấu trúc source
 
@@ -224,11 +271,14 @@ src/
 │                # zones.js (khoá/mở 2 khu), atmosphere.js (trời đêm, sương mù, đèn nhấp nháy)
 ├── player/      # Người chơi: controller.js (di chuyển/nhảy/va chạm), weapons.js (7 súng, tự nạp đạn, recoil, viewmodel)
 ├── zombies/     # Kẻ địch: zombie.js (model + AI đuổi/đi qua cổng/tấn công + animation chết),
-│                # bosses.js (4 boss), waves.js (điều phối wave + boss wave)
+│                # bosses.js (4 boss), origin.js (boss cuối Nguồn Gốc — P3),
+│                # waves.js (điều phối wave + boss wave + hệ số NG+)
 ├── systems/     # Gameplay: combat.js (hitscan + tường chặn đạn), particles.js, pickups.js,
-│                # explosives.js (đạn nổ), economy.js (tiền), shop.js (cửa hàng),
+│                # explosives.js (đạn nổ + camera shake), economy.js (tiền), shop.js (cửa hàng),
+│                # missions.js (chuỗi 10 nhiệm vụ), events.js (sự kiện ngẫu nhiên),
 │                # gamestate.js (state machine, điểm, high score, bus sự kiện chung)
 ├── ui/          # Giao diện: hud.js (máu/đạn/điểm/tiền/thanh máu boss/kill feed), shop.js (overlay cửa hàng),
-│                # menus.js (menu, pause, settings, game over)
+│                # menus.js (menu, pause, settings, game over), dialogue.js (thoại + intro slides),
+│                # ending.js (màn kết GIẢI CỨU — NGÀY 31, P3), map.js (bản đồ M)
 └── main.js      # Bootstrap + vòng lặp game + nối dây mọi module qua bus
 ```

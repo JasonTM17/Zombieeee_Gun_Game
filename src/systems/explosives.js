@@ -78,6 +78,11 @@
  *   gravity), detonations, light fade and camera-shake decay; dt in seconds.
  * @property {() => void} reset - remove all live projectiles / pending
  *   effects (fresh run).
+ * @property {(mult?: number) => void} shake - NIGHT 30 P3 (§6.2, P3-K8):
+ *   MANUAL camera shake for the Origin phase transitions / death — reuses the
+ *   internal blast-shake machinery, `shakeT = SHAKE_TIME × clamp(mult, 0.25, 3)`
+ *   (the multiplier scales BOTH the duration and the jitter amplitude through
+ *   the same decay curve; the default equals the grenade-blast shake).
  */
 
 import * as THREE from "three";
@@ -464,5 +469,21 @@ export function createExplosives(scene, camera, zombies, particles, audio, bus) 
     shakeY = 0;
   }
 
-  return { fire, update, reset };
+  /**
+   * NIGHT 30 P3 (§6.2, P3-K8): manual camera shake for the ORIGIN phase
+   * transitions ("origin-shake" {power:1}) and death ({power:2}) — main.js
+   * routes the event here; this module holds no bus listener of its own.
+   * Reuses the internal shake machine: shakeT = SHAKE_TIME × clamp(mult,
+   * 0.25, 3); the running decay converts the remaining time into the jitter
+   * amplitude, so a bigger multiplier shakes longer AND harder. Calling it
+   * while a shake is running just restarts it at the new strength.
+   * @param {number} [mult=1] - time+amplitude factor (0.5 light, 2 heavy).
+   */
+  function shake(mult) {
+    const m = Number(mult);
+    const k = Number.isFinite(m) && m > 0 ? m : 1;
+    shakeT = SHAKE_TIME * Math.min(3, Math.max(0.25, k));
+  }
+
+  return { fire, update, reset, shake };
 }

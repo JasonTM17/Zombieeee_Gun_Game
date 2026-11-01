@@ -133,6 +133,40 @@
  *   events.active()).
  * - Debug API (§8.7): forceEvent(type), audioState(), and getState() +=
  *   { event, bloodmoon }.
+ *
+ * NIGHT 30 P3 wiring (docs/EXPANSION-P3.md §6 — everything below is additive;
+ * the pre-existing creation order keeps its relative sequence):
+ * - ending = createEnding(uiRoot, bus, gamestate, audio, i18n, camera) after
+ *   the map (§6.1). Its update(dt) runs EVERY frame OUTSIDE the state branches
+ *   (the ending sequence plays under pause reason "ending"), right before
+ *   engine.render().
+ * - ORIGIN (P3-K5): the trigger is main's "mission-start" listener —
+ *   index 10 → city.openVault() + spawnOriginInternal() (the same debug
+ *   mechanics as spawnBossInternal: debugZombies + "zombie-spawned" +
+ *   "boss-spawned" {type:"origin", zoneId:"quarantine"}). Origin announces
+ *   "origin-alive" itself (events.js freezes its scheduler); it also emits
+ *   "origin-shake" {power} → explosives.shake(power) (P3-K8).
+ * - P3-K6: originRef is tracked SEPARATELY from bossRef; liveBoss() returns
+ *   the Origin while it lives and feeds hudExtras/mapExtras/damageBoss/
+ *   getState().boss (the Origin outranks a regular boss wave).
+ * - "origin-defeated" → originRef = null + the big death FX (spawnBlood 40 +
+ *   spark ×3 + shake(2)); "player-died" → originRef = null (P3-K7 — the
+ *   PLAY AGAIN re-announce of m10 respawns a full-hp Origin from the vault).
+ * - Ending buttons (P3-K13): "ui-continue" → input.lockPointer() (the pause
+ *   reason drops through ending.hide()'s "ending-active" {active:false});
+ *   "ui-ngplus" → beginNGPlus() (P3-K15: freshRun(true) story-keep road +
+ *   explicit missions.reset()/gates/vault close, weapons re-owned by id,
+ *   gamestate.ngPlus = true + "ng-plus" {active:true}).
+ * - freshRun() additionally closes the vault (fresh worlds), hides the ending
+ *   overlay (idempotent) and re-emits "ng-plus" {active: gamestate.ngPlus}
+ *   after waves.reset() so a death-restart inside an NG+ run re-arms the
+ *   multipliers (waves.reset() clears its local flag — §4.7).
+ * - P3-K2 guard widening (9 → 10): the mission-start dialogue window and the
+ *   reAnnounceMission window now cover m10; the events.activeMission hook
+ *   clamps 0..10 (11 = free-roam). The m9 showOutro block is GONE (P3-K4 —
+ *   the real ending replaced it).
+ * - Debug API (§6.4): spawnOrigin(), damageOrigin(n), originState(),
+ *   skipToEnding(); getState() += { origin, ngPlus }.
  */
 
 import * as THREE from "three";
@@ -163,6 +197,8 @@ import { createShopUI } from "./ui/shop.js";
 import { createMenus } from "./ui/menus.js";
 import { createDialogue } from "./ui/dialogue.js";
 import { createMap } from "./ui/map.js"; // NIGHT 30 P2 §8.1
+import { createOrigin } from "./zombies/origin.js"; // NIGHT 30 P3 §3.1
+import { createEnding } from "./ui/ending.js"; // NIGHT 30 P3 §4.1
 import { bus, createGamestate } from "./systems/gamestate.js";
 import { createDebugHook } from "./core/debug.js";
 
@@ -298,14 +334,22 @@ const events = createEvents(bus, city, audio, {
     }
     return money;
   },
-  // P2-K3: missions.current is 0 (not started) .. 9, 10 = free-roam → clamp.
+  // P2-K3, widened by P3-K2: missions.current is 0 (not started) .. 10 (m10
+  // = the Origin fight), 11 = free-roam → clamp to 10.
   activeMission() {
-    return Math.min(Math.max(missions.current, 0), 9);
+    return Math.min(Math.max(missions.current, 0), 10);
   },
 }, scene);
 // The read-only M overlay inside #ui (listens "map-toggle" from input.js
 // itself and emits "map-visibility"; pointer-events stay off).
 const map = createMap(uiRoot, bus, city);
+
+// --- NIGHT 30 P3 (§6.1): the ending sequence --------------------------------
+// Listens "origin-defeated" itself; runs under pause reason "ending" and is
+// driven by ending.update(dt) OUTSIDE the state branches of frame(). The
+// three panel buttons re-emit "ui-continue" / "ui-ngplus" / "ui-quit" (main
+// owns the responses below).
+const ending = createEnding(uiRoot, bus, gamestate, audio, i18n, camera);
 
 // --- bus wiring -------------------------------------------------------------------
 
@@ -314,6 +358,18 @@ const map = createMap(uiRoot, bus, city);
 // "boss-spawned", so the boss is already in the shared array here; maxHp
 // exists only on bosses, which makes the lookup unambiguous.
 let bossRef = /** @type {import("./zombies/zombie.js").Zombie|null} */ (null);
+
+// NIGHT 30 P3 (P3-K6): the ORIGIN is tracked apart from the wave boss. While
+// it lives it OUTRANKS bossRef everywhere the live boss is read (HUD bar +
+// arrow, map marker, debug damageBoss, getState().boss) — spec: "Origin ưu
+// tiên" over the regular boss wave.
+let originRef = /** @type {import("./zombies/origin.js").Origin|null} */ (null);
+
+/** The boss the HUD/map/debug should see: the Origin while alive, else the
+ *  wave boss. Zero alloc — returns one of the two refs. */
+function liveBoss() {
+  return originRef && originRef.alive ? originRef : bossRef;
+}
 
 // Shared zombie array sync. Includes() guards the debug path from ever
 // double-pushing; despawn is announced once per zombie but splicing a missing
@@ -443,6 +499,38 @@ bus.addEventListener("zombie-killed", (e) => {
   if (bossRef && d.type && d.type === bossRef.type) bossRef = null;
 });
 
+// --- NIGHT 30 P3 origin listeners (§6.1) --------------------------------------
+
+// The final boss died → drop the ref + the big death FX main owns (P3-K8:
+// Origin holds no particles/explosives refs — its 3-arg signature is frozen).
+// The corpse position is still valid here (origin-defeated arrives right
+// after "zombie-killed", the 3 s tilt-and-fade plays underneath).
+bus.addEventListener("origin-defeated", () => {
+  const pos = originRef && originRef.position ? originRef.position : null;
+  originRef = null;
+  if (pos) {
+    particles.spawnBlood(pos, 40);
+    particles.spawnSpark(pos);
+    particles.spawnSpark(pos);
+    particles.spawnSpark(pos);
+  }
+  explosives.shake(2); // §6.1 death shake (redundant with origin-shake 2 — same machine)
+});
+
+// Origin phase transition / death rumble (§7.1): {power:1} phase, {power:2}
+// death → the manual shake added to explosives.js (§6.2).
+bus.addEventListener("origin-shake", (e) => {
+  const d = e && e.detail ? e.detail : {};
+  explosives.shake(Number(d.power) || 1);
+});
+
+// P3-K7: death mid-fight drops the ref. The PLAY AGAIN of the story-keep
+// window re-announces m10 ("mission-start" {index:10}) which respawns a
+// full-hp Origin rising from the vault — the "rút về vault" reset.
+bus.addEventListener("player-died", () => {
+  originRef = null;
+});
+
 // --- state ↔ UI routing -----------------------------------------------------------
 
 /** Which menu screen / HUD visibility belongs to each gamestate. */
@@ -545,18 +633,30 @@ function freshRun(keepStoryProgress) {
   events.reset();
   map.show(false); // close the M overlay with the run (map also self-closes
   //                   on every state ≠ "playing" — this is belt & suspenders)
+  // NIGHT 30 P3 (§4.7): waves.reset() above cleared its local NG+ flag —
+  // re-emit the CURRENT rule so a death-restart inside an NG+ run re-arms
+  // the ×1.25/×1.10 multipliers (a fresh story/free start emits {false}:
+  // beginFreshStory()/ui-play-free clear gamestate.ngPlus BEFORE freshRun).
+  bus.dispatchEvent(
+    new CustomEvent("ng-plus", { detail: { active: gamestate.ngPlus === true } })
+  );
   if (keepStoryProgress && missions.current > 6) {
     // Past mission 6 the interiors belong to the run — unseal again (the
     // unlockForWave path is the same one mission 6's completion used).
     zones.unlockForWave(Number.MAX_SAFE_INTEGER);
   }
   bossRef = null;
+  originRef = null; // NIGHT 30 P3: the Origin never survives a world reset
   if (!keepStoryProgress) {
     closeAllCityGates(); // fresh world: every gate back to red/locked
+    city.openVault(false); // NIGHT 30 P3 §6.1: the vault re-seals too
     missions.reset(); // §5.6.2.5 (skipped when §5.6.3 keeps the progress)
   }
   dialogue.hide(); // drop any mid-flight dialogue from the previous run
   resetDialogueQueue(); // hide() drops the onDone — the queue must forget too
+  ending.hide(); // NIGHT 30 P3 §6.1: leave the ending sequence if it ran
+  //               (idempotent; also emits "ending-active" {active:false} so
+  //               the "ending" pause reason cannot leak into the next run)
   // Drop run-scoped HUD overlays (boss bar, toast, hint, kill feed) so a
   // restart mid-boss never resurrects a dead boss bar: the "playing"
   // state-changed below deliberately does NOT clear them (resume() passes
@@ -587,12 +687,15 @@ function dialogueLines(kind, index) {
   return lines;
 }
 
-/** Full fresh story: world reset (gates re-sealed, zones re-locked, missions
- * reset) → story-mode armed → state "intro" (the state-changed listener below
- * plays the slides and calls missions.begin() after them). */
+/** Full fresh story: world reset (gates re-sealed, vault re-sealed, zones
+ * re-locked, missions reset) → story-mode armed → state "intro" (the
+ * state-changed listener below plays the slides and calls missions.begin()
+ * after them). NIGHT 30 P3 (§6.3): a fresh STORY start drops the NG+ rule
+ * BEFORE freshRun so its "ng-plus" re-emit carries {active:false} (P3-K9). */
 function beginFreshStory() {
   storyMode(false); // §5.6.4 order: {active:false} → zones.reset → missions.reset → {active:true}
-  freshRun(false); // zones.reset() + closeAllCityGates() + missions.reset() inside
+  gamestate.ngPlus = false; // P3-K9: fresh story = base rules
+  freshRun(false); // zones.reset() + closeAllCityGates() + openVault(false) + missions.reset() inside
   storyRun = true;
   keepStory = false;
   storyMode(true);
@@ -607,7 +710,7 @@ function beginFreshStory() {
 let suppressStartDialogue = false;
 function reAnnounceMission() {
   const s = missions.getState();
-  if (!(s.mission >= 1 && s.mission <= 9)) return;
+  if (!(s.mission >= 1 && s.mission <= 10)) return; // P3-K2: m10 re-fights
   suppressStartDialogue = true;
   bus.dispatchEvent(
     new CustomEvent("mission-start", {
@@ -649,7 +752,10 @@ bus.addEventListener("ui-play-free", () => {
   // NIGHT 30 P1 (§5.5.2 + §5.6.2.3 + §5.6.4): CHƠI TỰ DO — fresh run, NO intro
   // slides, mission 1 active immediately. Story-guard stays ARMED: quarantine
   // interior stays sealed until mission 6 even in free-roam (WORLD.md §12.1).
+  // NIGHT 30 P3 (§6.3): free-roam start drops the NG+ rule BEFORE freshRun so
+  // the re-emit inside carries {active:false} (P3-K9).
   storyMode(true);
+  gamestate.ngPlus = false;
   freshRun(false);
   storyRun = false;
   keepStory = false;
@@ -669,6 +775,52 @@ bus.addEventListener("ui-restart", () => {
 bus.addEventListener("ui-quit", () => {
   freshRun();
   gamestate.toMenu();
+});
+
+// --- NIGHT 30 P3 ending buttons (§4.4 / §6.3 / P3-K13) ------------------------
+// The panel emits BEFORE its own hide(), synchronously inside the click, so
+// lockPointer() keeps the user gesture and hide()'s "ending-active" false is
+// the flip back to "playing".
+
+bus.addEventListener("ui-continue", () => {
+  // KEEP PLAYING — OPEN WORLD: the world stands as it was (m11 = free-roam,
+  // the event scheduler re-opened through "origin-alive" {alive:false}, kill
+  // money back to normal). Dropping the "ending" pause reason resumes the
+  // run; nothing else to reset. Escape hatch if the state somehow lagged:
+  // removePause is a no-op when the reason is already gone.
+  gamestate.removePause("ending");
+  input.lockPointer();
+});
+
+/** NEW GAME+ (P3-K15): keep MONEY + OWNED GUNS + settings, reset the world
+ * and the mission chain back to m1, arm the ×1.25 hp / ×1.10 speed rule. */
+function beginNGPlus() {
+  const owned = shop.owned(); // capture the ids BEFORE shop.reset()
+  storyMode(false);
+  freshRun(true); // economy holds (story-keep road, §5.6.3) + ending.hide()
+  storyRun = true; // death-restart of NG+ keeps the money
+  keepStory = false;
+  shop.reset(); // forget the Set; ownership is re-applied right below
+  for (let i = 0; i < owned.length; i++) {
+    // The official ownership flag lives on the weapon defs (weapons.js:23) —
+    // the shop only mirrors it. Match by catalog id ("smg"|"sniper"|…).
+    const w = weapons.list.find((x) => x.name === owned[i]);
+    if (w) w.owned = true;
+  }
+  missions.reset(); // freshRun(true) skipped it — the chain restarts at m1
+  closeAllCityGates(); // freshRun(true) skipped it
+  city.openVault(false); // freshRun(true) skipped it — the vault re-seals too
+  gamestate.ngPlus = true;
+  bus.dispatchEvent(
+    new CustomEvent("ng-plus", { detail: { active: true } }) // waves + origin (P3-K9)
+  );
+  storyMode(true);
+  gamestate.start(); // → playing (NO intro slides — P3-K13)
+  missions.begin(); // m1 active + "mission-start"
+}
+
+bus.addEventListener("ui-ngplus", () => {
+  beginNGPlus();
 });
 
 // §5.6.2.3: entering "intro" plays the New Game slides; finishing (or
@@ -727,18 +879,25 @@ function resetDialogueQueue() {
 bus.addEventListener("mission-start", (e) => {
   const d = e && e.detail ? e.detail : {};
   const idx = Math.round(Number(d.index));
-  if (!suppressStartDialogue && idx >= 1 && idx <= 9) {
+  // P3-K2: the dialogue window widened 9 → 10 (m10's radio briefing lives in
+  // STORY_DIALOGUE.m10 — §7.3).
+  if (!suppressStartDialogue && idx >= 1 && idx <= 10) {
     showDialogue(dialogueLines("start", idx));
   }
   suppressStartDialogue = false;
   if (idx === 8) spawnStoryBoss(); // §5.6.2.3: M8 activation → one boss
+  // NIGHT 30 P3 (P3-K5): the ONLY trigger of the final fight — m10 activation
+  // opens the vault AND raises the Origin (§3.9 timeline).
+  if (idx === 10) spawnOriginInternal();
 });
 
 // Rewards are main's job (§8: missions never touches economy). m1–m8 play
-// their done-dialogue; m9 has none (STORY.md §3) — the outro plays instead.
-// M6 completion also unseals the quarantine interiors (§5.6.2.3, WORLD.md
-// §12.1) through zones.unlockForWave — the story-guard only gates the
-// wave-clear automation, never this direct path.
+// their done-dialogue; m9 has none and plays NO outro anymore (P3-K4: the
+// outro block was removed — completing m9 cascades straight into m10, whose
+// activation opens the vault and raises the Origin; the real ending owns the
+// story close now). M6 completion also unseals the quarantine interiors
+// (§5.6.2.3, WORLD.md §12.1) through zones.unlockForWave — the story-guard
+// only gates the wave-clear automation, never this direct path.
 bus.addEventListener("mission-complete", (e) => {
   const d = e && e.detail ? e.detail : {};
   const idx = Math.round(Number(d.index));
@@ -746,16 +905,6 @@ bus.addEventListener("mission-complete", (e) => {
   economy.add(reward);
   if (idx === 6) zones.unlockForWave(Number.MAX_SAFE_INTEGER);
   if (idx >= 1 && idx <= 8) showDialogue(dialogueLines("done", idx));
-  if (idx === 9) {
-    dialogue.showOutro(
-      ["story_outro_line1", "story_outro_line2", "story_outro_line3"].map(
-        (k) => i18n.t(k)
-      ),
-      () => {
-        /* free-roam continues (WF-3 replaces the outro with the real ending) */
-      }
-    );
-  }
 });
 
 // Live volume from the settings screen (menus already persisted it).
@@ -901,11 +1050,12 @@ function missionMarker() {
 }
 
 function hudExtras() {
-  if (bossRef && bossRef.alive) {
-    hudBossScratch.position = bossRef.position;
-    hudBossScratch.hp = bossRef.hp;
-    hudBossScratch.maxHp = bossRef.maxHp;
-    hudBossScratch.type = bossRef.type;
+  const live = liveBoss(); // NIGHT 30 P3 (P3-K6): the Origin outranks bossRef
+  if (live && live.alive) {
+    hudBossScratch.position = live.position;
+    hudBossScratch.hp = live.hp;
+    hudBossScratch.maxHp = live.maxHp;
+    hudBossScratch.type = live.type;
     hudExtrasScratch.boss = hudBossScratch;
   } else {
     hudExtrasScratch.boss = null;
@@ -940,10 +1090,11 @@ function hudExtras() {
  *            event: {type: string, x: number|null, z: number|null}|null}}
  */
 function mapExtras() {
-  if (bossRef && bossRef.alive) {
-    mapBossScratch.x = bossRef.position.x;
-    mapBossScratch.z = bossRef.position.z;
-    mapBossScratch.type = bossRef.type;
+  const live = liveBoss(); // NIGHT 30 P3 (P3-K6): the Origin outranks bossRef
+  if (live && live.alive) {
+    mapBossScratch.x = live.position.x;
+    mapBossScratch.z = live.position.z;
+    mapBossScratch.type = live.type;
     mapExtrasScratch.boss = mapBossScratch;
   } else {
     mapExtrasScratch.boss = null;
@@ -1012,6 +1163,14 @@ function frame() {
     atmosphere.update(dt, player.position); // zombies deliberately do NOT update
   }
   // paused: render only.
+
+  // NIGHT 30 P3 (§6.1): the ending sequence is driven OUTSIDE the state
+  // branches — it runs UNDER pause reason "ending" (slow-zoom approach and
+  // white fade must animate while the world is frozen) and is a cheap no-op
+  // while idle. It may also flip state (the panel buttons' "ending-active"
+  // false resumes the run) — that dispatch happens inside the button click,
+  // never here; update() only moves the camera FOV and the phase timers.
+  ending.update(dt);
 
   engine.render();
 }
@@ -1220,6 +1379,51 @@ function spawnStoryBoss() {
   return spawnBossInternal(bossTypeForWave(Math.max(1, gamestate.wave)), false);
 }
 
+/** NIGHT 30 P3 debug road (§6.4): boot a story run when no live run exists —
+ * module-level function (no `this` on the debugApi methods, so destructured
+ * calls like `const { spawnOrigin } = __game` stay safe). */
+function ensureLiveRunForDebug() {
+  const st = gamestate.state;
+  if (st === "playing" || st === "paused") return;
+  if (st === "intro") {
+    gamestate.beginPlay();
+    dialogue.hide(); // debug jump: no slides over the fight
+  } else {
+    beginFreshStory();
+    gamestate.beginPlay();
+    dialogue.hide();
+  }
+}
+
+/**
+ * NIGHT 30 P3 (§6.1, P3-K5): the final boss. Triggered ONLY by the
+ * "mission-start" {index:10} listener (mission 10 activation) and by the
+ * debug spawnOrigin()/skipToMission(10) road. The Origin rises from the
+ * vault at (0,0): main opens the vault first (2 s slide + rumble + red
+ * light), then creates the Origin — its 2.5 s rise plays underneath.
+ * Same debug mechanics as spawnBossInternal: debugZombies (freshRun drains
+ * it), "zombie-spawned" (shared array → combat), "boss-spawned" (HUD bar).
+ * The Origin announces "origin-alive" {alive:true} itself (events.js then
+ * freezes its scheduler — §3.5).
+ * @returns {{type?: string, hp?: number, maxHp?: number, error?: string}}
+ */
+function spawnOriginInternal() {
+  if (originRef && originRef.alive) return { error: "origin-alive" };
+  city.openVault(); // idempotent — a re-fight finds the vault already open
+  const origin = createOrigin(scene, bus, city);
+  debugZombies.push(origin);
+  bus.dispatchEvent(
+    new CustomEvent("zombie-spawned", { detail: { zombie: origin } })
+  );
+  bus.dispatchEvent(
+    new CustomEvent("boss-spawned", {
+      detail: { type: origin.type, zoneId: "quarantine", hp: origin.hp },
+    })
+  );
+  originRef = origin;
+  return { type: origin.type, hp: origin.hp, maxHp: origin.maxHp };
+}
+
 const debugApi = {
   startGame() {
     freshRun();
@@ -1250,10 +1454,12 @@ const debugApi = {
       weapon: { name: w.name, mag: w.mag, reserve: w.reserve },
       // EXPANSION additions (docs/EXPANSION.md debug table).
       money: economy.get(),
-      boss:
-        bossRef && bossRef.alive
-          ? { type: bossRef.type, hp: bossRef.hp, maxHp: bossRef.maxHp }
-          : null,
+      boss: (() => {
+        const b = liveBoss(); // P3-K6: the Origin outranks the wave boss
+        return b && b.alive
+          ? { type: b.type, hp: b.hp, maxHp: b.maxHp }
+          : null;
+      })(),
       unlockedZones: zones.list
         .filter((zn) => zn.unlocked)
         .map((zn) => zn.id),
@@ -1270,6 +1476,13 @@ const debugApi = {
       // event ({type, timeLeft}|null) and the bloodmoon flag derived from it.
       event: evSnapshot,
       bloodmoon: !!(evSnapshot && evSnapshot.type === "bloodmoon"),
+      // NIGHT 30 P3 additions (docs/EXPANSION-P3.md §6.4): the final boss
+      // snapshot (null while no Origin lives) + the NG+ rule flag.
+      origin:
+        originRef && originRef.alive
+          ? { alive: true, phase: originRef.phase }
+          : null,
+      ngPlus: gamestate.ngPlus === true,
     };
   },
 
@@ -1395,15 +1608,18 @@ const debugApi = {
     return spawnBossInternal(type, inFront);
   },
 
-  /** Damage the live boss (default 100); golem applies its −25% inside. */
+  /** Damage the live boss (default 100); golem applies its −25% inside.
+   *  NIGHT 30 P3 (P3-K6): the living ORIGIN outranks the wave boss here —
+   *  damageBoss() drives it too (damageOrigin() is the named variant). */
   damageBoss(n) {
-    if (!bossRef || !bossRef.alive) return { error: "no-boss-alive" };
+    const live = liveBoss();
+    if (!live || !live.alive) return { error: "no-boss-alive" };
     const v = Number(n);
-    const killed = bossRef.takeDamage(Number.isFinite(v) && v > 0 ? v : 100, false);
+    const killed = live.takeDamage(Number.isFinite(v) && v > 0 ? v : 100, false);
     return {
-      type: bossRef.type,
-      hp: bossRef.hp,
-      maxHp: bossRef.maxHp,
+      type: live.type,
+      hp: live.hp,
+      maxHp: live.maxHp,
       killed: killed === true,
     };
   },
@@ -1568,6 +1784,84 @@ const debugApi = {
   /** Live audio-voice snapshot (§5.4): context state + concurrent voices. */
   audioState() {
     return audio.audioState();
+  },
+
+  // --- NIGHT 30 P3 debug API (docs/EXPANSION-P3.md §6.4) -------------------
+
+  /**
+   * Spawn the ORIGIN (§6.4): jump to mission 10 (opens every gate along the
+   * chain and fires "mission-start" {index:10} → openVault + spawn through
+   * the listener). If the Origin still is not alive afterwards (m10 was
+   * already active), spawn it directly. The 2.5 s rise plays first — the
+   * boss is INVULNERABLE while rising (§3.1).
+   */
+  spawnOrigin() {
+    ensureLiveRunForDebug();
+    missions.skipToMission(10); // idempotent re-arm — re-fires mission-start 10
+    if (!originRef || !originRef.alive) spawnOriginInternal();
+    return {
+      ok: !!(originRef && originRef.alive),
+      hp: originRef ? originRef.hp : 0,
+      maxHp: originRef ? originRef.maxHp : 0,
+      phase: originRef ? originRef.phase : null,
+    };
+  },
+
+  /** Damage the living ORIGIN (default 100); returns false-shaped result
+   *  while it is invulnerable (rising/transition — §3.1). */
+  damageOrigin(n) {
+    if (!originRef || !originRef.alive) return { error: "no-origin-alive" };
+    const v = Number(n);
+    const killed = originRef.takeDamage(
+      Number.isFinite(v) && v > 0 ? v : 100,
+      false
+    );
+    return {
+      hp: originRef.hp,
+      maxHp: originRef.maxHp,
+      phase: originRef.phase,
+      killed: killed === true,
+    };
+  },
+
+  /** ORIGIN snapshot: {alive, phase, hp, maxHp, state} or {alive:false}. */
+  originState() {
+    if (!originRef) return { alive: false };
+    return {
+      alive: originRef.alive === true,
+      phase: originRef.phase,
+      hp: originRef.hp,
+      maxHp: originRef.maxHp,
+      state: originRef.state,
+    };
+  },
+
+  /**
+   * Jump straight to the ENDING sequence (§6.4, P3-K14): a living ORIGIN
+   * dies through the REAL kill road (takeDamage(hp+1) → the full event
+   * chain), otherwise the synthetic "origin-defeated" {debug:true} fires
+   * (ending.js listens regardless of the payload). A rising/transition
+   * Origin is invulnerable, so the debug jump forces its state to "fight"
+   * first — the kill events stay genuine.
+   */
+  skipToEnding() {
+    ensureLiveRunForDebug();
+    if (originRef && originRef.alive) {
+      if (
+        originRef.state === "rising" ||
+        originRef.state === "transition"
+      ) {
+        originRef.state = "fight"; // debug override — bypass invulnerability
+      }
+      originRef.takeDamage(originRef.hp + 1, false);
+    } else {
+      bus.dispatchEvent(
+        new CustomEvent("origin-defeated", {
+          detail: { timeSec: 0, damageTaken: 0, debug: true },
+        })
+      );
+    }
+    return { state: gamestate.state, ending: ending.isActive() };
   },
 };
 
