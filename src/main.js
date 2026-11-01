@@ -195,7 +195,9 @@
  *   startStory()+beginPlay() (intro slides dropped by dialogue.hide()).
  * - ENDLESS (§5.4): "ui-endless" → storyMode(false) → ngPlus=false →
  *   freshRun(false) → teleportDistrictInternal("quarantine") → endless.start()
- *   → gamestate.start() → lockPointer. endless.update(dt) + profile.update(dt)
+ *   → difficulty re-seed ("settings-changed" — waves.reset() inside
+ *   endless.start() cleared the P4-K15 cache) → gamestate.start() →
+ *   lockPointer. endless.update(dt) + profile.update(dt)
  *   run in the playing branch; hudExtras gain `endless` + `cam` (P4-K12/K16).
  *   "endless-over" → menus.show("endlessOver") (P4-K13). ui-quit/ui-restart
  *   drop the mode first (endless.stop() — idempotent), and an `endlessRun`
@@ -518,6 +520,18 @@ bus.addEventListener("ui-endless", () => {
   freshRun(false);
   teleportDistrictInternal("quarantine");
   endless.start();
+  // GUN GAME 2.0 P4 (P4-K15): endless.start() → waves.reset() re-clears
+  // waves' difficulty cache to normal (waves.js reset — P4-K9) AFTER
+  // freshRun's re-emit above already ran, so an Endless run would silently
+  // play at normal regardless of the preset. Re-seed here — same event shape
+  // as the freshRun re-emit (main.js:866); every "settings-changed" listener
+  // re-applies the same persisted value idempotently (waves diff cache,
+  // main's mainDiff, menus' active button, audio/siren volumes).
+  bus.dispatchEvent(
+    new CustomEvent("settings-changed", {
+      detail: { patch: { difficulty: settings.get().difficulty } },
+    })
+  );
   gamestate.start();
   input.lockPointer();
 });

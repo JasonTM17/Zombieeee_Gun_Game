@@ -15,7 +15,8 @@
  *
  * 12 điều kiện (nguyên văn §6.1 — bảng có cột "Nguồn tín hiệu"):
  *   first_blood   — "zombie-killed" lần đầu.
- *   head_50       — đếm "zombie-killed" {headshot:true} ≥ 50.
+ *   head_50       — TỔNG headshot-kill trọn đời ≥ 50 ("zombie-killed"
+ *                   {headshot:true}; seed trọn đời từ profile — §6.1 FROZEN).
  *   head_200      — như trên, ≥ 200.
  *   story_half    — "mission-complete" {index:5}.
  *   story_done    — "origin-defeated" (fallback "mission-complete" {index:10}).
@@ -46,8 +47,13 @@
  * handler bus bọc try/catch; các deps đọc qua guard (endless stub còn throw
  * TODO khi Builder C chưa implement — wave_15 đọc false + warn đúng 1 lần,
  * không giết listener chain "wave-start" mà gamestate/waves cũng đang nghe).
- * Bộ đếm nội bộ (headshot, bloodmoon kills) là per-session — storage chỉ giữ
- * ids (schema FROZEN §6.1), restart trang không cộng dồn cũ.
+ * Bộ đếm headshot là TRỌN ĐỜI (§6.1 FROZEN: "tổng headshot-kill ≥ 50/200") —
+ * seed 1 lần từ storage "gungame.profile.v1" vì deps FROZEN {gamestate,
+ * endless, weapons} (P4-K23) không chứa profile và 4 file MỚI không được
+ * import chéo: profile.js persist MỖI biến đổi (P4-K21) và cả hai nghe cùng
+ * "zombie-killed" {headshot:true} 1:1 nên seed + đếm phiên === profile.headshots.
+ * Bộ đếm bloodmoon là theo moon (điều kiện blood_slayer tự nó reset mỗi moon).
+ * Storage achv vẫn chỉ giữ ids (schema FROZEN §6.1).
  *
  * @param {EventTarget} bus - the shared bus (src/systems/gamestate.js).
  * @param {AchievementDeps} deps - { gamestate, endless, weapons } (P4-K23).
@@ -261,8 +267,31 @@ export function createAchievements(bus, deps) {
     }
   };
 
-  // --- per-session counters ---------------------------------------------------
-  let headKills = 0; // head_50 / head_200
+  // --- counters -----------------------------------------------------------------
+  /**
+   * Seed TỔNG headshot-kill trọn đời cho head_50/head_200 (§6.1 FROZEN:
+   * "tổng headshot-kill ≥ 50/200" — không phải theo phiên). P4-K23 đóng băng
+   * deps {gamestate, endless, weapons} — không thêm param, không import chéo
+   * 4 file MỚI — nên đọc trực tiếp key FROZEN "gungame.profile.v1" (§0/§5.3).
+   * profile.js persist MỖI lần biến đổi (P4-K21) và cả hai module đếm cùng
+   * luồng "zombie-killed" {headshot:true} 1:1, nên seed + số headshot-kill
+   * của phiên này luôn khớp profile.headshots. try/catch + sanitize như
+   * profile.js intOr — hỏng/thiếu → 0, không bao giờ throw (§1.6).
+   * @returns {number}
+   */
+  function seedLifetimeHeadshots() {
+    try {
+      const raw = localStorage.getItem("gungame.profile.v1");
+      if (!raw) return 0;
+      const parsed = JSON.parse(raw);
+      const n = Math.floor(Number(parsed && parsed.headshots));
+      return Number.isFinite(n) && n > 0 ? n : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  let headKills = seedLifetimeHeadshots(); // head_50 / head_200 — tổng trọn đời
   let moonActive = false; // blood_slayer arm flag
   let moonKills = 0; // kills trong 1 bloodmoon (reset khi arm/release)
 

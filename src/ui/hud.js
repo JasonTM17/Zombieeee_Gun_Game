@@ -941,7 +941,8 @@ export function createHud(container, bus, audio, i18n) {
   let lastCompassPaint = 0; // strip redraw throttle (~10 Hz, per contract)
 
   // P1 story caches (docs/EXPANSION-P1.md §5.4).
-  let trkIndex = 0; // mission index shown in the tracker (0 = hidden)  let trkTitleKey = "";
+  let trkIndex = 0; // mission index shown in the tracker (0 = hidden)
+  let trkTitleKey = ""; // cached title i18n key ("" = no " — title" suffix)
   /** @type {Array<Object>} live objective descriptors (mutated in place) */
   let trkObjs = [];
   /** @type {{row: HTMLElement, glyph: HTMLElement, txt: HTMLElement, obj: Object}[]} */

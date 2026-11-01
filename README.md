@@ -261,6 +261,124 @@ Giết Origin → chuỗi kết tự động: **2 s slow-zoom** camera + tiếng
 | Nhịp mỗi khu | quota 20/25/30/25/30, pool 6 điểm/khu (safehouse 5) | ~3–5 phút/khu ✓ — không đổi density/quota |
 | Thay đổi số duy nhất | `REWARDS.origin = 2000` (trước: thiếu) + 1 dòng `RECIPES.origin` + hệ số NG+ | Mọi số khác giữ nguyên từ P1/P2 |
 
+## GUN GAME 2.0
+
+Phần mở rộng thứ 5, hoàn toàn cộng thêm (không đụng tính năng cũ): **Lưu game / Tiếp tục · Nâng cấp súng · Sinh Tồn vô tận · 12 thành tựu · Độ khó 3 mức · juice** (số sát thương bay + FPS counter). Chi tiết kỹ thuật: `docs/EXPANSION-P4.md`.
+
+### Lưu game & TIẾP TỤC
+
+- **Tự động lưu** vào `localStorage` (`"gungame.save.v1"`) tại đúng khoảnh khắc:
+
+  | Khoảnh khắc | Lưu khi nào |
+  |---|---|
+  | Xong nhiệm vụ | ngay khi nhiệm vụ hoàn thành |
+  | Xong wave | ngay khi dọn sạch wave (kể cả boss) |
+  | Khi chết | lưu **trước** màn Game Over — tiền/điểm/nhiệm vụ giữ nguyên trạng thái lúc chết |
+  | Thoát về menu | nút MENU / VỀ MENU |
+  | Bắt đầu lượt story mới | ghi một lần nữa trước khi reset thế giới |
+
+- Nút **TIẾP TỤC** hiện trên menu chính (đè trên CHƠI) khi có save hợp lệ, khôi phục: **tiền, mọi súng sở hữu + đạn dự trữ + mức nâng cấp, nhiệm vụ đang tới, các khu/cổng đã mở, điểm & wave**. Hồi sinh tại **An Toàn Nhà**.
+- **Save hỏng** (JSON sai / schema sai) → tự xoá + cảnh báo console, nút TIẾP TỤC tự ẩn — không bao giờ crash.
+- Hạn chế biết trước (cố ý, ghi rõ hợp đồng):
+  - Nhiệm vụ đang làm dở **chơi lại từ đầu** khi tiếp tục (tiến trình objective giữa chừng không giữ).
+  - Wave luôn chạy lại từ **wave 1** (số wave trong save chỉ để hiển thị).
+  - Chết sau khi kết thúc chuỗi nhiệm vụ → tiếp tục = **tái đấu Nguồn Gốc**.
+  - Độ khó lấy theo **Settings hiện tại** (save chỉ ghi để tham chiếu, không restore).
+  - Mua nâng cấp **không tự lưu ngay** — lần autosave kế (xong wave / xong nhiệm vụ) sẽ gom.
+  - Chế độ **Sinh Tồn không tạo save** — không TIẾP TỤC từ endless.
+
+### Nâng cấp súng (trong cửa hàng `B`)
+
+Mỗi súng **đã sở hữu** có **3 nhánh × 3 cấp**, hiệu lực áp dụng ngay khi mua:
+
+| Nhánh | Giá 0→1 / 1→2 / 2→3 | Hiệu quả theo cấp (×1 / ×2 / ×3) |
+|---|---|---|
+| Sát thương (Damage) | $250 / $500 / $1000 | dmg ×(1 + 0.2·cấp) → **×1.2 / ×1.4 / ×1.6** |
+| Băng đạn (Magazine) | $250 / $500 / $1000 | mag = floor(base ×(1 + 0.25·cấp)) → **×1.25 / ×1.5 / ×1.75** |
+| Tốc độ nạp (Reload) | $250 / $500 / $1000 | thời gian nạp ×(1 − 0.12·cấp) → **×0.88 / ×0.76 / ×0.64** |
+
+- Ví dụ: Pistol 25 dmg nâng sát thương cấp 3 → **40 dmg**; Sniper băng 5 viên → **8 viên**; thời gian nạp Pistol 1.2 s → **~0.77 s**. Tối đa $1750 cho 1 nhánh.
+- Panel nâng cấp nằm dưới lưới cửa hàng: mỗi súng 1 hàng, 3 nút hiển thị cấp hiện tại (●●○) + giá cấp kế (hoặc `TỐI ĐA`).
+- Reset lượt chơi đưa nâng cấp về 0; **NG+ / chết-restart giữ tiến trình / TIẾP TỤC** khôi phục lại từ save.
+
+### Chế độ SINH TỒN (vô tận)
+
+- Nút **SINH TỒN** trên menu → dịch chuyển vào **Vùng Cách Ly**, chuỗi nhiệm vụ đóng (tracker ẩn), wave vô tận bắt đầu; sự kiện ngẫu nhiên (horde / tiếp tế / người sống sót…) vẫn nổ bình thường.
+- Wave n gồm **8 + n×4** zombie: **runner luôn ≥ 2** (~30%), **brute từ wave 3** tăng dần (w3: 1 → w8: 2 → w13: 3…), phần còn lại là walker. Tối đa **60 zombie sống đồng thời** (dư xếp hàng chờ, không bỏ), nghỉ **10 s** giữa hai wave.
+- **Mỗi wave chia hết 5**: TRĂNG MÁU chắc chắn nổ (nếu sự kiện khác đang chiếm chỗ, game tự thử lại mỗi giây trong suốt wave đó).
+- **Từ wave 8**: mỗi wave có đúng **1 boss ngẫu nhiên** — chọn đều trong 4 loại (không còn vòng tuần hoàn butcher → spitter → screamer → golem như story).
+- Điểm riêng của chế độ (điểm story/kỷ lục cũ không bị đụng):
+
+  | Mục tiêu | Điểm |
+  |---|---|
+  | Walker | 10 |
+  | Runner | 15 |
+  | Brute | 40 |
+  | Mọi boss (kể cả Nguồn Gốc) | 200 |
+  | Headshot | ×1.5 (mọi loại, làm tròn 1 lần) |
+
+- HUD hiển thị **WAVE + SCORE** riêng của chế độ. Chết → màn **SINH TỒN KẾT THÚC** (wave đạt được · điểm · kỷ lục) → về menu.
+- **Kỷ lục** lưu `localStorage` (`"gungame.endless.v1"`): ưu tiên **wave cao nhất**, bằng wave thì lấy **điểm cao hơn**; mirror vào khối THỐNG KÊ trọn đời.
+
+### 12 thành tựu
+
+Màn **THÀNH TỰU** trên menu: lưới 12 ô (đạt = sáng, chưa = mờ), dòng tiến độ "Đã mở {n}/12" và khối **THỐNG KÊ** trọn đời (số kill · kill vào đầu · lần chết · boss đã hạ · tổng tiền kiếm được · thời gian chơi `H:MM:SS` · kỷ lục Sinh Tồn) — thống kê **không bao giờ bị reset**. Mở thành tựu mới → toast vàng **"🏆 THÀNH TỰU — {tên}"**.
+
+| id | Tên (EN / VI) | Điều kiện |
+|---|---|---|
+| `first_blood` | First Blood / Giọt Máu Đầu Tiên | Hạ con zombie đầu tiên |
+| `head_50` | Sharpshooter / Xạ Thủ Tỉa | Tổng **trọn đời** 50 kill vào đầu |
+| `head_200` | Brain Surgeon / Bác Sĩ Não | Tổng **trọn đời** 200 kill vào đầu |
+| `story_half` | Halfway Through / Qua Nửa Đêm | Hoàn thành nhiệm vụ 5 |
+| `story_done` | Dawn Breaks / Bình Minh Lên | Hạ Nguồn Gốc — kết thúc câu chuyện |
+| `ngplus_done` | Again, Harder / Lại Lần Nữa, Khó Hơn | Hạ Nguồn Gốc trong New Game+ |
+| `rich_5000` | War Chest / Túi Chiến Trường | Giữ $5,000 cùng lúc |
+| `arsenal` | Full Arsenal / Kho Vũ Khí Đầy Đủ | Sở hữu đủ 7 súng |
+| `maxed_gun` | Gunsmith / Thợ Súng | Một nhánh nâng cấp đạt cấp 3 |
+| `blood_slayer` | Blood Moon Slayer / Kẻ Sát Trăng Máu | Hạ 10 zombie trong một Trăng Máu |
+| `wave_15` | Endurance / Sức Bền | Đạt đợt 15 trong Sinh Tồn |
+| `endless_5000` | Point Machine / Cỗ Máy Điểm | Đạt 5,000 điểm một ván Sinh Tồn |
+
+### ĐỘ KHỘ (Settings)
+
+3 nút **Dễ / Thường / Khó** (mặc định **Thường**), áp cho mọi zombie / boss / Origin **mới sinh** (đơn đang sống không bị đụng):
+
+| Preset | HP | Sát thương | Mật độ spawn |
+|---|---|---|---|
+| Dễ | ×0.75 | ×0.7 | ×0.8 (thưa hơn) |
+| Thường | ×1 | ×1 | ×1 |
+| Khó | ×1.35 | ×1.3 | ×1.2 (dày hơn) |
+
+- Mật độ nhân vào khoảng cách sinh (gap ÷ hệ số): Dễ → gap ×1.25, Khó → gap ×0.83 — cộng được với Trăng Máu (gap ×0.5).
+- **Cộng dồn New Game+**: HP nhân thêm **×1.25** trên hệ số độ khó (Khó + NG+ → ×1.35 × 1.25 ≈ **×1.69 HP**); sát thương **chỉ** theo độ khó (NG+ không cộng dmg); tốc độ giữ luật NG+ riêng **×1.1**.
+
+### Số sát thương bay + FPS (F3)
+
+- **Damage numbers**: mỗi viên đạn trúng hiện 1 số bay ngay tại điểm trúng — trắng 14 px, **headshot đỏ 18 px đậm**; tối đa **30 số** cùng lúc (thừa → bỏ), sống **0.8 s**, bay lên ~40 px rồi mờ dần; chỉ hiện khi đang chơi.
+- **F3**: bật/tắt **FPS counter** góc phải trên (làm mượt EMA ×0.1), mặc định **ẨN**; phím im lặng khi cửa hàng đang mở.
+
+### Key `localStorage` mới
+
+| Key | Nội dung |
+|---|---|
+| `gungame.save.v1` | save tự động (tiền, súng + nâng cấp, nhiệm vụ, cổng đã mở, điểm, wave…) |
+| `gungame.endless.v1` | kỷ lục Sinh Tồn `{wave, score}` |
+| `gungame.profile.v1` | thống kê trọn đời (kills, headshots, deaths, playtimeSec, bossesKilled, moneyEarned, endlessBest) |
+| `gungame.achv.v1` | id các thành tựu đã mở |
+
+### Debug API — bổ sung GUN GAME 2.0 (`window.__game`)
+
+Bổ sung cho bảng debug ở mục Phần 1 (các method cũ giữ nguyên):
+
+| Method | Hành vi |
+|---|---|
+| `saveNow()` | Ép autosave ngay (reason `"debug"`) → `{ok, ts?}`; trả `{ok:false}` ở Sinh Tồn / khi chưa trong lượt chơi |
+| `hasSave()` | `true` khi có save hợp lệ (đã qua corruption-guard) |
+| `endlessState()` | Snapshot Sinh Tồn `{active, wave, score}` (object mới, không dùng chung với HUD) |
+| `achievementsState()` | Mảng id các thành tựu đã mở |
+| `setDifficulty(d)` | Đặt `"easy"|"normal"|"hard"` + phát `"settings-changed"` → trả `{difficulty}` thực lưu (giá trị sai tự sanitize về `"normal"`) |
+| `getState()` *(mở rộng)* | Thêm 3 trường: `save {hasSave}`, `endless {active, wave, score}`, `difficulty` |
+
 ## Cấu trúc source
 
 ```
