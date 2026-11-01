@@ -403,6 +403,9 @@ export function createGamestate(busArg, settings) {
   // run: player.damage() no-ops after death, so "player-died" cannot repeat).
   // Pause reasons die with the run — the gameover screen has no pause contexts.
   B.addEventListener("player-died", () => {
+    // The ending sequence owns the screen after the Origin falls — a stray
+    // melee landing on the exact victory frame must not flip gameover over it.
+    if (hasPause("ending")) return;
     clearPauses();
     gamestate.state = "gameover";
     const best = highScore();

@@ -515,6 +515,15 @@ bus.addEventListener("zombie-killed", (e) => {
 bus.addEventListener("origin-defeated", () => {
   const pos = originRef && originRef.position ? originRef.position : null;
   originRef = null;
+  // The horde collapses with its master: despawn every LIVING zombie (the
+  // freshRun announce+dispose pattern) so no stray melee can land during the
+  // ending sequence. Corpses keep their tilt-and-fade.
+  for (let i = zombies.length - 1; i >= 0; i--) {
+    const z = zombies[i];
+    if (!z || z.alive !== true) continue;
+    bus.dispatchEvent(new CustomEvent("zombie-despawned", { detail: { zombie: z } }));
+    z.dispose();
+  }
   if (pos) {
     particles.spawnBlood(pos, 40);
     particles.spawnSpark(pos);
