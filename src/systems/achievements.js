@@ -9,7 +9,8 @@
  * deps (P4-K23, bắt buộc): { gamestate, endless, weapons }
  * - gamestate: đọc .ngPlus cho ngplus_done (P3-K9 — main sở hữu cờ).
  * - endless: isActive() cho wave_15 (chỉ đếm wave trong CHẾ ĐỘ vô tận).
- * - weapons: đếm list owned === 7 cho arsenal.
+ * - weapons: đếm list owned === list.length (toàn bộ armory — 12 súng, gồm cả
+ *   2 súng độc quyền của thương nhân) cho arsenal.
  *
  * Storage "gungame.achv.v1" = {v:1, ids: []} (try/catch; hỏng → {v:1, ids:[]}).
  *
@@ -22,8 +23,8 @@
  *   story_done    — "origin-defeated" (fallback "mission-complete" {index:10}).
  *   ngplus_done   — "origin-defeated" && deps.gamestate.ngPlus === true.
  *   rich_5000     — "money-changed" {money ≥ 5000}.
- *   arsenal       — poll weapons.list (owned count === 7) trên "money-changed"
- *                   + "upgrade-bought".
+ *   arsenal       — poll weapons.list (owned count === list.length) trên "money-changed"
+ *                   + "upgrade-bought" + "weapon-unlocked" + "merchant-purchase".
  *   maxed_gun     — "upgrade-bought" {level === 3}.
  *   blood_slayer  — "bloodmoon-active" {active} arm/reset counter nội bộ +
  *                   "zombie-killed" khi active ≥ 10.
@@ -40,8 +41,8 @@
  *
  * Bus events emitted: "achievement-unlocked" {id}.
  * Bus events consumed: "zombie-killed", "mission-complete", "origin-defeated",
- * "money-changed", "upgrade-bought", "bloodmoon-active", "wave-start",
- * "endless-score", "endless-over".
+ * "money-changed", "upgrade-bought", "weapon-unlocked", "merchant-purchase",
+ * "bloodmoon-active", "wave-start", "endless-score", "endless-over".
  *
  * An toàn runtime (bất biến §1.6 — không bao giờ throw vào gameplay): MỌI
  * handler bus bọc try/catch; các deps đọc qua guard (endless stub còn throw
@@ -65,7 +66,7 @@
  * @property {import("./gamestate.js").Gamestate} gamestate - đọc ngPlus.
  * @property {import("./endless.js").Endless} endless - isActive() cho wave_15.
  * @property {import("../player/weapons.js").Weapons} weapons - đếm owned cho
- *   arsenal (7 = list.length).
+ *   arsenal (owned === list.length — mọi súng trong armory).
  */
 
 /**
@@ -107,7 +108,7 @@ i18n.registerBundle({
     achv_rich_5000: "War Chest",
     achv_rich_5000_desc: "Hold $5,000 at once.",
     achv_arsenal: "Full Arsenal",
-    achv_arsenal_desc: "Own all 7 weapons.",
+    achv_arsenal_desc: "Own every weapon in the armory.",
     achv_maxed_gun: "Gunsmith",
     achv_maxed_gun_desc: "Max out one upgrade track (level 3).",
     achv_blood_slayer: "Blood Moon Slayer",
@@ -133,7 +134,7 @@ i18n.registerBundle({
     achv_rich_5000: "Túi Chiến Trường",
     achv_rich_5000_desc: "Giữ $5,000 cùng lúc.",
     achv_arsenal: "Kho Vũ Khí Đầy Đủ",
-    achv_arsenal_desc: "Sở hữu đủ 7 súng.",
+    achv_arsenal_desc: "Sở hữu toàn bộ vũ khí trong kho.",
     achv_maxed_gun: "Thợ Súng",
     achv_maxed_gun_desc: "Max 1 nhánh nâng cấp (cấp 3).",
     achv_blood_slayer: "Kẻ Sát Trăng Máu",
@@ -166,7 +167,6 @@ export const ACHV_IDS = [
 const HEAD_50 = 50;
 const HEAD_200 = 200;
 const RICH_MONEY = 5000;
-const ARSENAL_COUNT = 7;
 const MOON_KILLS = 10;
 const WAVE_15 = 15;
 const ENDLESS_SCORE_5000 = 5000;
@@ -247,15 +247,17 @@ export function createAchievements(bus, deps) {
     }
   }
 
-  /** arsenal poll: đếm owned trên weapons.list (§6.1 — tiền + nâng cấp trigger). */
+  /** arsenal poll: đếm owned trên weapons.list (§6.1 — tiền + nâng cấp trigger).
+   * Requires EVERY armory weapon: the total is read from the live list, so
+   * adding weapons never leaves the achievement stuck at a stale count. */
   function pollArsenal() {
     const list = D.weapons && D.weapons.list;
-    if (!Array.isArray(list)) return;
+    if (!Array.isArray(list) || list.length === 0) return;
     let owned = 0;
     for (let i = 0; i < list.length; i++) {
       if (list[i] && list[i].owned === true) owned++;
     }
-    if (owned >= ARSENAL_COUNT) unlock("arsenal");
+    if (owned >= list.length) unlock("arsenal");
   }
 
   /** Bọc mọi handler — một lỗi không được chặn listener kế trong dispatch. */
@@ -350,6 +352,28 @@ export function createAchievements(bus, deps) {
     "upgrade-bought",
     safe((d) => {
       if (Math.round(Number(d.level) || 0) >= 3) unlock("maxed_gun");
+      pollArsenal();
+    })
+  );
+
+  // weapon-unlocked {name} → arsenal poll. weapons.js emits this on every
+  // ownership transition (standard shop AND the merchant-exclusive guns), so
+  // the poll reads the final flag regardless of whether the buyer spends
+  // before or after unlocking. The count is always live weapons.list length
+  // (12), never shop.owned().
+  bus.addEventListener(
+    "weapon-unlocked",
+    safe(() => {
+      pollArsenal();
+    })
+  );
+
+  // merchant-purchase {id, kind, price} → arsenal poll. The physical merchant
+  // emits this AFTER applying the weapon unlock; this covers a merchant build
+  // that marks `owned` directly instead of calling weapons.unlock().
+  bus.addEventListener(
+    "merchant-purchase",
+    safe(() => {
       pollArsenal();
     })
   );

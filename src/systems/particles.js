@@ -6,9 +6,17 @@
  * 0.3–0.8 s, then the particle returns to the pool. Colors: blood = dark red,
  * muzzle = yellow-orange, sparks = pale/bright.
  *
- * Call sites: combat.js spawns blood at each pellet hit (n = 8..14) and a
- * muzzle blast per shot; sparks are available for impact accents (optional
- * use by combat/pickups).
+ * Call sites: combat.js spawns blood at each pellet hit (n = 8..14), a muzzle
+ * blast + a tiny grey smoke puff per shot, and sparks/dust at every solid
+ * surface a bullet hits. sparks are also available for other accents (pickups,
+ * explosions).
+ *
+ * Additive (contract-safe) helpers for weapon feel:
+ *   spawnSmoke(position, dir?, n?) — 2–3 tiny grey smoke particles.
+ *   spawnImpact(position, normal?) — 3 bright sparks + 2 dust motes, biased
+ *     along the surface normal (fallback: up).
+ * Both reuse the same fixed pool and follow the same zero-steady-state-alloc
+ * rule as the original spawners.
  *
  * dispose(): release the pool and its geometries/materials.
  *
@@ -30,6 +38,11 @@
  *   Yellow-orange muzzle blast bursting along dir.
  * @property {(position: import("three").Vector3) => void} spawnSpark
  *   A few bright sparks at position.
+ * @property {(position: import("three").Vector3, dir?: import("three").Vector3, n?: number) => void} spawnSmoke
+ *   Tiny grey smoke puff at position, drifting along dir (default 3).
+ * @property {(position: import("three").Vector3, normal?: import("three").Vector3) => void} spawnImpact
+ *   Small bright spark burst + dust motes at an impact point, biased along the
+ *   surface normal (bullet hits a wall/prop — never flesh).
  * @property {(dt: number) => void} update - integrate velocities + lifetimes.
  * @property {() => void} dispose - release pool resources.
  */
@@ -129,9 +142,21 @@ export function createParticles(scene) {
   const bloodColor = new THREE.Color();
   const muzzleColor = new THREE.Color();
   const sparkColor = new THREE.Color();
+  const smokeColor = new THREE.Color();
+  const dustColor = new THREE.Color();
   function pickBlood() { bloodColor.setHSL(0.99, 0.75, 0.16 + Math.random() * 0.09); return bloodColor; }
   function pickMuzzle() { muzzleColor.setHSL(0.09 + Math.random() * 0.05, 0.95, 0.55 + Math.random() * 0.15); return muzzleColor; }
   function pickSpark() { sparkColor.setHSL(0.12 + Math.random() * 0.03, 0.55, 0.82); return sparkColor; }
+  function pickSmoke() {
+    const v = 0.3 + Math.random() * 0.14; // muted grey, never brighter than a spark
+    smokeColor.setRGB(v, v * 1.02, v * 0.96);
+    return smokeColor;
+  }
+  function pickDust() {
+    const v = 0.26 + Math.random() * 0.12;
+    dustColor.setRGB(v, v * 0.92, v * 0.8);
+    return dustColor;
+  }
 
   /**
    * @param {import("three").Vector3} position
@@ -210,6 +235,101 @@ export function createParticles(scene) {
   }
 
   /**
+   * Tiny, subtle grey smoke puff at the muzzle (much lighter than the 14-
+   * particle yellow-orange muzzle blast). Default 3 particles.
+   * @param {import("three").Vector3} position - muzzle world position
+   * @param {import("three").Vector3=} dir - shot direction (optional)
+   * @param {number=} n - particle count, default 3, clamped 1..6
+   */
+  function spawnSmoke(position, dir, n) {
+    if (disposed || !position) return;
+    let total = Math.floor(Number(n));
+    if (!Number.isFinite(total)) total = 3;
+    total = Math.min(6, Math.max(1, total));
+    const dx = dir && Number.isFinite(dir.x) ? dir.x : 0;
+    const dy = dir && Number.isFinite(dir.y) ? dir.y : 0;
+    const dz = dir && Number.isFinite(dir.z) ? dir.z : 0;
+    for (let k = 0; k < total; k++) {
+      const i = claim();
+      const speed = rand(0.5, 1.4);
+      fill(
+        i,
+        position.x + rand(-0.035, 0.035),
+        position.y + rand(-0.03, 0.03),
+        position.z + rand(-0.035, 0.035),
+        dx * speed + rand(-0.35, 0.35),
+        dy * speed + rand(0.15, 0.55),
+        dz * speed + rand(-0.35, 0.35),
+        rand(0.25, 0.45),
+        rand(0.032, 0.07),
+        -1.1, // negative gravity: smoke drifts up as it fades
+        pickSmoke()
+      );
+    }
+  }
+
+  /**
+   * Bullet impact on level geometry: 3 bright sparks + 2 dust motes. Sparks
+   * spray back along the surface normal; dust stays close and drifts up.
+   * Small by design (5 particles per hit) — called once per pellet that meets
+   * a solid surface.
+   * @param {import("three").Vector3} position - world hit point
+   * @param {import("three").Vector3=} normal - surface normal (fallback: up)
+   */
+  function spawnImpact(position, normal) {
+    if (disposed || !position) return;
+    let nx = normal && Number.isFinite(normal.x) ? normal.x : 0;
+    let ny = normal && Number.isFinite(normal.y) ? normal.y : 1;
+    let nz = normal && Number.isFinite(normal.z) ? normal.z : 0;
+    const nl = Math.sqrt(nx * nx + ny * ny + nz * nz);
+    if (nl > 1e-6) {
+      nx /= nl;
+      ny /= nl;
+      nz /= nl;
+    } else {
+      nx = 0;
+      ny = 1;
+      nz = 0;
+    }
+    // 3 bright sparks — fast, short-lived, snapped back off the surface.
+    for (let k = 0; k < 3; k++) {
+      const i = claim();
+      const speed = rand(2.2, 5.2);
+      fill(
+        i,
+        position.x + rand(-0.015, 0.015),
+        position.y + rand(-0.015, 0.015),
+        position.z + rand(-0.015, 0.015),
+        nx * speed + rand(-2.1, 2.1),
+        ny * speed + rand(-1.4, 2.3),
+        nz * speed + rand(-2.1, 2.1),
+        rand(0.18, 0.36),
+        rand(0.018, 0.034),
+        18,
+        pickSpark()
+      );
+    }
+    // 2 dust motes — tiny, slow, linger a beat longer than the sparks.
+    for (let k = 0; k < 2; k++) {
+      const i = claim();
+      const push = rand(0.25, 0.8);
+      fill(
+        i,
+        position.x + nx * rand(0.01, 0.05) + rand(-0.02, 0.02),
+        position.y + ny * rand(0.01, 0.05) + rand(-0.02, 0.02),
+        position.z + nz * rand(0.01, 0.05) + rand(-0.02, 0.02),
+        nx * push + rand(-0.45, 0.45),
+        ny * push + rand(0.1, 0.55),
+        nz * push + rand(-0.45, 0.45),
+        rand(0.32, 0.55),
+        rand(0.045, 0.085),
+        -0.45,
+        pickDust()
+      );
+    }
+  }
+
+  /**
    * Integrate active particles, swap-remove the dead, then push matrices.
    * @param {number} dt
    */
@@ -272,5 +392,5 @@ export function createParticles(scene) {
     mat.dispose();
   }
 
-  return { spawnBlood, spawnMuzzle, spawnSpark, update, dispose };
+  return { spawnBlood, spawnMuzzle, spawnSpark, spawnSmoke, spawnImpact, update, dispose };
 }

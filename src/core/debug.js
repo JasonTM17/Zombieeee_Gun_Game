@@ -154,6 +154,18 @@ const DEBUG_KEYS = [
   "endlessState",
   "achievementsState",
   "setDifficulty",
+  // WORLD 2.0 — merchant / bombs / weather.
+  "merchantState",
+  "openMerchant",
+  "throwablesState",
+  "weatherState",
+  "setWeather",
+  "perksState",
+  "addXp",
+  "contractsState",
+  "openContracts",
+  "hazardsState",
+  "detonateHazard",
 ];
 
 export function createDebugHook() {

@@ -56,6 +56,9 @@
  *   synth: lazy context after the first user gesture, volume seeded from the
  *   persisted "gungame.settings" and following "settings-changed" on the bus.
  *   The `audio` parameter stays unused (void) for that reason.
+ * - Accessibility / game feel (user request): the shake machine follows the
+ *   persisted "shake" intensity (0..100) and "reducedMotion" (clamp to 0).
+ *   Defaults 100/false reproduce the exact pre-setting amplitude.
  *
  * @param {import("three").Scene} scene
  * @param {import("three").PerspectiveCamera} camera - for the blast shake +
@@ -105,6 +108,32 @@ const BODY_HALF_W = 0.55; // zombie body half-width at scale 1 (contact test)
 const BODY_TOP = 1.9;    // m — zombie head top at scale 1 (contact test)
 const CONTACT_PAD = 0.15; // m of grace around the body test
 const SETTINGS_KEY = "gungame.settings"; // the key settings.js persists
+const SHAKE_PCT_DEFAULT = 100; // Accessibility setting: 100 = pre-setting feel
+
+/**
+ * Accessibility / game feel state from the persisted settings: shake intensity
+ * (0..100) and reducedMotion (clamps shake to zero). Missing/corrupt storage
+ * returns the exact pre-setting defaults (full shake, motion allowed).
+ * @returns {{shake: number, reducedMotion: boolean}}
+ */
+function readShakeState() {
+  let shake = SHAKE_PCT_DEFAULT;
+  let reducedMotion = false;
+  try {
+    if (typeof localStorage !== "undefined") {
+      const s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "null");
+      if (s && typeof s === "object") {
+        if (typeof s.shake === "number" && Number.isFinite(s.shake)) {
+          shake = Math.min(100, Math.max(0, Math.round(s.shake)));
+        }
+        reducedMotion = s.reducedMotion === true;
+      }
+    }
+  } catch {
+    /* corrupt/absent storage → pre-setting defaults */
+  }
+  return { shake, reducedMotion };
+}
 
 /**
  * Tiny dedicated WebAudio boom (see implementation notes — audio.js exposes
@@ -243,6 +272,32 @@ export function createExplosives(scene, camera, zombies, particles, audio, bus) 
   let shakeT = 0;
   let shakeX = 0; // shake offset actually layered onto the camera last frame
   let shakeY = 0;
+
+  // Accessibility / game feel (user request): "shake" 0..100 scales the jitter
+  // amplitude; reducedMotion clamps it to 0. At the 100/false defaults the
+  // update() math below is byte-identical to the pre-setting behavior.
+  const shakeState = readShakeState();
+  let shakePct = shakeState.shake;
+  let reducedMotion = shakeState.reducedMotion;
+  let shakeScale = reducedMotion ? 0 : shakePct / 100;
+
+  function syncShakeScale() {
+    shakeScale = reducedMotion ? 0 : Math.min(100, Math.max(0, shakePct)) / 100;
+    if (shakeScale <= 0) shakeT = 0; // drop a pending shake immediately
+  }
+
+  bus.addEventListener("settings-changed", (e) => {
+    const p = e && e.detail ? e.detail.patch : null;
+    if (!p) return;
+    if (typeof p.shake === "number" && Number.isFinite(p.shake)) {
+      shakePct = Math.min(100, Math.max(0, Math.round(p.shake)));
+    }
+    if (typeof p.reducedMotion === "boolean") {
+      reducedMotion = p.reducedMotion;
+    }
+    syncShakeScale();
+  });
+
   const upVec = new THREE.Vector3(0, 1, 0); // fireball burst direction
 
   /**
@@ -349,7 +404,7 @@ export function createExplosives(scene, camera, zombies, particles, audio, bus) 
     flashLight.position.set(pos.x, Math.max(0.5, pos.y), pos.z);
     flashLight.intensity = FLASH_INT;
     flashT = FLASH_TIME;
-    shakeT = SHAKE_TIME;
+    shakeT = shakeScale > 0 ? SHAKE_TIME : 0; // 0 / reduced motion → no offset
     boomSynth.boom();
     bus.dispatchEvent(
       new CustomEvent("explosion", { detail: { position: pos.clone() } })
@@ -441,7 +496,7 @@ export function createExplosives(scene, camera, zombies, particles, audio, bus) 
     if (camera && shakeT > 0) {
       shakeT = Math.max(0, shakeT - dt);
       const k = shakeT / SHAKE_TIME;
-      const amp = SHAKE_AMP * k * k; // ease-out decay
+      const amp = SHAKE_AMP * k * k * shakeScale; // ease-out decay × setting
       const nx = (Math.random() * 2 - 1) * amp;
       const ny = (Math.random() * 2 - 1) * amp;
       camera.rotation.x += nx - shakeX;
@@ -480,6 +535,11 @@ export function createExplosives(scene, camera, zombies, particles, audio, bus) 
    * @param {number} [mult=1] - time+amplitude factor (0.5 light, 2 heavy).
    */
   function shake(mult) {
+    // Accessibility: 0 / reduced motion never offsets the camera.
+    if (shakeScale <= 0) {
+      shakeT = 0;
+      return;
+    }
     const m = Number(mult);
     const k = Number.isFinite(m) && m > 0 ? m : 1;
     shakeT = SHAKE_TIME * Math.min(3, Math.max(0.25, k));

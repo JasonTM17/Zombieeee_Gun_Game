@@ -37,6 +37,24 @@
  *   world position ≈ camera position + forward * 0.5 (slight right/down
  *   offset acceptable); the light flash itself lives in weapons.js.
  *
+ * WEAPON-FEEL FX (purely cosmetic, zero gameplay/stat effect):
+ * - TRACERS: one pooled LineSegments segment per pellet (capped at 8/shot)
+ *   from the muzzle to the resolved hit point, or camPos + dir * MAX_DISTANCE
+ *   when the pellet leaves the arena. Warm yellow; sniper pale white-blue;
+ *   railgun electric cyan-blue. Lifetime 0.05–0.09 s, additive, faded to black
+ *   (invisible under additive blending) by update(dt).
+ * - SHELL CASINGS: exactly ONE pooled brass box per shoot() call (shotgun
+ *   pellets share it), ejected right + up + back with gravity, 1.2 s life,
+ *   floor-clamped at y = 0.02. Grenade launcher never reaches shoot().
+ * - IMPACT: a solid hit (verdict 2) calls particles.spawnImpact(point, -dir)
+ *   (3 sparks + 2 dust motes); zombie hits keep the existing blood only.
+ * - MUZZLE SMOKE: particles.spawnSmoke(muzzlePos, camDir, 3) per shot.
+ * - Pools own their geometry/material for the page lifetime (same precedent
+ *   as particles.js); no dispose contract. update(dt) advances/fades both
+ *   pools and resetFx() hides every live tracer/casing (fresh-run hook). The
+ *   FX live under one scene group flagged userData.combatFx and are excluded
+ *   from the bullet raycast roots below.
+ *
  * Dead zombies (zombie.alive === false) must be skipped — their corpses are
  * still in the array until the 1.5 s death animation finishes.
  *
@@ -55,6 +73,12 @@
  * @typedef {Object} Combat
  * @property {(weapon: import("../player/weapons.js").WeaponState) => void} shoot
  *   Perform one shot with the given active weapon descriptor.
+ * @property {(dt: number) => void} update
+ *   Advance the cosmetic pools (tracer fade/expiry, casing flight/floor
+ *   clamp). Call once per frame next to particles.update(dt).
+ * @property {() => void} resetFx
+ *   Hide every live tracer + casing (fresh-run hook; particles are left to
+ *   their own short lifetimes).
  */
 
 import * as THREE from "three";
@@ -62,6 +86,26 @@ import * as THREE from "three";
 const MAX_DISTANCE = 100;   // ray cap (spec: ~100 m)
 const HEADSHOT_MULT = 2;    // default headshot multiplier (feature B6); weapon
                             // defs override via .headshotMult — sniper is 3
+
+// --- pooled weapon-feel FX tuning ---------------------------------------------
+const TRACER_POOL = 32;          // segments; 8-pellet shotgun + rapid fire headroom
+const TRACER_MAX_PER_SHOT = 8;   // one per pellet, hard cap per shoot() call
+const TRACER_LIFE = 0.06;        // s — default warm tracer
+const TRACER_LIFE_SNIPER = 0.08; // s
+const TRACER_LIFE_RAIL = 0.09;   // s
+const SHELL_POOL = 24;           // brass casings; one per trigger pull
+const SHELL_LIFE = 1.2;          // s
+const SHELL_GRAVITY = 9.8;       // m/s²
+const SHELL_FLOOR_Y = 0.02;      // m — clamp so casings never sink
+const SHELL_SIZE = { w: 0.02, h: 0.02, d: 0.05 };
+
+// Additive line colours (per-vertex color attributes fade toward black).
+const TRACER_WARM = { r: 1.0, g: 0.78, b: 0.34 };
+const TRACER_SNIPER = { r: 0.82, g: 0.92, b: 1.0 };
+const TRACER_RAIL = { r: 0.3, g: 0.82, b: 1.0 };
+
+/** Uniform random in [lo, hi). */
+const rand = (lo, hi) => lo + Math.random() * (hi - lo);
 
 export function createCombat(camera, scene, zombies, particles, audio, bus) {
   // The weapons viewmodel + muzzle flash light are CHILDREN of the camera, and
@@ -80,13 +124,237 @@ export function createCombat(camera, scene, zombies, particles, audio, bus) {
                              // classification fallback for an untagged group
   const targetZombies = [];  // parallel: targets[i] ↔ targetZombies[i]
   const hitBuf = [];         // intersectObjects output (cleared per pellet)
-  const raycastRoots = [];   // scene.children minus the particles mesh (per shot)
+  const raycastRoots = [];   // scene.children minus particles + combat FX (per shot)
   const camDir = new THREE.Vector3();
   const rightB = new THREE.Vector3();
   const upB = new THREE.Vector3();
   const pelletDir = new THREE.Vector3();
   const camPos = new THREE.Vector3();
   const muzzlePos = new THREE.Vector3();
+  const tracerEnd = new THREE.Vector3();
+  const impactNormal = new THREE.Vector3();
+
+  // --- pooled cosmetic FX: tracers + shell casings ---------------------------
+  // One scene-level group holds both pools. Tagged userData.combatFx so the
+  // per-shot raycast root scan below can skip the whole subtree (the shells
+  // and tracer segments are never cover and must not eat raycast time).
+  const fxRoot = new THREE.Group();
+  fxRoot.userData.combatFx = true;
+  if (scene && typeof scene.add === "function") scene.add(fxRoot);
+
+  // Tracers: ONE LineSegments with TRACER_POOL*2 vertices, per-vertex colors.
+  // Inactive slots are zero-length black segments (invisible, no allocation).
+  const tracerPositions = new Float32Array(TRACER_POOL * 6);
+  const tracerColors = new Float32Array(TRACER_POOL * 6);
+  const tracerGeo = new THREE.BufferGeometry();
+  const tracerPosAttr = new THREE.BufferAttribute(tracerPositions, 3);
+  const tracerColAttr = new THREE.BufferAttribute(tracerColors, 3);
+  tracerPosAttr.setUsage(THREE.DynamicDrawUsage);
+  tracerColAttr.setUsage(THREE.DynamicDrawUsage);
+  tracerGeo.setAttribute("position", tracerPosAttr);
+  tracerGeo.setAttribute("color", tracerColAttr);
+  const tracerMat = new THREE.LineBasicMaterial({
+    vertexColors: true,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    toneMapped: false,
+  });
+  const tracerMesh = new THREE.LineSegments(tracerGeo, tracerMat);
+  tracerMesh.frustumCulled = false; // endpoints move every frame
+  tracerMesh.renderOrder = 10;      // over the world, under the HUD (DOM)
+  tracerMesh.userData.combatFx = true;
+  fxRoot.add(tracerMesh);
+
+  /** @type {Array<{active: boolean, life: number, maxLife: number,
+   *   sx:number, sy:number, sz:number, ex:number, ey:number, ez:number,
+   *   r:number, g:number, b:number}>} */
+  const tracers = new Array(TRACER_POOL);
+  for (let i = 0; i < TRACER_POOL; i++) {
+    tracers[i] = {
+      active: false, life: 0, maxLife: 1,
+      sx: 0, sy: 0, sz: 0, ex: 0, ey: 0, ez: 0,
+      r: 1, g: 1, b: 1,
+    };
+  }
+  let tracerCursor = 0; // round-robin: a full pool recycles the oldest segment
+
+  /** Write one pooled segment + its additive color (alpha baked into RGB). */
+  function writeTracer(i, sx, sy, sz, ex, ey, ez, r, g, b, alpha) {
+    const p = i * 6;
+    tracerPositions[p] = sx;
+    tracerPositions[p + 1] = sy;
+    tracerPositions[p + 2] = sz;
+    tracerPositions[p + 3] = ex;
+    tracerPositions[p + 4] = ey;
+    tracerPositions[p + 5] = ez;
+    tracerColors[p] = r * alpha;
+    tracerColors[p + 1] = g * alpha;
+    tracerColors[p + 2] = b * alpha;
+    tracerColors[p + 3] = r * alpha;
+    tracerColors[p + 4] = g * alpha;
+    tracerColors[p + 5] = b * alpha;
+    tracerPosAttr.needsUpdate = true;
+    tracerColAttr.needsUpdate = true;
+  }
+
+  /**
+   * Claim the next tracer slot (never allocates) and draw muzzle → end.
+   * @param {number} ex @param {number} ey @param {number} ez
+   * @param {number} life
+   * @param {{r:number, g:number, b:number}} color
+   */
+  function spawnTracer(ex, ey, ez, life, color) {
+    const i = tracerCursor;
+    tracerCursor = (tracerCursor + 1) % TRACER_POOL;
+    const tr = tracers[i];
+    tr.active = true;
+    tr.life = life;
+    tr.maxLife = life;
+    tr.sx = muzzlePos.x;
+    tr.sy = muzzlePos.y;
+    tr.sz = muzzlePos.z;
+    tr.ex = ex;
+    tr.ey = ey;
+    tr.ez = ez;
+    tr.r = color.r;
+    tr.g = color.g;
+    tr.b = color.b;
+    writeTracer(i, tr.sx, tr.sy, tr.sz, ex, ey, ez, tr.r, tr.g, tr.b, 1);
+  }
+
+  // Shell casings: fixed pool of brass boxes, one per shoot() call.
+  const shellGeo = new THREE.BoxGeometry(SHELL_SIZE.w, SHELL_SIZE.h, SHELL_SIZE.d);
+  const shellMat = new THREE.MeshStandardMaterial({
+    color: 0xb98c3d,          // brass
+    roughness: 0.35,
+    metalness: 0.75,
+    emissive: 0x3a2a08,       // faint glint so it reads against the night
+    emissiveIntensity: 0.55,
+  });
+  /** @type {Array<{mesh: THREE.Mesh, active: boolean, life: number,
+   *   vx:number, vy:number, vz:number, spinX:number, spinY:number,
+   *   spinZ:number}>} */
+  const shells = new Array(SHELL_POOL);
+  for (let i = 0; i < SHELL_POOL; i++) {
+    const mesh = new THREE.Mesh(shellGeo, shellMat);
+    mesh.visible = false;
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
+    fxRoot.add(mesh);
+    shells[i] = {
+      mesh, active: false, life: 0,
+      vx: 0, vy: 0, vz: 0, spinX: 0, spinY: 0, spinZ: 0,
+    };
+  }
+  let shellCursor = 0;
+
+  /**
+   * Eject exactly one casing from the camera's lower-right. Called once per
+   * shoot() call (so a shotgun's 8 pellets still drop one shell). Basis
+   * vectors (rightB/upB/camDir/camPos) are already current.
+   */
+  function spawnCasing() {
+    const rec = shells[shellCursor];
+    shellCursor = (shellCursor + 1) % SHELL_POOL;
+    const mesh = rec.mesh;
+    mesh.position
+      .copy(camPos)
+      .addScaledVector(rightB, 0.26)
+      .addScaledVector(upB, -0.2)
+      .addScaledVector(camDir, 0.35);
+    mesh.rotation.set(
+      Math.random() * Math.PI,
+      Math.random() * Math.PI,
+      Math.random() * Math.PI
+    );
+    mesh.visible = true;
+    rec.active = true;
+    rec.life = SHELL_LIFE;
+    // right + up + a little backward, from the ejection port.
+    const side = rand(1.7, 2.7);
+    const lift = rand(1.3, 2.2);
+    const back = rand(0.25, 0.9);
+    rec.vx = rightB.x * side + upB.x * lift - camDir.x * back;
+    rec.vy = rightB.y * side + upB.y * lift - camDir.y * back;
+    rec.vz = rightB.z * side + upB.z * lift - camDir.z * back;
+    rec.spinX = rand(-9, 9);
+    rec.spinY = rand(-6, 6);
+    rec.spinZ = rand(-7, 7);
+  }
+
+  function updateTracers(dt) {
+    for (let i = 0; i < TRACER_POOL; i++) {
+      const tr = tracers[i];
+      if (!tr.active) continue;
+      tr.life -= dt;
+      if (tr.life <= 0) {
+        tr.active = false;
+        tr.life = 0;
+        writeTracer(i, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0);
+        continue;
+      }
+      const a = tr.life / tr.maxLife;
+      // Additive: color → black is a clean fade (no material-wide opacity).
+      writeTracer(
+        i,
+        tr.sx, tr.sy, tr.sz,
+        tr.ex, tr.ey, tr.ez,
+        tr.r, tr.g, tr.b,
+        a * a
+      );
+    }
+  }
+
+  function updateShells(dt) {
+    for (let i = 0; i < SHELL_POOL; i++) {
+      const rec = shells[i];
+      if (!rec.active) continue;
+      rec.life -= dt;
+      if (rec.life <= 0) {
+        rec.active = false;
+        rec.life = 0;
+        rec.mesh.visible = false;
+        continue;
+      }
+      rec.vy -= SHELL_GRAVITY * dt;
+      const mesh = rec.mesh;
+      mesh.position.x += rec.vx * dt;
+      mesh.position.y += rec.vy * dt;
+      mesh.position.z += rec.vz * dt;
+      if (mesh.position.y <= SHELL_FLOOR_Y) {
+        // No colliders: settle on the arena floor instead of sinking.
+        mesh.position.y = SHELL_FLOOR_Y;
+        if (rec.vy < 0) rec.vy = 0;
+        rec.vx *= 0.82;
+        rec.vz *= 0.82;
+        rec.spinX *= 0.9;
+        rec.spinY *= 0.9;
+        rec.spinZ *= 0.9;
+      }
+      mesh.rotation.x += rec.spinX * dt;
+      mesh.rotation.y += rec.spinY * dt;
+      mesh.rotation.z += rec.spinZ * dt;
+    }
+  }
+
+  /** Fresh-run hook: hide every live tracer/casing immediately. */
+  function resetFx() {
+    for (let i = 0; i < TRACER_POOL; i++) {
+      const tr = tracers[i];
+      tr.active = false;
+      tr.life = 0;
+      writeTracer(i, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0);
+    }
+    for (let i = 0; i < SHELL_POOL; i++) {
+      const rec = shells[i];
+      rec.active = false;
+      rec.life = 0;
+      rec.mesh.visible = false;
+    }
+    tracerCursor = 0;
+    shellCursor = 0;
+  }
 
   // Walk up from a hit mesh to its root and decide what the pellet met, in
   // one pass. Verdicts:
@@ -156,17 +424,20 @@ export function createCombat(camera, scene, zombies, particles, audio, bus) {
     }
 
     // Raycast roots for this shot: scene.children minus the particles
-    // InstancedMesh — its pool instances sit right in front of the muzzle,
-    // and testing them per pellet is wasted work (they are pass-through
-    // anyway; classify() never marks them solid). The camera stays in the
-    // list: its viewmodel subtree is filtered per hit by classify() instead.
+    // InstancedMesh and the combat FX group — their pool instances sit right
+    // in front of the muzzle, and testing them per pellet is wasted work
+    // (they are pass-through anyway; classify() never marks them solid). The
+    // camera stays in the list: its viewmodel subtree is filtered per hit by
+    // classify() instead.
     raycastRoots.length = 0;
     let roots;
     if (scene) {
       const children = scene.children;
       for (let i = 0; i < children.length; i++) {
         const c = children[i];
-        if (!c.isInstancedMesh) raycastRoots.push(c);
+        if (c.isInstancedMesh) continue;
+        if (c.userData && c.userData.combatFx) continue;
+        raycastRoots.push(c);
       }
       roots = raycastRoots;
     } else {
@@ -180,6 +451,28 @@ export function createCombat(camera, scene, zombies, particles, audio, bus) {
     camDir.copy(raycaster.ray.direction);
     rightB.set(1, 0, 0).applyQuaternion(camera.quaternion);
     upB.set(0, 1, 0).applyQuaternion(camera.quaternion);
+    camera.getWorldPosition(camPos);
+    // Shared muzzle origin: slightly right/down of the camera, ahead of the
+    // near plane (the viewmodel barrel sits lower-right).
+    muzzlePos
+      .copy(camPos)
+      .addScaledVector(camDir, 0.5)
+      .addScaledVector(rightB, 0.1)
+      .addScaledVector(upB, -0.07);
+
+    // Per-weapon tracer voice: warm yellow is the default; sniper and railgun
+    // get their colder signature streaks.
+    const wname = weapon.name;
+    let tracerLife = TRACER_LIFE;
+    let tracerColor = TRACER_WARM;
+    if (wname === "sniper") {
+      tracerLife = TRACER_LIFE_SNIPER;
+      tracerColor = TRACER_SNIPER;
+    } else if (wname === "railgun") {
+      tracerLife = TRACER_LIFE_RAIL;
+      tracerColor = TRACER_RAIL;
+    }
+    let tracerCount = 0;
 
     let landed = false;
     let anyHead = false;
@@ -207,11 +500,25 @@ export function createCombat(camera, scene, zombies, particles, audio, bus) {
       // through. An exhausted list means the pellet left the arena.
       hitBuf.length = 0;
       raycaster.intersectObjects(roots, true, hitBuf);
+      let resolvedEnd = false;
       for (let h = 0; h < hitBuf.length; h++) {
         const hit = hitBuf[h];
         const verdict = classify(hit.object);
         if (verdict === 0) continue; // viewmodel / corpse / decoration — through
-        if (verdict === 2) break;    // level cover: the pellet stops, silent
+        if (verdict === 2) {
+          // Level cover: the pellet stops silently. Weapon feel: sparks +
+          // dust on the surface, and the tracer ends on the wall face.
+          tracerEnd.copy(hit.point);
+          resolvedEnd = true;
+          if (particles && particles.spawnImpact) {
+            impactNormal.copy(pelletDir).multiplyScalar(-1);
+            particles.spawnImpact(hit.point, impactNormal);
+          } else if (particles && particles.spawnSpark) {
+            // Older/stub particle implementations still get visible sparks.
+            particles.spawnSpark(hit.point);
+          }
+          break;
+        }
         if (!foundZombie.alive) continue; // died from an earlier pellet this shot
         const headshot = foundPart === "head";
         const dmg = headshot ? damage * headMult : damage;
@@ -229,10 +536,21 @@ export function createCombat(camera, scene, zombies, particles, audio, bus) {
         if (particles) {
           particles.spawnBlood(hit.point, 8 + Math.floor(Math.random() * 7)); // 8..14
         }
+        tracerEnd.copy(hit.point); // bullet stops in flesh — end the streak here
+        resolvedEnd = true;
         landed = true;
         if (headshot) anyHead = true;
         if (killed) anyKilled = true;
         break; // the pellet is spent on this zombie
+      }
+      // No zombie or solid met: the streak runs out to the ray cap.
+      if (!resolvedEnd) {
+        tracerEnd.copy(camPos).addScaledVector(pelletDir, MAX_DISTANCE);
+      }
+      // One tracer per pellet, hard-capped per trigger pull (shotgun = 8).
+      if (tracerCount < TRACER_MAX_PER_SHOT) {
+        spawnTracer(tracerEnd.x, tracerEnd.y, tracerEnd.z, tracerLife, tracerColor);
+        tracerCount++;
       }
     }
 
@@ -249,14 +567,24 @@ export function createCombat(camera, scene, zombies, particles, audio, bus) {
     }
 
     // Muzzle blast particles per shot (the light flash lives in weapons.js).
-    camera.getWorldPosition(camPos);
-    muzzlePos
-      .copy(camPos)
-      .addScaledVector(camDir, 0.5)
-      .addScaledVector(rightB, 0.1)
-      .addScaledVector(upB, -0.07);
-    if (particles) particles.spawnMuzzle(muzzlePos, camDir);
+    // A separate, much smaller grey smoke puff rides on top of the blast.
+    if (particles) {
+      particles.spawnMuzzle(muzzlePos, camDir);
+      if (particles.spawnSmoke) particles.spawnSmoke(muzzlePos, camDir, 3);
+    }
+    // Exactly one brass casing per trigger pull — never per pellet. Grenade
+    // launcher never reaches here (explosive guard above); explosives.js owns
+    // its projectile.
+    spawnCasing();
   }
 
-  return { shoot };
+  /** @param {number} dt */
+  function update(dt) {
+    const step = Number.isFinite(dt) && dt > 0 ? dt : 0;
+    if (step <= 0) return;
+    updateTracers(step);
+    updateShells(step);
+  }
+
+  return { shoot, update, resetFx };
 }

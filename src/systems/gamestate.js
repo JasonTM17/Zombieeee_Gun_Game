@@ -16,7 +16,7 @@
  * - "fire"              {weapon: WeaponState}       weapons (round left the barrel) → main.js routes to combat.shoot(weapon)
  * - "spread"            {value: number} (radians)   weapons (per shot)     → hud (crosshair expansion)
  * - "hit"               {headshot, killed}          combat (once per shoot() that landed >= 1 pellet) → hud (hitmarker)
- * - "zombie-killed"     {type, score, headshot, position: Vector3}          zombie (death START; score is the BASE score — gamestate applies the x1.5 headshot multiplier, do NOT pre-multiply) → gamestate (score/kills), pickups (drop roll), hud (kill feed)
+ * - "zombie-killed"     {type, score, headshot, position: Vector3, elite, eliteMoneyMul, eliteScoreMul}          zombie (death START; score = type base × eliteScoreMul, headshot still unapplied — gamestate applies x1.5, do NOT pre-multiply) → gamestate (score/kills), pickups (drop roll), hud (kill feed)
  * - "zombie-spawned"    {zombie: Zombie}            waves                  → main.js pushes it into the shared zombies array that createCombat received
  * - "zombie-despawned"  {zombie: Zombie}            zombie (corpse fully removed) and waves.reset() → main.js removes it from the shared array
  * - "wave-start"        {n}                         waves                  → gamestate (wave = n), hud (banner + audio.waveBanner())
@@ -33,11 +33,14 @@
  * - "money-changed"     {money, delta}              economy (every applied balance change) → hud (money chip), shop UI (affordability)
  * - "shop-toggle"       {}                          input (B while playing + shop closed) → shop UI (toggle overlay)
  * - "shop-open" / "shop-closed" {}                  shop UI (open after lock release / on close) → gamestate (addPause/removePause("shop")), input (lock choreography), hud (shop hint)
+ * - "merchant-open" / "merchant-closed" {}          trader UI (open after lock release / on close) → gamestate (addPause/removePause("merchant"))
+ * - "merchant-purchase" {id, kind, price}           systems/merchant.js (successful buy) → trader UI (refresh); "throwable-add" {kind, count} → throwables inventory
  * - "explosion"         {position}                  explosives (blast) → additive (the boom is synthesized locally in explosives.js)
  * - "zone-unlocked"     {id, name}                  zones (idempotent unlock) → hud (toast)
  * - "boss-spawned"      {type, zoneId, hp}          waves (boss wave) / main debug spawnBoss → hud (boss bar), main.js (live boss tracking for hud.update extras + debug damageBoss)
  * - "boss-drops"        {position, kinds}           boss death (constructor signature is frozen — no pickups ref) → main.js routes to pickups.spawn(position, kind) per kind
  * - "boss-roar"         {type, action}              boss specials (windup/spit/shriek/slam — action "spit" added NIGHT 30 P2, P2-K14) → audio.js listens itself and plays the real boss voice (P2-K9: the legacy main.js route to zombieGrowl() is REMOVED)
+ * - "bloater-burst"     {position: Vector3, radius: 4, damage: 25}  bloater death (zombie.js; the 4 m damage + fading green ring are handled inside zombie.js) → main.js optional FX/audio route
  *
  * NIGHT 30 P2 events (docs/EXPANSION-P2.md §6) — emitted/consumed by the
  * events/map/audio layer:
@@ -101,9 +104,14 @@ export const bus = new EventTarget();
  *     key path) can never lift the shop pause or strand an orphan reason.
  *   - "shop-open" → addPause("shop"); "shop-closed" → removePause("shop")
  *     (EXPANSION: pause by reason).
+ *   - "merchant-open" → addPause("merchant"); "merchant-closed" →
+ *     removePause("merchant") — the physical Trader overlay follows the exact
+ *     shop pattern (main's applyScreenState only checks "user", so no pause
+ *     menu appears under the trade panel).
  * - PAUSE BY REASON (EXPANSION, docs/EXPANSION.md): paused ⇔ the `reasons`
- *   set ("shop" | "user") is non-empty. addPause(reason) records it (from a
- *   live run only) and flips to "paused" + emit on the first reason;
+ *   set ("shop" | "merchant" | "user") is non-empty. addPause(reason) records
+ *   it (from a live run only) and flips to "paused" + emit on the first
+ *   reason;
  *   removePause(reason) drops it and flips back to "playing" + emit when the
  *   last reason goes. hasPause(reason) reports membership (main.js uses it to
  *   keep the pause MENU hidden under the shop overlay while the run is still
@@ -150,10 +158,11 @@ export const bus = new EventTarget();
  */
 
 /**
- * @typedef {("shop"|"user"|"outro"|"ending")} PauseReason - why the run is frozen. "user" is
- * the legacy Esc/P pause; "shop" is set while the shop overlay is open; "outro"
- * while the full-screen story outro owns the display; "ending" (NIGHT 30 P3,
- * P3-K10) while the boss-defeat ending sequence owns the display.
+ * @typedef {("shop"|"merchant"|"user"|"outro"|"ending")} PauseReason - why the run is frozen. "user" is
+ * the legacy Esc/P pause; "shop" is set while the shop overlay is open;
+ * "merchant" while the physical Trader overlay is open (same contract as the
+ * shop); "outro" while the full-screen story outro owns the display; "ending"
+ * (NIGHT 30 P3, P3-K10) while the boss-defeat ending sequence owns the display.
  */
 
 /**
@@ -397,8 +406,11 @@ export function createGamestate(busArg, settings) {
 
   // --- bus reactions ---------------------------------------------------------
 
-  // Kills: score = BASE score from the zombie, x1.5 applied HERE (the zombie
-  // emits the base value — do NOT pre-multiply on the emitting side).
+  // Kills: score = the zombie's reward value (type base, or base × eliteScoreMul
+  // shaped in the zombie constructor); x1.5 is applied HERE for a headshot.
+  // The zombie never applies the headshot multiplier.
+  // Elite variants already arrive with eliteScoreMul applied ONCE; do not
+  // multiply again here.
   B.addEventListener("zombie-killed", (e) => {
     const d = e && e.detail ? e.detail : {};
     const base = Number(d.score);
@@ -446,6 +458,11 @@ export function createGamestate(busArg, settings) {
   // and input.js swallows it anyway (it tracks the overlay itself).
   B.addEventListener("shop-open", () => addPause("shop"));
   B.addEventListener("shop-closed", () => removePause("shop"));
+
+  // The physical Trader overlay uses the same pause-by-reason contract: open
+  // → freeze under "merchant", close → resume (unless another reason remains).
+  B.addEventListener("merchant-open", () => addPause("merchant"));
+  B.addEventListener("merchant-closed", () => removePause("merchant"));
 
   // NIGHT 30 P1: the full-screen outro owns the display — the world must not
   // simulate behind it (a player could die in the dark and the gameover panel

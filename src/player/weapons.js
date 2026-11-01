@@ -1,7 +1,8 @@
 /**
- * Weapon system: seven weapons (three launch + four expansion), ownership-
- * gated switching, auto-reload, minigun spin-up, recoil, muzzle flash and
- * low-poly viewmodels parented to the camera.
+ * Weapon system: twelve weapons (three launch + seven shop expansion + two
+ * merchant-exclusive), ownership-gated switching, auto-reload, minigun
+ * spin-up, recoil, muzzle flash and low-poly viewmodels parented to the
+ * camera.
  *
  * Weapon table (spec numbers — DO NOT change):
  *   name    | mode      | interval             | mag | damage           | spread (rad) | reserve  | reload
@@ -12,14 +13,27 @@
  *   sniper  | bolt      | 1.4 s between shots  | 5   | 110, headshot x3 | 0.002        | 25       | 2.4 s
  *   minigun | spin-up   | 0.6 s spin, 1100 rpm | 150 | 8                | 0.05         | 300      | 3.6 s
  *   grenade | pump      | 1.1 s between shots  | 4   | explosion (B5)   | 0.01         | 12       | 2.6 s
+ *   magnum  | semi-auto | 0.35 s between shots | 6   | 85, headshot x2.5| 0.012        | 36       | 2.2 s
+ *   dmr     | semi-auto | 0.22 s between shots | 10  | 52, headshot x2.5| 0.006        | 70       | 2.0 s
+ *   railgun | bolt      | 1.1 s between shots  | 3   | 240, headshot x2 | 0.0          | 12       | 3.0 s
+ *   sawnoff | pump      | 0.55 s between shots | 2   | 14 x 10 pellets  | 0.09         | 30       | 1.8 s
+ *   crossbow| bolt      | 1.6 s between shots  | 1   | 150, headshot x3 | 0.001        | 24       | 1.7 s
  *
- * Reload times for the four EXPANSION guns are not fixed by the contract —
- * picked to fit each weapon's size; every other number above is verbatim.
- * Keys: 1/2/3 = launch guns (unchanged), 4/5/6/7 = smg/sniper/minigun/grenade.
+ * Reload times for the four ORIGINAL expansion guns (smg/sniper/minigun/
+ * grenade) are not fixed by the contract — picked to fit each weapon's size;
+ * magnum/dmr/railgun carry their own spec reload times. The three new fire
+ * intervals are also not spec-fixed — chosen to fit each weapon's weight.
+ * Every other number above is verbatim.
+ * Keys: 1/2/3 = launch guns (unchanged), 4/5/6/7 = smg/sniper/minigun/grenade,
+ * 8/9/0 = magnum/dmr/railgun, "-" = sawnoff, "=" = crossbow.
  *
  * OWNERSHIP (expansion): pistol/shotgun/rifle are owned from the start; the
- * four new guns start with owned === false and MUST be bought in the shop.
- * The shop (or main.js debug) unlocks one by calling weapons.unlock("smg") —
+ * seven shop guns start with owned === false and MUST be bought in the shop.
+ * The two merchant-exclusive guns (sawnoff/crossbow) are ALSO owned === false
+ * at the start but are deliberately absent from the standard B-key shop
+ * catalog — the physical merchant unlocks them through the same generic
+ * weapons.unlock(name) surface. The shop (or main.js debug) unlocks one by
+ * calling weapons.unlock("smg") —
  * or equivalently by setting list[i].owned = true directly; switching filters
  * on the flag either way. unlock() also hands the fresh gun a full mag plus
  * its startReserve (a stable target for the shop's "ammo" full refill, which
@@ -51,6 +65,25 @@
  *     restored guns come back mag-full.
  * reset() zeroes the upgrades (fresh run); main.js re-applies the captured
  * levels on NG+/save-restore through setUpgrades()/applySaveState().
+ *
+ * PERK MODIFIERS (roguelite level-up layer — src/systems/perks.js):
+ * a second, independent additive multiplier surface layered ON TOP of the
+ * upgraded runtime values. The WEAPONS[] def table and the runtime
+ * damage/magSize fields stay untouched (shop upgrade math keeps reading the
+ * same upgraded base), and every effective value is resolved ON READ:
+ *   damage   = runtime damage × damageMul
+ *   interval = def interval / fireRateMul          (fire cooldown)
+ *   reload   = effectiveReloadTime(i) × reloadMul  (upgraded reload × mul)
+ *   spread   = runtime spread × spreadMul          (combat + crosshair)
+ *   headshot = runtime headshotMult × headshotMul  (lucky perk, additive key)
+ * Public surfaces:
+ *   setPerkMods({damageMul, fireRateMul, reloadMul, spreadMul[, headshotMul]})
+ *     → partial patch; missing keys keep their current value, non-finite
+ *     values are ignored, defaults are 1. Returns the full mods object.
+ *   getPerkMods() → a copy of the current mods (save/debug).
+ * reset() returns every mod to 1. The "fire" event carries a PREVIEW copy of
+ * the active weapon with the effective damage/spread/headshotMult baked in,
+ * so combat.js needs no changes while the runtime entry stays upgrade-pure.
  *
  * AUTO-RELOAD (feature A — three cases, exactly per contract):
  * 1. The shot that empties the mag with reserve > 0 arms a ONE-SHOT pending
@@ -99,17 +132,18 @@
  *   rifle / smg  → input.isDown("Mouse0") gated by the auto interval
  *   minigun      → input.isDown("Mouse0"), 0.6 s spin-up gate, then auto
  *
- * Switching: "Digit1".."Digit7" or input.wheelDir() (cycles OWNED weapons
- * only). Reload: "KeyR" — allowed only if not already reloading,
- * mag < magSize and reserve > 0 (pistol reserve is Infinity → never empty).
+ * Switching: "Digit1".."Digit9", "Digit0", "Minus" and "Equal" or
+ * input.wheelDir() (cycles OWNED weapons only). Reload: "KeyR" — allowed only
+ * if not already reloading, mag < magSize and reserve > 0 (pistol reserve is
+ * Infinity → never empty).
  * audio.reloadStart() at the start and audio.reloadEnd() at the end of the
  * reload timer (unchanged legacy calls).
  *
  * SOUNDS: the three launch guns keep audio.gunshot(name) EXACTLY as before.
  * audio.js is frozen (private context + synth helpers, and its gunshot()
- * switch only knows the three launch names), so the four expansion guns, the
- * dry click and the minigun spin-up whir are synthesized by a small LOCAL
- * WebAudio synth in this file (contract B4: "âm thanh synth riêng trong
+ * switch only knows the three launch names), so the nine expansion/merchant
+ * guns, the dry click and the minigun spin-up whir are synthesized by a small
+ * LOCAL WebAudio synth in this file (contract B4: "âm thanh synth riêng trong
  * weapons.js"). The synth lazily creates its own AudioContext after the first
  * user gesture (same lifecycle as audio.js), follows "settings-changed"
  * {patch.volume} on the bus, and is seeded from the same localStorage key
@@ -126,10 +160,12 @@
  * with a small draw animation on switch and a dip/rotate animation while
  * reloading. The minigun's barrel cluster visibly spins with the spin state.
  *
- * Bus events emitted: "fire" {weapon}, "spread" {value}.
+ * Bus events emitted: "fire" {weapon} (a PREVIEW copy carrying the effective
+ *   perk-adjusted damage/spread/headshotMult), "spread" {value},
+ *   "weapon-unlocked" {name} (once per ownership transition in unlock()).
  * Bus events consumed: "pickup" {kind:"ammo"} → every weapon gains reserve
  *   (active +magSize, the others +round(0.5*magSize); pistol's Infinity
- *   reserve stays Infinity) — the legacy rule generalized to seven weapons;
+ *   reserve stays Infinity) — the legacy rule generalized to twelve weapons;
  *   "settings-changed" {patch.volume} → local synth master gain.
  *
  * @param {import("three").PerspectiveCamera} camera
@@ -146,7 +182,7 @@
  * getState() subset.
  *
  * @typedef {Object} WeaponState
- * @property {"pistol"|"shotgun"|"rifle"|"smg"|"sniper"|"minigun"|"grenade"} name
+ * @property {"pistol"|"shotgun"|"rifle"|"smg"|"sniper"|"minigun"|"grenade"|"magnum"|"dmr"|"railgun"|"sawnoff"|"crossbow"} name
  * @property {number} damage - per bullet (or per pellet). Grenade: 0 — its
  *   payload is the explosion (explosives.js), not a hitscan ray.
  * @property {number} pellets - rays per shot: 1 | 8 | 1 | ...
@@ -155,9 +191,14 @@
  * @property {number} magSize - magazine capacity.
  * @property {number} reserve - spare rounds; pistol is Infinity (unlimited).
  * @property {boolean} reloading
- * @property {boolean} owned - false for the four shop guns until unlocked.
+ * @property {boolean} owned - false for the seven shop guns and the two
+ *   merchant-exclusive guns until unlocked.
  * @property {number} startReserve - the def's full-reserve value (shop "ammo"
  *   refill target); pistol is Infinity.
+ * @property {boolean} [merchantOnly] - true for sawnoff/crossbow (never in
+ *   the standard B-key shop catalog).
+ * @property {number} [price] - merchant-exclusive asking price in dollars
+ *   (sawnoff 650 / crossbow 750); undefined for every other weapon.
  * @property {number} headshotMult - headshot damage multiplier combat.js
  *   applies (default 2; sniper 3 — read from the weapon def, feature B6).
  * @property {boolean} explosive - grenade only: route "fire" to
@@ -170,9 +211,10 @@
 
 /**
  * @typedef {Object} Weapons
- * @property {WeaponState[]} list - all seven weapons; indices 0..2 pistol,
- *   shotgun, rifle (owned from the start), 3..6 smg, sniper, minigun, grenade
- *   (shop-only until unlocked).
+ * @property {WeaponState[]} list - all twelve weapons; indices 0..2 pistol,
+ *   shotgun, rifle (owned from the start), 3..9 smg, sniper, minigun, grenade,
+ *   magnum, dmr, railgun (shop-only until unlocked), 10..11 sawnoff, crossbow
+ *   (merchant-exclusive until unlocked).
  * @property {number} current - index of the active weapon in list.
  * @property {(dt: number) => void} update
  *   Advance one frame (dt seconds): read trigger/switch/reload inputs, run
@@ -195,12 +237,13 @@
  * @property {() => WeaponState} getState
  *   The ACTIVE weapon's state; HUD/debug use at least
  *   {name, mag, magSize, reserve, reloading, spread}.
- * @property {(name?: string) => ({name: string, damage: number, magSize: number, reloadTime: number, upgrades: {dmg: number, mag: number, rl: number}} | null)} getStats
+ * @property {(name?: string) => ({name: string, damage: number, magSize: number, reloadTime: number, spread: number, headshotMult: number, interval: number, upgrades: {dmg: number, mag: number, rl: number}} | null)} getStats
  *   GUN GAME 2.0 (feature B): EFFECTIVE stats of one weapon — the ACTIVE one
  *   when `name` is omitted; null for an unknown name. damage/magSize are the
- *   upgraded runtime values, reloadTime the upgraded duration. The shop UI
- *   and the save snapshot read through this (upgrade levels live in
- *   `upgrades`, integers 0..3).
+ *   upgraded runtime values; reloadTime the upgraded duration. PERKS adds
+ *   spread/headshotMult/interval (all perk-adjusted) without mutating the
+ *   runtime entry. The shop UI and the save snapshot read through this
+ *   (upgrade levels live in `upgrades`, integers 0..3).
  * @property {(name: string, patch: {dmg?: number, mag?: number, rl?: number}) => boolean} setUpgrades
  *   GUN GAME 2.0 (feature B): set upgrade levels for weapon `name` (partial
  *   patch — only the provided tracks change); every value is clamped to an
@@ -213,6 +256,12 @@
  *   null → Infinity (pistol) / number → clamped to ≥ 0, upgrade levels
  *   clamped to 0..3, and every restored gun comes back mag-full. Entries
  *   with unknown names are ignored.
+ * @property {(patch: {damageMul?: number, fireRateMul?: number, reloadMul?: number, spreadMul?: number, headshotMul?: number}) => {damageMul: number, fireRateMul: number, reloadMul: number, spreadMul: number, headshotMul: number}} setPerkMods
+ *   PERKS: apply the multiplicative perk budget (partial patch, defaults 1).
+ *   Effective damage/interval/reload/spread/headshot are resolved on read —
+ *   runtime damage/magSize stay upgrade-pure.
+ * @property {() => {damageMul: number, fireRateMul: number, reloadMul: number, spreadMul: number, headshotMul: number}} getPerkMods
+ *   PERKS: a copy of the current perk multipliers ({…:1} at stock).
  */
 
 import * as THREE from "three";
@@ -331,6 +380,104 @@ const WEAPONS = [
     vmKick: 0.1,
     flash: 7,
   },
+  {
+    // EXPANSION (user request "bổ sung nhiều loại súng"): heavy revolver.
+    // Frozen spec: 85 dmg, mag 6, reserve 36, reload 2.2 s, headshot x2.5.
+    name: "magnum",
+    mode: "semi",            // one shot per click
+    interval: 0.35,          // not spec-fixed — heavy revolver cadence
+    damage: 85,
+    pellets: 1,
+    spread: 0.012,
+    magSize: 6,
+    startReserve: 36,
+    reloadTime: 2.2,
+    headshotMult: 2.5,
+    kick: 0.055,
+    yawKick: 0.005,
+    vmKick: 0.11,
+    flash: 9,
+  },
+  {
+    // EXPANSION: semi-auto marksman rifle — accurate, flat trajectory.
+    // Frozen spec: 52 dmg, mag 10, reserve 70, reload 2.0 s, headshot x2.5.
+    name: "dmr",
+    mode: "semi",
+    interval: 0.22,          // not spec-fixed — fast semi-auto tap
+    damage: 52,
+    pellets: 1,
+    spread: 0.006,
+    magSize: 10,
+    startReserve: 70,
+    reloadTime: 2.0,
+    headshotMult: 2.5,
+    kick: 0.028,
+    yawKick: 0.003,
+    vmKick: 0.07,
+    flash: 7,
+  },
+  {
+    // EXPANSION: bolt-action railgun — pinpoint, huge single-shot damage.
+    // Frozen spec: 240 dmg, mag 3, reserve 12, reload 3.0 s, headshot x2.
+    name: "railgun",
+    mode: "bolt",
+    interval: 1.1,           // not spec-fixed — charge/bolt cycle
+    damage: 240,
+    pellets: 1,
+    spread: 0.0,
+    magSize: 3,
+    startReserve: 12,
+    reloadTime: 3.0,
+    headshotMult: 2,
+    kick: 0.07,
+    yawKick: 0,
+    vmKick: 0.14,
+    flash: 12,
+  },
+  {
+    // MERCHANT-EXCLUSIVE (physical merchant, NOT the standard B-key shop):
+    // double-barrel sawn-off shotgun — brutal up close, 2-shell break action.
+    // Frozen spec: 0.55 s between shots, 14 x 10 pellets, spread 0.09
+    // (very wide), mag 2, reserve 30, reload 1.8 s, headshot x2, price $650.
+    name: "sawnoff",
+    mode: "pump",
+    interval: 0.55,
+    damage: 14,
+    pellets: 10,
+    spread: 0.09,
+    magSize: 2,
+    startReserve: 30,
+    reloadTime: 1.8,
+    headshotMult: 2,
+    kick: 0.06,
+    yawKick: 0.012,
+    vmKick: 0.14,
+    flash: 12,
+    price: 650,
+    merchantOnly: true,
+  },
+  {
+    // MERCHANT-EXCLUSIVE (physical merchant): bolt-action crossbow — silent,
+    // pinpoint, one bolt per magazine. Frozen spec: 1.6 s between shots,
+    // 150 dmg, spread 0.001, mag 1, reserve 24, reload 1.7 s, headshot x3,
+    // no muzzle flash, price $750.
+    name: "crossbow",
+    mode: "bolt",
+    interval: 1.6,
+    damage: 150,
+    pellets: 1,
+    spread: 0.001,
+    magSize: 1,
+    startReserve: 24,
+    reloadTime: 1.7,
+    headshotMult: 3,
+    kick: 0.025,
+    yawKick: 0,
+    vmKick: 0.06,
+    flash: 0,                // no muzzle light — silent weapon
+    price: 750,
+    merchantOnly: true,
+  },
 ];
 
 const STARTER_COUNT = 3;  // pistol/shotgun/rifle — owned from the start
@@ -345,6 +492,21 @@ const UPG_DMG_PER_LEVEL = 0.2;  // damage   × (1 + 0.2 × lvl)
 const UPG_MAG_PER_LEVEL = 0.25; // magSize  × (1 + 0.25 × lvl), floored
 const UPG_RL_PER_LEVEL = 0.12;  // reload   × (1 − 0.12 × lvl)
 
+// PERKS (src/systems/perks.js): the second, independent multiplier surface.
+// Values are plain multipliers resolved on read; 1 = stock. headshotMul is an
+// additive fifth key (the "lucky" perk) beyond the four the perk module's
+// damage/firerate/reload/steady picks drive.
+const PERK_MOD_KEYS = ["damageMul", "fireRateMul", "reloadMul", "spreadMul", "headshotMul"];
+const PERK_MUL_MIN = 0.05;
+const PERK_MUL_MAX = 20;
+const PERK_MODS_DEFAULT = {
+  damageMul: 1,
+  fireRateMul: 1,
+  reloadMul: 1,
+  spreadMul: 1,
+  headshotMul: 1,
+};
+
 const DRAW_TIME = 0.3;    // s — switch/draw animation; firing blocked while drawing
 const RECOIL_TAU = 0.07;  // s — exponential recovery (~94% back at 0.2 s, per header)
 const FLASH_TIME = 0.04;  // s — muzzle flash (spec: 40 ms)
@@ -355,12 +517,13 @@ const VM_POS = { x: 0.26, y: -0.24, z: -0.5 }; // lower-right of the camera
 const SETTINGS_KEY = "gungame.settings"; // the key settings.js persists
 
 /**
- * Tiny self-contained WebAudio synth: the four expansion gun shots, the dry
- * click and the minigun spin-up whir. audio.js is frozen (its context/helpers
- * are private and its gunshot() only knows the three launch guns), so this
- * file owns its own synth per contract B4. Mirrors audio.js's lifecycle:
- * context created lazily after the first user gesture, every method a safe
- * no-op before that, master gain follows "settings-changed" {patch.volume}.
+ * Tiny self-contained WebAudio synth: the nine expansion/merchant gun shots,
+ * the dry click and the minigun spin-up whir. audio.js is frozen (its
+ * context/helpers are private and its gunshot() only knows the three launch
+ * guns), so this file owns its own synth per contract B4. Mirrors audio.js's
+ * lifecycle: context created lazily after the first user gesture, every
+ * method a safe no-op before that, master gain follows
+ * "settings-changed" {patch.volume}.
  *
  * @param {EventTarget} bus
  */
@@ -488,6 +651,48 @@ function createGunSynth(bus) {
       noise({ dur: 0.25, type: "lowpass", freq: 900, gain: 0.15, when: 0.05 });
       tone({ type: "sine", f0: 105, f1: 48, dur: 0.14, gain: 0.32 });
     },
+    magnum() {
+      // Heavy revolver boom: deep body, long low tail, brief metallic crack.
+      noise({ dur: 0.3, type: "lowpass", freq: 380, gain: 0.55 });
+      noise({ dur: 0.5, type: "lowpass", freq: 170, gain: 0.34, when: 0.01 });
+      noise({ dur: 0.08, type: "bandpass", freq: 1700, q: 0.8, gain: 0.2 });
+      tone({ type: "sine", f0: 112, f1: 40, dur: 0.34, gain: 0.5 });
+    },
+    dmr() {
+      // Sharp marksman crack: bright snap + tight low thump, no long tail.
+      noise({ dur: 0.08, type: "bandpass", freq: 3300, q: 1.2, gain: 0.42 });
+      noise({ dur: 0.2, type: "lowpass", freq: 750, gain: 0.2, when: 0.004 });
+      noise({ dur: 0.05, type: "highpass", freq: 7000, gain: 0.15 });
+      tone({ type: "square", f0: 230, f1: 95, dur: 0.06, gain: 0.17 });
+    },
+    railgun() {
+      // Electric whine rising into the shot, then a zap + deep discharge.
+      tone({ type: "sawtooth", f0: 420, f1: 1900, dur: 0.16, gain: 0.13 });
+      noise({ dur: 0.22, type: "highpass", freq: 2600, gain: 0.32, when: 0.14 });
+      noise({ dur: 0.36, type: "bandpass", freq: 950, q: 0.6, gain: 0.4, when: 0.15 });
+      tone({ type: "square", f0: 1500, f1: 280, dur: 0.09, gain: 0.1, when: 0.13 });
+      tone({ type: "sine", f0: 92, f1: 38, dur: 0.32, gain: 0.42, when: 0.14 });
+    },
+    sawnoff() {
+      // Merchant double-barrel: huge short boom + the break-action double
+      // click as the empty shells are flicked out.
+      noise({ dur: 0.34, type: "lowpass", freq: 300, gain: 0.72 });
+      noise({ dur: 0.5, type: "lowpass", freq: 120, gain: 0.52, when: 0.006 });
+      noise({ dur: 0.09, type: "bandpass", freq: 1500, q: 0.7, gain: 0.34 });
+      tone({ type: "sine", f0: 88, f1: 32, dur: 0.38, gain: 0.62 });
+      // Double-click: two tight metallic action ticks, slightly apart.
+      noise({ dur: 0.024, type: "highpass", freq: 3200, gain: 0.2, when: 0.3 });
+      tone({ type: "square", f0: 1250, f1: 720, dur: 0.022, gain: 0.09, when: 0.3 });
+      noise({ dur: 0.022, type: "highpass", freq: 2800, gain: 0.16, when: 0.38 });
+      tone({ type: "square", f0: 980, f1: 600, dur: 0.02, gain: 0.08, when: 0.38 });
+    },
+    crossbow() {
+      // Taut string release: a short, quiet thwip — no boom, no muzzle crack.
+      noise({ dur: 0.05, type: "bandpass", freq: 2700, q: 1.8, gain: 0.12 });
+      tone({ type: "triangle", f0: 330, f1: 110, dur: 0.08, gain: 0.14 });
+      noise({ dur: 0.13, type: "lowpass", freq: 520, gain: 0.08, when: 0.01 });
+      tone({ type: "sine", f0: 190, f1: 85, dur: 0.05, gain: 0.05, when: 0.02 });
+    },
   };
 
   function dry() {
@@ -517,7 +722,17 @@ function createGunSynth(bus) {
   };
 }
 
-const GUN_SYNTH_SHOTS = { smg: true, sniper: true, minigun: true, grenade: true };
+const GUN_SYNTH_SHOTS = {
+  smg: true,
+  sniper: true,
+  minigun: true,
+  grenade: true,
+  magnum: true,
+  dmr: true,
+  railgun: true,
+  sawnoff: true,
+  crossbow: true,
+};
 
 export function createWeapons(camera, input, audio, bus) {
   const gunSynth = createGunSynth(bus);
@@ -538,6 +753,11 @@ export function createWeapons(camera, input, audio, bus) {
     startReserve: w.startReserve,
     headshotMult: w.headshotMult || 2,
     explosive: w.explosive === true,
+    // Merchant-exclusive metadata (additive; ignored by combat/HUD). The
+    // physical merchant reads these to price its two guns; the standard shop
+    // catalog deliberately never lists them.
+    merchantOnly: w.merchantOnly === true,
+    price: w.price,
     // GUN GAME 2.0 (feature B): every gun starts stock; the shop's
     // "upg:{weapon}:{track}" purchases raise these (0..3 per track) and
     // applyUpgrades() mirrors the effect onto damage/magSize above.
@@ -557,6 +777,9 @@ export function createWeapons(camera, input, audio, bus) {
   let time = 0;
   let autoReloadT = -1;      // >= 0 → seconds until the pending auto-reload fires
   let spinT = 0;             // minigun trigger-held seconds (0..spinup)
+  // PERKS: independent multipliers resolved on read (never written onto the
+  // runtime damage/magSize). reset() restores every key to 1.
+  let perkMods = { ...PERK_MODS_DEFAULT };
 
   // --- viewmodel: low-poly primitives parented to the camera ------------------
   const mat = (color) =>
@@ -576,6 +799,15 @@ export function createWeapons(camera, input, audio, bus) {
     olive: mat(0x49523c),   // expansion: sniper furniture
     steel: mat(0x3d444c),   // expansion: minigun frame
     red: mat(0x7a2323),     // expansion: minigun ammo box
+    sand: mat(0x6e6148),    // expansion: dmr furniture
+    // expansion: railgun energy accents — strong blue self-glow.
+    glow: new THREE.MeshStandardMaterial({
+      color: 0x0a2b3a,
+      roughness: 0.35,
+      metalness: 0.55,
+      emissive: 0x2fa8ff,
+      emissiveIntensity: 1.6,
+    }),
   };
 
   function box(m, w, h, d, x, y, z, rx = 0) {
@@ -685,6 +917,123 @@ export function createWeapons(camera, input, audio, bus) {
     return g;
   }
 
+  // --- weapon-pack viewmodels (each silhouette clearly distinct) --------------
+
+  /** Chunky double-action revolver: fat frame, exposed cylinder, short barrel. */
+  function buildMagnum() {
+    const g = new THREE.Group();
+    g.add(box(mats.body, 0.062, 0.085, 0.26, 0, 0.01, -0.04));       // heavy frame
+    g.add(box(mats.dark, 0.036, 0.045, 0.42, 0, 0.028, -0.3));       // barrel + shroud
+    g.add(cyl(mats.steel, 0.052, 0.13, 0, 0.005, -0.12, 10));        // revolver cylinder
+    g.add(box(mats.accent, 0.02, 0.014, 0.26, 0, -0.022, -0.3));     // underlug
+    g.add(box(mats.grip, 0.052, 0.16, 0.078, 0, -0.085, 0.08, 0.3)); // grip
+    g.add(box(mats.steel, 0.022, 0.04, 0.03, 0, 0.055, 0.075));      // hammer
+    g.add(box(mats.accent, 0.018, 0.018, 0.03, 0, 0.075, -0.42));    // front sight
+    g.add(box(mats.dark, 0.012, 0.012, 0.05, 0, 0.062, 0.04));       // rear sight
+    return g;
+  }
+
+  /** Long scoped marksman rifle: sand furniture, straight mag, big optic. */
+  function buildDmr() {
+    const g = new THREE.Group();
+    g.add(box(mats.sand, 0.056, 0.086, 0.54, 0, 0, -0.1));           // long receiver
+    g.add(box(mats.dark, 0.026, 0.026, 0.62, 0, 0.018, -0.62));      // barrel
+    g.add(box(mats.dark, 0.034, 0.034, 0.1, 0, 0.018, -0.96));       // muzzle brake
+    g.add(cyl(mats.dark, 0.04, 0.26, 0, 0.09, -0.2, 10));            // scope tube
+    g.add(cyl(mats.accent, 0.048, 0.03, 0, 0.09, -0.32, 10));        // objective ring
+    g.add(cyl(mats.accent, 0.044, 0.025, 0, 0.09, -0.08, 10));       // ocular ring
+    g.add(box(mats.steel, 0.016, 0.045, 0.03, 0, 0.048, -0.12));     // scope mount
+    g.add(box(mats.steel, 0.016, 0.045, 0.03, 0, 0.048, -0.27));     // scope mount
+    g.add(box(mats.accent, 0.045, 0.15, 0.07, 0, -0.105, -0.08, -0.12)); // straight mag
+    g.add(box(mats.sand, 0.052, 0.09, 0.28, 0, -0.02, 0.3, 0.06));   // stock
+    g.add(box(mats.steel, 0.03, 0.045, 0.12, 0, 0.06, 0.15));        // cheek rest
+    g.add(box(mats.grip, 0.046, 0.11, 0.06, 0, -0.085, 0.13, 0.32)); // grip
+    g.add(box(mats.steel, 0.014, 0.02, 0.03, 0.045, 0.02, 0.02));    // bolt handle
+    return g;
+  }
+
+  /** Futuristic railgun: twin rails, coil rings, glowing blue energy accents. */
+  function buildRailgun() {
+    const g = new THREE.Group();
+    g.add(box(mats.dark, 0.075, 0.1, 0.44, 0, 0, -0.02));            // main housing
+    // Twin rails running forward + their blue energy strips.
+    g.add(box(mats.steel, 0.02, 0.022, 0.56, -0.042, 0.055, -0.5));
+    g.add(box(mats.steel, 0.02, 0.022, 0.56, 0.042, 0.055, -0.5));
+    g.add(box(mats.glow, 0.014, 0.012, 0.5, -0.042, 0.03, -0.5));
+    g.add(box(mats.glow, 0.014, 0.012, 0.5, 0.042, 0.03, -0.5));
+    g.add(box(mats.glow, 0.016, 0.008, 0.4, 0, 0.075, -0.42));       // top charge strip
+    // Coil rings around the rails.
+    for (let i = 0; i < 4; i++) {
+      g.add(cyl(mats.glow, 0.062, 0.018, 0, 0.042, -0.24 - i * 0.1, 12));
+    }
+    g.add(cyl(mats.steel, 0.036, 0.05, 0, 0.042, -0.82, 10));        // muzzle collar
+    // Energy cell + grip + stock.
+    g.add(cyl(mats.glow, 0.045, 0.1, 0, -0.04, 0.08, 10));
+    g.add(box(mats.steel, 0.066, 0.12, 0.1, 0, -0.1, 0.02));         // cell housing
+    g.add(box(mats.grip, 0.046, 0.12, 0.062, 0, -0.1, 0.16, 0.3));   // grip
+    g.add(box(mats.dark, 0.058, 0.085, 0.16, 0, -0.005, 0.3));       // stock
+    g.add(box(mats.glow, 0.012, 0.05, 0.02, 0, 0.06, -0.16));        // status light
+    return g;
+  }
+
+  // --- merchant-exclusive viewmodels -----------------------------------------
+
+  /**
+   * Sawn-off double-barrel: stubby twin barrels, very wide muzzle face,
+   * wooden pistol grip and a tiny break-action receiver. Silhouette reads
+   * "hand cannon" next to the long pump shotgun.
+   */
+  function buildSawnoff() {
+    const g = new THREE.Group();
+    g.add(box(mats.body, 0.082, 0.092, 0.19, 0, 0, 0.03));            // break-action receiver
+    // Twin short barrels side by side (the whole point of the silhouette).
+    g.add(cyl(mats.dark, 0.031, 0.3, -0.026, 0.018, -0.24, 10));
+    g.add(cyl(mats.dark, 0.031, 0.3, 0.026, 0.018, -0.24, 10));
+    g.add(box(mats.steel, 0.118, 0.086, 0.028, 0, 0.018, -0.39));     // wide muzzle face
+    g.add(cyl(mats.dark, 0.026, 0.022, -0.026, 0.018, -0.405, 10));   // left bore
+    g.add(cyl(mats.dark, 0.026, 0.022, 0.026, 0.018, -0.405, 10));    // right bore
+    g.add(box(mats.wood, 0.058, 0.17, 0.078, 0, -0.115, 0.105, 0.3)); // wooden pistol grip
+    g.add(box(mats.steel, 0.04, 0.014, 0.08, 0, -0.045, 0.0));        // trigger guard
+    g.add(box(mats.accent, 0.014, 0.018, 0.02, 0, 0.052, -0.36));     // front bead sight
+    return g;
+  }
+
+  /**
+   * Crossbow: wide swept horizontal limbs, twin string strands to the rail,
+   * long bolt rail, small scope/sight block and a wooden stock. No muzzle
+   * device — the def carries flash 0 (fire() never lights the muzzle).
+   */
+  function buildCrossbow() {
+    const g = new THREE.Group();
+    g.add(box(mats.wood, 0.052, 0.075, 0.34, 0, -0.005, 0.16));       // wooden stock
+    g.add(box(mats.grip, 0.046, 0.105, 0.06, 0, -0.085, 0.13, 0.32)); // pistol grip
+    g.add(box(mats.dark, 0.032, 0.024, 0.52, 0, 0.04, -0.22));        // bolt rail
+    // Swept horizontal limbs — two angled arms span the full width.
+    const limbL = box(mats.steel, 0.2, 0.018, 0.032, -0.1, 0.035, -0.38);
+    limbL.rotation.y = 0.12;
+    const limbR = box(mats.steel, 0.2, 0.018, 0.032, 0.1, 0.035, -0.38);
+    limbR.rotation.y = -0.12;
+    g.add(limbL);
+    g.add(limbR);
+    g.add(box(mats.accent, 0.04, 0.03, 0.045, 0, 0.035, -0.38));      // limb riser
+    // String: two thin strands from the limb tips back to the rail center.
+    const strL = box(mats.accent, 0.31, 0.006, 0.006, -0.095, 0.035, -0.25);
+    strL.rotation.y = -0.9;
+    const strR = box(mats.accent, 0.31, 0.006, 0.006, 0.095, 0.035, -0.25);
+    strR.rotation.y = 0.9;
+    g.add(strL);
+    g.add(strR);
+    // Scope tube + mounts above the rail; small front sight block.
+    g.add(cyl(mats.dark, 0.032, 0.2, 0, 0.105, -0.16, 10));
+    g.add(cyl(mats.accent, 0.038, 0.025, 0, 0.105, -0.26, 10));
+    g.add(cyl(mats.accent, 0.036, 0.02, 0, 0.105, -0.06, 10));
+    g.add(box(mats.steel, 0.014, 0.04, 0.025, 0, 0.068, -0.1));
+    g.add(box(mats.steel, 0.014, 0.04, 0.025, 0, 0.068, -0.22));
+    g.add(box(mats.dark, 0.01, 0.04, 0.05, 0, 0.058, -0.4));          // bolt clip
+    g.scale.setScalar(0.82); // wide horizontal limbs read too close at 1.0
+    return g;
+  }
+
   const vmRoot = new THREE.Group();
   vmRoot.position.set(VM_POS.x, VM_POS.y, VM_POS.z);
   camera.add(vmRoot);
@@ -696,6 +1045,11 @@ export function createWeapons(camera, input, audio, bus) {
     buildSniper(),
     buildMinigun(),
     buildGrenadeLauncher(),
+    buildMagnum(),
+    buildDmr(),
+    buildRailgun(),
+    buildSawnoff(),
+    buildCrossbow(),
   ];
   for (let i = 0; i < models.length; i++) {
     models[i].visible = i === current;
@@ -748,21 +1102,109 @@ export function createWeapons(camera, input, audio, bus) {
     return WEAPONS[i].reloadTime * (1 - UPG_RL_PER_LEVEL * list[i].upgrades.rl);
   }
 
+  // --- perk modifiers (PERKS) --------------------------------------------------
+  // The four spec keys drive damage/fire-rate/reload/spread; headshotMul is
+  // the additive fifth key used by the "lucky" perk. All values are clamped
+  // sane so a corrupt caller can never zero a stat or divide by zero.
+
+  /** Clamp one multiplier; non-finite input keeps the current value. */
+  function clampMul(key, v) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return perkMods[key];
+    return Math.min(PERK_MUL_MAX, Math.max(PERK_MUL_MIN, n));
+  }
+
+  /**
+   * PERKS: partial patch of the multiplier surface. Missing keys keep their
+   * current value; every present finite value is clamped to [0.05, 20].
+   * @param {Partial<typeof PERK_MODS_DEFAULT>} [patch]
+   */
+  function setPerkMods(patch) {
+    if (patch && typeof patch === "object") {
+      for (let i = 0; i < PERK_MOD_KEYS.length; i++) {
+        const key = PERK_MOD_KEYS[i];
+        if (Object.prototype.hasOwnProperty.call(patch, key)) {
+          perkMods[key] = clampMul(key, patch[key]);
+        }
+      }
+    }
+    return getPerkMods();
+  }
+
+  /** PERKS: a copy of the current multipliers (save/debug). */
+  function getPerkMods() {
+    return {
+      damageMul: perkMods.damageMul,
+      fireRateMul: perkMods.fireRateMul,
+      reloadMul: perkMods.reloadMul,
+      spreadMul: perkMods.spreadMul,
+      headshotMul: perkMods.headshotMul,
+    };
+  }
+
+  /** Effective per-shot damage = runtime (upgraded) damage × damageMul. */
+  function perkDamage(w) {
+    return w.damage * perkMods.damageMul;
+  }
+
+  /** Effective spread (radians) = runtime spread × spreadMul. */
+  function perkSpread(w) {
+    return w.spread * perkMods.spreadMul;
+  }
+
+  /** Effective headshot multiplier = runtime × headshotMul (lucky). */
+  function perkHeadshot(w) {
+    return w.headshotMult * perkMods.headshotMul;
+  }
+
+  /** Effective fire interval (s) = def interval / fireRateMul. */
+  function perkInterval(i) {
+    return WEAPONS[i].interval / perkMods.fireRateMul;
+  }
+
+  /** Effective reload duration = upgraded reload × reloadMul. */
+  function perkReload(i) {
+    return effectiveReloadTime(i) * perkMods.reloadMul;
+  }
+
+  /**
+   * Preview copy of one weapon handed to combat via the "fire" event: the
+   * runtime entry stays upgrade-pure while combat sees perk-adjusted fields.
+   */
+  function effectiveShotState(w) {
+    return {
+      ...w,
+      damage: perkDamage(w),
+      spread: perkSpread(w),
+      headshotMult: perkHeadshot(w),
+      upgrades: w.upgrades,
+    };
+  }
+
   function fire() {
     const w = list[current];
     const cfg = WEAPONS[current];
     w.mag -= 1; // shotgun: one shell, not per pellet
     // Round left the barrel — main.js routes this to combat.shoot(weapon),
-    // or to explosives.fire(origin, dir) when w.explosive (grenade).
-    bus.dispatchEvent(new CustomEvent("fire", { detail: { weapon: w } }));
-    bus.dispatchEvent(new CustomEvent("spread", { detail: { value: w.spread } }));
+    // or to explosives.fire(origin, dir) when w.explosive (grenade). The
+    // preview copy carries the perk-adjusted damage/spread/headshot values
+    // without mutating the runtime entry (see PERK MODIFIERS in the header).
+    const shot = effectiveShotState(w);
+    bus.dispatchEvent(new CustomEvent("fire", { detail: { weapon: shot } }));
+    bus.dispatchEvent(new CustomEvent("spread", { detail: { value: shot.spread } }));
     // Recoil: pitch up + tiny random yaw, recovered exponentially in update().
     recoilPitch += cfg.kick;
     recoilYaw += (Math.random() * 2 - 1) * cfg.yawKick;
     vmKick = cfg.vmKick;
-    muzzleLight.intensity = cfg.flash * (0.85 + Math.random() * 0.3);
-    flashTimer = FLASH_TIME;
-    cooldown = cfg.interval;
+    // Crossbow (flash 0) never lights the muzzle — silent, flashless shot.
+    if (cfg.flash > 0) {
+      muzzleLight.intensity = cfg.flash * (0.85 + Math.random() * 0.3);
+      flashTimer = FLASH_TIME;
+    } else {
+      muzzleLight.intensity = 0;
+      flashTimer = 0;
+    }
+    cooldown = perkInterval(current); // fire-rate perks shorten the cycle
     // Expansion guns own their synth (audio.gunshot doesn't know them);
     // the three launch guns keep the legacy call untouched.
     if (GUN_SYNTH_SHOTS[w.name]) gunSynth.shot(w.name);
@@ -794,7 +1236,7 @@ export function createWeapons(camera, input, audio, bus) {
     autoReloadT = -1; // any real reload supersedes the pending auto-reload
     if (w.reloading || w.mag >= w.magSize || !(w.reserve > 0)) return;
     w.reloading = true;
-    reloadTimer = effectiveReloadTime(current); // upgraded reload speed (B)
+    reloadTimer = perkReload(current); // upgraded reload × perk reload speed
     audio.reloadStart();
   }
 
@@ -838,8 +1280,8 @@ export function createWeapons(camera, input, audio, bus) {
       vmKick *= Math.exp(-dt / VM_KICK_TAU);
     }
 
-    // Switching: 1..7 or wheel. Poll every one-shot input every frame so the
-    // pending flags never go stale.
+    // Switching: 1..9, 0, -, =, or wheel. Poll every one-shot input every
+    // frame so the pending flags never go stale.
     let want = -1;
     if (input.wasPressed("Digit1")) want = 0;
     else if (input.wasPressed("Digit2")) want = 1;
@@ -848,6 +1290,11 @@ export function createWeapons(camera, input, audio, bus) {
     else if (input.wasPressed("Digit5")) want = 4;
     else if (input.wasPressed("Digit6")) want = 5;
     else if (input.wasPressed("Digit7")) want = 6;
+    else if (input.wasPressed("Digit8")) want = 7;
+    else if (input.wasPressed("Digit9")) want = 8;
+    else if (input.wasPressed("Digit0")) want = 9;
+    else if (input.wasPressed("Minus")) want = 10;   // sawn-off (merchant)
+    else if (input.wasPressed("Equal")) want = 11;   // crossbow (merchant)
     else {
       const wd = input.wheelDir(); // -1 = scrolled down = next weapon
       if (wd !== 0) want = cycleOwned(current, wd === -1 ? 1 : -1);
@@ -932,8 +1379,8 @@ export function createWeapons(camera, input, audio, bus) {
     }
     if (list[current].reloading) {
       // Reload: dip + tilt inward and back over the whole reload duration
-      // (the EFFECTIVE duration — upgraded reload speed, feature B).
-      const p = 1 - Math.max(0, reloadTimer) / effectiveReloadTime(current);
+      // (the EFFECTIVE duration — upgrades × perk reload speed).
+      const p = 1 - Math.max(0, reloadTimer) / perkReload(current);
       const s = Math.sin(Math.min(1, Math.max(0, p)) * Math.PI);
       dipY -= s * 0.17;
       rotX += s * 0.55;
@@ -972,6 +1419,8 @@ export function createWeapons(camera, input, audio, bus) {
     lastYawApplied = 0;
     autoReloadT = -1;
     spinT = 0;
+    // PERKS: a fresh run starts with the multiplier surface at stock.
+    perkMods = { ...PERK_MODS_DEFAULT };
     if (minigunBarrels) minigunBarrels.rotation.z = 0;
   }
 
@@ -989,6 +1438,12 @@ export function createWeapons(camera, input, audio, bus) {
         // its upgrades — only the ownership transition resets these).
         list[i].upgrades = { dmg: 0, mag: 0, rl: 0 };
         applyUpgrades(list[i], i);
+        // Additive ownership signal: achievements (arsenal), the HUD bar and
+        // the merchant UI can react without polling. Emitted AFTER the flag
+        // lands so listeners see the final state.
+        bus.dispatchEvent(
+          new CustomEvent("weapon-unlocked", { detail: { name: list[i].name } })
+        );
       }
       return true;
     }
@@ -1015,9 +1470,14 @@ export function createWeapons(camera, input, audio, bus) {
     const w = list[idx];
     return {
       name: w.name,
-      damage: w.damage, // effective (upgraded) value
+      damage: perkDamage(w), // effective (upgraded × perk damage)
       magSize: w.magSize, // effective (upgraded) value
-      reloadTime: effectiveReloadTime(idx),
+      reloadTime: perkReload(idx), // effective (upgraded × perk reload)
+      // PERKS preview fields (additive): combat/HUD/debug can read the exact
+      // effective values without touching the runtime entry.
+      spread: perkSpread(w),
+      headshotMult: perkHeadshot(w),
+      interval: perkInterval(idx),
       upgrades: { dmg: w.upgrades.dmg, mag: w.upgrades.mag, rl: w.upgrades.rl },
     };
   }
@@ -1113,5 +1573,8 @@ export function createWeapons(camera, input, audio, bus) {
     getStats,
     setUpgrades,
     applySaveState,
+    // PERKS — independent multiplier surface (see header PERK MODIFIERS):
+    setPerkMods,
+    getPerkMods,
   };
 }

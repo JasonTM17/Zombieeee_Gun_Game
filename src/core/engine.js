@@ -3,6 +3,9 @@
  *
  * Contract notes (signatures are frozen — other modules depend on them):
  * - `camera` is a PerspectiveCamera with fov 75; aspect is kept in sync on resize.
+ *   Accessibility / game feel (user request): the persisted `fov` setting
+ *   (60..110, default 75) is applied at creation and live on
+ *   "settings-changed" {patch:{fov}} — no main.js wiring needed.
  * - `update()` returns the frame delta time in SECONDS, clamped to at most
  *   0.05 s (protects physics/animation from tab-switch spikes).
  * - `render()` draws one frame: renderer.render(scene, camera).
@@ -16,6 +19,85 @@
  */
 
 import * as THREE from "three";
+import { bus } from "../systems/gamestate.js";
+
+// Accessibility / game feel (user request): FOV persisted by settings.js under
+// the shared localStorage key. Engine creation runs BEFORE settings.load() in
+// main.js, so the persisted value is read directly here; later changes arrive
+// through the bus (the same self-wiring pattern as atmosphere.js).
+export const FOV_DEFAULT = 75;
+export const FOV_MIN = 60;
+export const FOV_MAX = 110;
+const SETTINGS_KEY = "gungame.settings";
+
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
+/**
+ * Coerce any value into a valid camera FOV (integer 60..110). Missing /
+ * non-finite input returns the pre-setting default 75.
+ * @param {unknown} value
+ * @returns {number}
+ */
+export function sanitizeFov(value) {
+  const n = typeof value === "number" ? value : NaN;
+  if (!Number.isFinite(n)) return FOV_DEFAULT;
+  return clamp(Math.round(n), FOV_MIN, FOV_MAX);
+}
+
+/**
+ * The persisted FOV from "gungame.settings" (corrupt/blocked storage → 75).
+ * @returns {number}
+ */
+export function readStoredFov() {
+  try {
+    if (typeof localStorage === "undefined") return FOV_DEFAULT;
+    const raw = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "null");
+    if (raw && typeof raw === "object" && typeof raw.fov === "number") {
+      return sanitizeFov(raw.fov);
+    }
+  } catch {
+    // corrupt JSON or blocked storage → default, never throw
+  }
+  return FOV_DEFAULT;
+}
+
+/**
+ * Apply a FOV value to a camera. A no-op when the value is already current
+ * (avoids rebuilding the projection matrix on every unrelated settings change).
+ * @param {import("three").PerspectiveCamera} camera
+ * @param {unknown} value
+ * @returns {number} the sanitized value applied.
+ */
+export function applyFov(camera, value) {
+  const fov = sanitizeFov(value);
+  if (camera && camera.fov !== fov) {
+    camera.fov = fov;
+    if (typeof camera.updateProjectionMatrix === "function") {
+      camera.updateProjectionMatrix();
+    }
+  }
+  return fov;
+}
+
+/**
+ * Apply the stored FOV now, then follow live "settings-changed" patches.
+ * Exported for the headless harness (createEngine calls it below).
+ * @param {import("three").PerspectiveCamera} camera
+ * @param {EventTarget} [targetBus]
+ * @returns {import("three").PerspectiveCamera}
+ */
+export function attachFovSettings(camera, targetBus) {
+  applyFov(camera, readStoredFov());
+  const b = targetBus || bus;
+  if (!b || typeof b.addEventListener !== "function") return camera;
+  b.addEventListener("settings-changed", (e) => {
+    const patch = e && e.detail ? e.detail.patch : null;
+    if (patch && typeof patch.fov === "number" && Number.isFinite(patch.fov)) {
+      applyFov(camera, patch.fov);
+    }
+  });
+  return camera;
+}
 
 /**
  * @typedef {Object} Engine
@@ -52,6 +134,10 @@ export function createEngine(canvas) {
     0.1,
     500
   );
+
+  // Accessibility / game feel: persisted FOV at boot + live patches. Aspect is
+  // untouched (applySize keeps it in sync below).
+  attachFovSettings(camera, bus);
 
   const resizeCallbacks = [];
 

@@ -19,9 +19,13 @@
  *   ({endlessBest}) khi run kết thúc.
  *
  * Điểm (P4-K11, FROZEN): walker 10 / runner 15 / brute 40 / boss 200 (mọi
- * type boss) / headshot ×1.5 (round 1 lần). Best lưu localStorage
- * "gungame.endless.v1" = {v:1, best:{wave, score}} — best = wave cao nhất,
- * bằng wave → score cao hơn.
+ * type boss) / headshot ×1.5 (round 1 lần). Multi-type expansion (ADDITIVE):
+ * crawler 20 / bloater 55 / armored 60 — các số cũ giữ nguyên.
+ * Elite variants (user request): detail.eliteScoreMul (frenzied ×1.3 /
+ * ironhide ×1.5 / toxic ×1.35 / giant ×1.6) nhân MỘT LẦN vào base, rồi mới
+ * áp headshot ×1.5 (một Math.round duy nhất).
+ * Best lưu localStorage "gungame.endless.v1" = {v:1, best:{wave, score}} —
+ * best = wave cao nhất, bằng wave → score cao hơn.
  *
  * Kết thúc (P4-K13): "player-died" khi active → ghi best + profile.add +
  * phát "endless-over" {wave, score, bestWave, bestScore} + active = false.
@@ -70,7 +74,15 @@ import { BOSS_CLASSES } from "../zombies/bosses.js";
 
 // FROZEN contract constants (docs/EXPANSION-P4.md §5 / P4-K10 / P4-K11).
 export const ENDLESS_KEY = "gungame.endless.v1";
-export const ENDLESS_SCORE = { walker: 10, runner: 15, brute: 40, boss: 200 };
+export const ENDLESS_SCORE = {
+  walker: 10,
+  runner: 15,
+  brute: 40,
+  crawler: 20,
+  bloater: 55,
+  armored: 60,
+  boss: 200,
+};
 export const ENDLESS_HEADSHOT_MULT = 1.5;
 export const MOON_RETRY_S = 1; // thử lại bloodmoon mỗi 1 s trong wave %5
 
@@ -181,7 +193,11 @@ export function createEndless(bus, deps) {
         ? ENDLESS_SCORE.boss
         : 0;
     if (moonActive) killsThisMoon += 1;
-    score += Math.round(base * (d.headshot === true ? ENDLESS_HEADSHOT_MULT : 1));
+    // Elite eliteScoreMul is applied once here (the endless table is its own
+    // scoring track); headshot ×1.5 still lands after it, one rounding total.
+    const eliteMul = Number(d.eliteScoreMul);
+    const mul = Number.isFinite(eliteMul) && eliteMul > 0 ? eliteMul : 1;
+    score += Math.round(base * mul * (d.headshot === true ? ENDLESS_HEADSHOT_MULT : 1));
     emit("endless-score", { wave, score });
   });
 

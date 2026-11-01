@@ -103,7 +103,7 @@ const KIND_GAIN = { idle: 0.3, alert: 0.35, chase: 0.22, attack: 0.32, pain: 0.2
 const SHAPER_K = { brute: 30, butcher: 30, golem: 30, screamer: 8, spitter: 8, origin: 30 };
 
 /** Regular (non-boss) types — a boss ALWAYS wins a voice slot (contract §5.4). */
-const BASE_TYPES = { walker: 1, runner: 1, brute: 1 };
+const BASE_TYPES = { walker: 1, runner: 1, brute: 1, crawler: 1, bloater: 1, armored: 1 };
 
 /** Tanh soft-clip curve cache, keyed by drive k (257-step, normalized ±1). */
 const voiceCurves = new Map();
@@ -341,7 +341,7 @@ export function createAudio(settings) {
     return [osc, lfo];
   }
 
-  // --- the voice engine (NIGHT 30 P2 §5.3/§5.4 — 7 types × 6 kinds) ---------
+  // --- the voice engine (NIGHT 30 P2 §5.3/§5.4 — per type × 6 kinds) ---------
   // Every recipe is (out, gainMul, drive) → seconds until the voice ends.
   // Sub-sound gains are RELATIVE (simultaneous parts sum to ≤ 1); `gainMul`
   // scales the whole recipe to the kind's base level (KIND_GAIN ≤ 0.35).
@@ -455,6 +455,123 @@ export function createAudio(settings) {
         playWobble({ type: "sawtooth", f0: drift(70), f1: 28, dur: 1.2, gain: 1, lfoFreq: 4, lfoDepth: 25, cutoff: 160, out: o, gainMul: m, drive: d });
         playNoise({ type: "lowpass", freq: 200, freq1: 60, dur: 1.2, gain: 0.6, out: o, gainMul: m, drive: d });
         return 1.2;
+      },
+    },
+    // --- multi-type expansion voices (same structure: 6 kinds, pure WebAudio,
+    // sub-gains relative and summing to ≤ 1, frequencies drift ±10%) ---------
+    crawler: {
+      // High chittering idle: 4–6 fast bandpass clicks 1.1–1.7 kHz.
+      idle(o, m) {
+        const n = 4 + ((Math.random() * 3) | 0);
+        for (let i = 0; i < n; i++) {
+          playNoise({ type: "bandpass", freq: drift(1100 + Math.random() * 600), q: 7, dur: 0.045, gain: 0.5, when: i * 0.07, out: o, gainMul: m });
+        }
+        return (n - 1) * 0.07 + 0.05;
+      },
+      // Startled burst: 6–8 faster, higher clicks (1.4–2 kHz).
+      alert(o, m) {
+        const n = 6 + ((Math.random() * 3) | 0);
+        for (let i = 0; i < n; i++) {
+          playNoise({ type: "bandpass", freq: drift(1400 + Math.random() * 600), q: 9, dur: 0.035, gain: 0.45, when: i * 0.05, out: o, gainMul: m });
+        }
+        return (n - 1) * 0.05 + 0.04;
+      },
+      // Scuttling hiss + a small descending chirp.
+      chase(o, m) {
+        playNoise({ type: "highpass", freq: drift(1800 + Math.random() * 600), dur: 0.12, gain: 0.55, out: o, gainMul: m });
+        playTone({ type: "square", f0: drift(320), f1: 180, dur: 0.1, gain: 0.35, out: o, gainMul: m });
+        return 0.12;
+      },
+      attack(o, m) {
+        playNoise({ type: "highpass", freq: 2400, dur: 0.05, gain: 0.35, out: o, gainMul: m });
+        playTone({ type: "square", f0: drift(620), f1: 260, dur: 0.12, gain: 0.6, out: o, gainMul: m });
+        return 0.12;
+      },
+      pain(o, m) {
+        playTone({ type: "square", f0: drift(700), f1: 340, dur: 0.09, gain: 0.9, attack: 0.001, out: o, gainMul: m });
+        return 0.09;
+      },
+      // Skittering death: fast wobble 360→120 + a scratchy bandpass tail.
+      death(o, m) {
+        playWobble({ type: "sawtooth", f0: drift(360), f1: 120, dur: 0.45, gain: 0.55, lfoFreq: 14, lfoDepth: 40, cutoff: 900, out: o, gainMul: m });
+        playNoise({ type: "bandpass", freq: 1500, freq1: 500, q: 3, dur: 0.45, gain: 0.35, out: o, gainMul: m });
+        return 0.45;
+      },
+    },
+    bloater: {
+      // Wet gurgle idle: low bubbling noise 320→180 Hz with a slow filter LFO.
+      idle(o, m) {
+        const dur = 1.6 + Math.random() * 0.5;
+        playNoise({ type: "lowpass", freq: 320, freq1: 180, q: 2, dur, gain: 0.65, lfoFreq: 3.5, lfoDepth: 90, out: o, gainMul: m });
+        playWobble({ type: "sawtooth", f0: drift(48), dur, gain: 0.35, lfoFreq: 3, lfoDepth: 14, cutoff: 140, out: o, gainMul: m });
+        return dur;
+      },
+      // Two thick burbles 260 Hz.
+      alert(o, m) {
+        playNoise({ type: "bandpass", freq: 260, q: 3, dur: 0.5, gain: 0.7, lfoFreq: 6, lfoDepth: 60, out: o, gainMul: m });
+        playNoise({ type: "bandpass", freq: 300, q: 3, dur: 0.5, gain: 0.7, lfoFreq: 7, lfoDepth: 60, when: 0.55, out: o, gainMul: m });
+        return 1.05;
+      },
+      // Sloshing approach: low filtered noise + a 60 Hz sub.
+      chase(o, m) {
+        playNoise({ type: "lowpass", freq: 240, q: 2, dur: 0.9, gain: 0.8, lfoFreq: 5, lfoDepth: 70, out: o, gainMul: m });
+        playTone({ type: "sine", f0: drift(60), dur: 0.9, gain: 0.2, out: o, gainMul: m });
+        return 0.9;
+      },
+      attack(o, m) {
+        playNoise({ type: "lowpass", freq: 180, q: 2, dur: 0.3, gain: 0.7, out: o, gainMul: m });
+        playTone({ type: "sine", f0: drift(90), f1: 40, dur: 0.35, gain: 0.3, out: o, gainMul: m });
+        return 0.35;
+      },
+      pain(o, m) {
+        playTone({ type: "sawtooth", f0: drift(100), f1: 48, dur: 0.22, gain: 0.7, out: o, gainMul: m });
+        playNoise({ type: "bandpass", freq: 420, q: 4, dur: 0.16, gain: 0.3, out: o, gainMul: m });
+        return 0.22;
+      },
+      // Sack rupture: a long wet noise sweep + a collapsing wobble + a 30 Hz sub.
+      death(o, m) {
+        playNoise({ type: "lowpass", freq: 500, freq1: 70, q: 2, dur: 1.4, gain: 0.55, lfoFreq: 4, lfoDepth: 80, out: o, gainMul: m });
+        playWobble({ type: "sawtooth", f0: drift(60), f1: 24, dur: 1.2, gain: 0.35, lfoFreq: 3, lfoDepth: 16, cutoff: 150, out: o, gainMul: m });
+        playTone({ type: "sine", f0: 30, dur: 1.4, gain: 0.1, out: o, gainMul: m });
+        return 1.4;
+      },
+    },
+    armored: {
+      // Metal creak: a dull square + a resonant high ring, 0.5 s.
+      idle(o, m) {
+        playTone({ type: "square", f0: drift(72), f1: 56, dur: 0.5, gain: 0.5, out: o, gainMul: m });
+        playNoise({ type: "bandpass", freq: drift(2100), q: 10, dur: 0.5, gain: 0.3, attack: 0.004, out: o, gainMul: m });
+        playTone({ type: "sine", f0: drift(40), dur: 0.5, gain: 0.2, out: o, gainMul: m });
+        return 0.5;
+      },
+      // Armor clank: square 110 Hz + a 2.4 kHz bandpass ring.
+      alert(o, m) {
+        playTone({ type: "square", f0: drift(110), dur: 0.35, gain: 0.55, out: o, gainMul: m });
+        playNoise({ type: "bandpass", freq: drift(2400), q: 12, dur: 0.35, gain: 0.35, attack: 0.004, out: o, gainMul: m });
+        return 0.35;
+      },
+      // Marching plate rattle: low square + a short highpass scrape.
+      chase(o, m) {
+        playTone({ type: "square", f0: drift(84), dur: 0.4, gain: 0.6, out: o, gainMul: m });
+        playNoise({ type: "highpass", freq: drift(1600), dur: 0.3, gain: 0.3, out: o, gainMul: m });
+        return 0.4;
+      },
+      attack(o, m) {
+        playTone({ type: "square", f0: drift(150), f1: 70, dur: 0.22, gain: 0.6, out: o, gainMul: m });
+        playNoise({ type: "bandpass", freq: 2600, q: 8, dur: 0.15, gain: 0.35, out: o, gainMul: m });
+        return 0.22;
+      },
+      pain(o, m) {
+        playTone({ type: "square", f0: drift(220), f1: 110, dur: 0.16, gain: 0.8, attack: 0.001, out: o, gainMul: m });
+        playNoise({ type: "bandpass", freq: 1400, q: 6, dur: 0.12, gain: 0.2, out: o, gainMul: m });
+        return 0.16;
+      },
+      // Toppling armor: a descending metal ring + a 1 s clatter.
+      death(o, m) {
+        playTone({ type: "square", f0: drift(130), f1: 42, dur: 1.0, gain: 0.55, out: o, gainMul: m });
+        playNoise({ type: "bandpass", freq: 1100, freq1: 300, q: 3, dur: 1.0, gain: 0.35, out: o, gainMul: m });
+        playTone({ type: "sine", f0: 32, dur: 1.0, gain: 0.1, out: o, gainMul: m });
+        return 1.0;
       },
     },
     butcher: {

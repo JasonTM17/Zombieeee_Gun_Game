@@ -7,7 +7,8 @@
  * Screens (show(name) with name in):
  * - "main":     TIẾP TỤC (GUN GAME 2.0 P4 §3.5 — visible ONLY while
  *               services?.save?.hasSave(), first button above PLAY) / PLAY /
- *               CHƠI TỰ DO / SINH TỒN / SETTINGS / HOW TO PLAY / THÀNH TỰU.
+ *               CHƠI TỰ DO / SINH TỒN / SETTINGS / HOW TO PLAY / CONTROLS /
+ *               TUTORIAL / DOSSIER / THÀNH TỰU.
  *               TIẾP TỤC → emit "ui-continue" (P4-K2: main.js's menu-gated
  *               listener restores the run from "gungame.save.v1").
  *               PLAY → emit "ui-play" — P1 meaning (docs/EXPANSION-P1.md
@@ -20,15 +21,20 @@
  *               SETTINGS/HOW TO PLAY/THÀNH TỰU → internal screen
  *               switches (remember which screen BACK returns to).
  * - "settings": slider sensitivity 0.5–3.0, slider volume 0–100 (displayed %,
- *               stored as 0..1), language button EN⇄VI. Every change is saved
- *               IMMEDIATELY via settings.set({...}) AND emits
- *               "settings-changed" {patch} on the bus (main.js applies volume
- *               to audio live). Initialized from settings.get() when shown.
- *               BACK → previous screen.
+ *               stored as 0..1), language button EN⇄VI, difficulty row, and
+ *               the ACCESSIBILITY / GAME FEEL block (user request): FOV
+ *               60–110, camera shake 0–100, crosshair color (4 presets) +
+ *               size 0.75–1.5, damage-numbers ON/OFF, reduced-motion ON/OFF.
+ *               Every change is saved IMMEDIATELY via settings.set({...}) AND
+ *               emits "settings-changed" {patch} on the bus (main.js applies
+ *               volume/difficulty; engine/explosives/hud self-wire the
+ *               accessibility keys). Initialized from settings.get() when
+ *               shown. BACK → previous screen.
  * - "howto":    key table: WASD, Shift, Space, Mouse, R, 1/2/3, Esc
  *               (i18n "controls.*" keys). BACK → previous screen.
- * - "pause":    RESUME / RESTART / SETTINGS / QUIT TO MENU →
- *               "ui-resume" / "ui-restart" / settings screen / "ui-quit".
+ * - "pause":    RESUME / RESTART / SETTINGS / CONTROLS / DOSSIER / QUIT TO MENU →
+ *               "ui-resume" / "ui-restart" / settings screen /
+ *               "help-open" / "codex-open" / "ui-quit".
  * - "gameover": SCORE + HIGH SCORE + PLAY AGAIN / MENU →
  *               "ui-play" / "ui-quit". PLAY AGAIN keeps "ui-play" — P1: it
  *               restarts the story (main.js keeps mission/money progress when
@@ -92,6 +98,7 @@
 // them all locked instead of an empty grid. Labels resolve through i18n
 // because achievements.js registers its bundle at module level (P4-K20).
 import { ACHV_IDS } from "../systems/achievements.js";
+import { CROSSHAIR_COLORS } from "../core/settings.js";
 
 /**
  * @typedef {Object} Menus
@@ -134,6 +141,30 @@ const MENU_BUNDLE = {
     diffEasy: "Easy",
     diffNormal: "Normal",
     diffHard: "Hard",
+    // User request: ACCESSIBILITY / GAME FEEL panel (below difficulty/language).
+    // Every value is applied live by engine.js (fov), explosives.js (shake /
+    // reducedMotion) and hud.js (crosshair / damageNumbers / reducedMotion).
+    accessibility: "Accessibility",
+    fov: "Field of view",
+    shake: "Camera shake",
+    crosshairColor: "Crosshair color",
+    crosshairSize: "Crosshair size",
+    damageNumbers: "Damage numbers",
+    reducedMotion: "Reduced motion",
+    settingsLiveHint: "Applies live. Press H for all controls.",
+    toggleOn: "ON",
+    toggleOff: "OFF",
+    colorCyan: "Cyan",
+    colorGreen: "Green",
+    colorAmber: "Amber",
+    colorWhite: "White",
+    // User request: opens the full controls sheet (src/ui/help.js) from the
+    // main and pause menus.
+    controlsBtn: "Controls",
+    // User request: replays the first-run tutorial (src/ui/tutorial.js).
+    tutorialBtn: "Tutorial",
+    // User request: opens the dossier tab of the same guide (meta progression).
+    codexBtn: "Dossier",
   },
   vi: {
     tagline: "Gắn đạn. Ngắm bắn. Sống sót qua đêm.",
@@ -168,6 +199,27 @@ const MENU_BUNDLE = {
     diffEasy: "Dễ",
     diffNormal: "Thường",
     diffHard: "Khó",
+    // User request: ACCESSIBILITY / GAME FEEL panel — VI column.
+    accessibility: "TRỢ NĂNG",
+    fov: "Tầm nhìn",
+    shake: "Rung màn hình",
+    crosshairColor: "Màu tâm ngắm",
+    crosshairSize: "Cỡ tâm ngắm",
+    damageNumbers: "Số sát thương",
+    reducedMotion: "Giảm chuyển động",
+    settingsLiveHint: "Áp dụng ngay. Nhấn H để xem toàn bộ điều khiển.",
+    toggleOn: "BẬT",
+    toggleOff: "TẮT",
+    colorCyan: "Lục lam",
+    colorGreen: "Lục",
+    colorAmber: "Hổ phách",
+    colorWhite: "Trắng",
+    // User request: opens the full controls sheet (src/ui/help.js).
+    controlsBtn: "ĐIỀU KHIỂN",
+    // User request: replays the first-run tutorial (src/ui/tutorial.js).
+    tutorialBtn: "HUẤN LUYỆN",
+    // User request: opens the dossier tab of the same guide (meta progression).
+    codexBtn: "HỒ SƠ",
   },
 };
 
@@ -255,8 +307,20 @@ export function createMenus(container, bus, settings, i18n, services) {
   button("endless", "btn", () => emitUi("ui-endless"), mainNav);
   button("settings", "btn", () => openSettings("main"), mainNav);
   button("howToPlay", "btn", () => openHowto("main"), mainNav);
+  // User request: the full controls sheet (src/ui/help.js) — additive entry;
+  // every existing button keeps its relative order. The sheet listens for
+  // "help-open" itself (self-wired, no main.js routing needed).
+  button("controlsBtn", "btn", () => emitUi("help-open"), mainNav);
+  // User request: replay the first-run tutorial (src/ui/tutorial.js). Additive,
+  // keeps every existing button's relative order; tutorial.js listens for
+  // "tutorial-start" itself (self-wired, no main.js routing needed).
+  button("tutorialBtn", "btn", () => emitUi("tutorial-start"), mainNav);
+  // User request: the dossier tab of the same guide — meta progression that
+  // survives runs. help.js opens it on "codex-open" (self-wired, no main.js).
+  button("codexBtn", "btn", () => emitUi("codex-open"), mainNav);
   // GUN GAME 2.0 P4 (§6.3): THÀNH TỰU — LAST entry of the nav (contract order:
-  // TIẾP TỤC → CHƠI → CHƠI TỰ DO → SINH TỒN → CÀI ĐẶT → HƯỚNG DẪN → THÀNH TỰU).
+  // TIẾP TỤC → CHƠI → CHƠI TỰ DO → SINH TỒN → CÀI ĐẶT → HƯỚNG DẪN → THÀNH TỰU;
+  // the user-requested CONTROLS entry above is additive and keeps it last).
   // Opens the internal achievements screen; BACK returns to the origin.
   button("achievements", "btn", () => openAchievements("main"), mainNav);
   bind(make("p", "hint", pMain), "startHint");
@@ -268,8 +332,10 @@ export function createMenus(container, bus, settings, i18n, services) {
   const grid = make("div", "settings-grid", pSet);
 
   const rowSens = make("div", "setting-row", grid);
-  bind(make("label", "setting-label", rowSens), "sensitivity");
+  const sensLbl = bind(make("label", "setting-label", rowSens), "sensitivity");
   const sens = make("input", "setting-input", rowSens);
+  sens.id = "gg-set-sensitivity";
+  sensLbl.htmlFor = sens.id;
   sens.type = "range";
   sens.min = "0.5";
   sens.max = "3";
@@ -277,8 +343,10 @@ export function createMenus(container, bus, settings, i18n, services) {
   const sensVal = make("span", "setting-value", rowSens);
 
   const rowVol = make("div", "setting-row", grid);
-  bind(make("label", "setting-label", rowVol), "volume");
+  const volLbl = bind(make("label", "setting-label", rowVol), "volume");
   const vol = make("input", "setting-input", rowVol);
+  vol.id = "gg-set-volume";
+  volLbl.htmlFor = vol.id;
   vol.type = "range";
   vol.min = "0";
   vol.max = "100";
@@ -344,6 +412,175 @@ export function createMenus(container, bus, settings, i18n, services) {
     }
   }
 
+  // --- ACCESSIBILITY / GAME FEEL (user request) -------------------------------
+  // Compact block below difficulty/language. Every control persists instantly
+  // via settings.set AND broadcasts "settings-changed" {patch} — engine.js
+  // (FOV), explosives.js (shake / reducedMotion) and hud.js (crosshair /
+  // damageNumbers / reducedMotion) apply the patch live, no settings ref.
+  bind(make("h3", "settings-section-title", grid), "accessibility");
+
+  const rowFov = make("div", "setting-row", grid);
+  const fovLbl = bind(make("label", "setting-label", rowFov), "fov");
+  const fov = make("input", "setting-input", rowFov);
+  fov.id = "gg-set-fov";
+  fovLbl.htmlFor = fov.id;
+  fov.type = "range";
+  fov.min = "60";
+  fov.max = "110";
+  fov.step = "1";
+  const fovVal = make("span", "setting-value", rowFov);
+
+  const rowShake = make("div", "setting-row", grid);
+  const shakeLbl = bind(make("label", "setting-label", rowShake), "shake");
+  const shake = make("input", "setting-input", rowShake);
+  shake.id = "gg-set-shake";
+  shakeLbl.htmlFor = shake.id;
+  shake.type = "range";
+  shake.min = "0";
+  shake.max = "100";
+  shake.step = "1";
+  const shakeVal = make("span", "setting-value", rowShake);
+
+  const rowCrossColor = make("div", "setting-row", grid);
+  bind(make("label", "setting-label", rowCrossColor), "crosshairColor");
+  const swatchRow = make("div", "swatch-row", rowCrossColor);
+  const CROSS_COLORS = Object.keys(CROSSHAIR_COLORS);
+  const COLOR_LABEL_KEYS = {
+    cyan: "colorCyan",
+    green: "colorGreen",
+    amber: "colorAmber",
+    white: "colorWhite",
+  };
+  /** @type {Record<string, HTMLButtonElement>} */
+  const crossBtns = {};
+  for (let i = 0; i < CROSS_COLORS.length; i++) {
+    const colorId = CROSS_COLORS[i];
+    const b = make("button", "swatch-btn", swatchRow);
+    b.type = "button";
+    b.id = "gg-set-crosshair-" + colorId;
+    b.style.background = CROSSHAIR_COLORS[colorId];
+    b.addEventListener("click", () => setCrosshairColor(colorId));
+    crossBtns[colorId] = b;
+  }
+  make("span", "setting-value", rowCrossColor); // spacer keeps the grid aligned
+
+  const rowCrossSize = make("div", "setting-row", grid);
+  const crossSizeLbl = bind(make("label", "setting-label", rowCrossSize), "crosshairSize");
+  const crossSize = make("input", "setting-input", rowCrossSize);
+  crossSize.id = "gg-set-crosshair-size";
+  crossSizeLbl.htmlFor = crossSize.id;
+  crossSize.type = "range";
+  crossSize.min = "0.75";
+  crossSize.max = "1.5";
+  crossSize.step = "0.05";
+  const crossSizeVal = make("span", "setting-value", rowCrossSize);
+
+  const rowDmg = make("div", "setting-row", grid);
+  const dmgLbl = bind(make("label", "setting-label", rowDmg), "damageNumbers");
+  const dmgBtn = make("button", "btn btn-small setting-toggle", rowDmg);
+  dmgBtn.type = "button";
+  dmgBtn.id = "gg-set-damage-numbers";
+  dmgLbl.htmlFor = dmgBtn.id;
+  make("span", "setting-value", rowDmg);
+  dmgBtn.addEventListener("click", toggleDamageNumbers);
+
+  const rowMotion = make("div", "setting-row", grid);
+  const motionLbl = bind(make("label", "setting-label", rowMotion), "reducedMotion");
+  const motionBtn = make("button", "btn btn-small setting-toggle", rowMotion);
+  motionBtn.type = "button";
+  motionBtn.id = "gg-set-reduced-motion";
+  motionLbl.htmlFor = motionBtn.id;
+  make("span", "setting-value", rowMotion);
+  motionBtn.addEventListener("click", toggleReducedMotion);
+
+  function numOr(v, fallback) {
+    return typeof v === "number" && Number.isFinite(v) ? v : fallback;
+  }
+
+  /** One swatch click: persist + broadcast + repaint the active ring. */
+  function setCrosshairColor(value) {
+    if (settings && typeof settings.set === "function") {
+      settings.set({ crosshairColor: value });
+    }
+    emitSettings({ crosshairColor: value });
+    refreshCrosshairUI();
+  }
+
+  function toggleDamageNumbers() {
+    const s = settings && typeof settings.get === "function" ? settings.get() : null;
+    const cur = s ? s.damageNumbers !== false : true;
+    const next = !cur;
+    if (settings && typeof settings.set === "function") {
+      settings.set({ damageNumbers: next });
+    }
+    emitSettings({ damageNumbers: next });
+    refreshToggleUI();
+  }
+
+  function toggleReducedMotion() {
+    const s = settings && typeof settings.get === "function" ? settings.get() : null;
+    const cur = !!(s && s.reducedMotion === true);
+    const next = !cur;
+    if (settings && typeof settings.set === "function") {
+      settings.set({ reducedMotion: next });
+    }
+    emitSettings({ reducedMotion: next });
+    refreshToggleUI();
+  }
+
+  /** Active swatch ring + localized accessible names. */
+  function refreshCrosshairUI() {
+    const s = settings && typeof settings.get === "function" ? settings.get() : null;
+    const cur =
+      s && typeof s.crosshairColor === "string" && CROSSHAIR_COLORS[s.crosshairColor]
+        ? s.crosshairColor
+        : "white";
+    for (let i = 0; i < CROSS_COLORS.length; i++) {
+      const colorId = CROSS_COLORS[i];
+      const b = crossBtns[colorId];
+      const active = colorId === cur;
+      b.classList.toggle("active", active);
+      b.setAttribute("aria-pressed", active ? "true" : "false");
+      const label = tr(COLOR_LABEL_KEYS[colorId]);
+      b.setAttribute("aria-label", label);
+      b.title = label;
+    }
+  }
+
+  function setToggleUI(btn, on, labelKey) {
+    const state = tr(on ? "toggleOn" : "toggleOff");
+    btn.textContent = state;
+    btn.classList.toggle("on", on);
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+    btn.setAttribute("aria-label", tr(labelKey) + ": " + state);
+  }
+
+  /** ON/OFF text + pressed state for both toggles. */
+  function refreshToggleUI() {
+    const s = settings && typeof settings.get === "function" ? settings.get() : null;
+    const dmgOn = s ? s.damageNumbers !== false : true;
+    const motionOn = !!(s && s.reducedMotion === true);
+    setToggleUI(dmgBtn, dmgOn, "damageNumbers");
+    setToggleUI(motionBtn, motionOn, "reducedMotion");
+  }
+
+  /** Sliders + swatches + toggles from the current store (show/refresh). */
+  function refreshAccessibilityUI() {
+    const s = settings && typeof settings.get === "function" ? settings.get() : {};
+    const fv = Math.round(clamp(numOr(s.fov, 75), 60, 110));
+    fov.value = String(fv);
+    fovVal.textContent = fv + "°";
+    const sh = Math.round(clamp(numOr(s.shake, 100), 0, 100));
+    shake.value = String(sh);
+    shakeVal.textContent = sh + "%";
+    const cs = clamp(numOr(s.crosshairSize, 1), 0.75, 1.5);
+    crossSize.value = String(cs);
+    crossSizeVal.textContent = cs.toFixed(2) + "×";
+    refreshCrosshairUI();
+    refreshToggleUI();
+  }
+
+  bind(make("p", "settings-tip settings-live-hint", pSet), "settingsLiveHint");
   bind(make("p", "settings-tip", pSet), "settingsTip");
   button("back", "btn", () => showScreen(settingsReturn), pSet);
 
@@ -359,6 +596,32 @@ export function createMenus(container, bus, settings, i18n, services) {
     volVal.textContent = p + "%";
     if (settings) settings.set({ volume: p / 100 });
     emitSettings({ volume: p / 100 });
+  });
+
+  // Accessibility / game feel sliders — clamp to the same ranges settings.js
+  // enforces, then persist + broadcast live.
+  fov.addEventListener("input", () => {
+    const raw = parseFloat(fov.value);
+    const v = Math.round(clamp(Number.isFinite(raw) ? raw : 75, 60, 110));
+    fovVal.textContent = v + "°";
+    if (settings) settings.set({ fov: v });
+    emitSettings({ fov: v });
+  });
+
+  shake.addEventListener("input", () => {
+    const raw = parseFloat(shake.value);
+    const v = Math.round(clamp(Number.isFinite(raw) ? raw : 100, 0, 100));
+    shakeVal.textContent = v + "%";
+    if (settings) settings.set({ shake: v });
+    emitSettings({ shake: v });
+  });
+
+  crossSize.addEventListener("input", () => {
+    const raw = parseFloat(crossSize.value);
+    const v = Math.round(clamp(Number.isFinite(raw) ? raw : 1, 0.75, 1.5) * 20) / 20;
+    crossSizeVal.textContent = v.toFixed(2) + "×";
+    if (settings) settings.set({ crosshairSize: v });
+    emitSettings({ crosshairSize: v });
   });
 
   langBtn.addEventListener("click", () => {
@@ -389,6 +652,7 @@ export function createMenus(container, bus, settings, i18n, services) {
     volVal.textContent = vp + "%";
     refreshLangButton();
     refreshDiffUI(); // GUN GAME 2.0 P4 (§6.3): difficulty row follows settings
+    refreshAccessibilityUI(); // user request: FOV/shake/crosshair/toggles
   }
 
   // --- HOW TO PLAY ---------------------------------------------------------------
@@ -417,6 +681,12 @@ export function createMenus(container, bus, settings, i18n, services) {
   button("resume", "btn btn-primary", () => emitUi("ui-resume"), pauseNav);
   button("restart", "btn", () => emitUi("ui-restart"), pauseNav);
   button("settings", "btn", () => openSettings("pause"), pauseNav);
+  // User request: controls sheet above the pause panel (modal; closing returns
+  // to the pause menu — no resume, no pointer lock).
+  button("controlsBtn", "btn", () => emitUi("help-open"), pauseNav);
+  // User request: the dossier tab — same overlay, no resume/pointer-lock side
+  // effects; closing returns to the pause menu exactly as CONTROLS does.
+  button("codexBtn", "btn", () => emitUi("codex-open"), pauseNav);
   button("quitToMenu", "btn", () => emitUi("ui-quit"), pauseNav);
 
   // --- GAME OVER -----------------------------------------------------------------
@@ -713,6 +983,12 @@ export function createMenus(container, bus, settings, i18n, services) {
     // Accessibility labels for the sliders (attribute, not textContent).
     sens.setAttribute("aria-label", tr("sensitivity"));
     vol.setAttribute("aria-label", tr("volume"));
+    fov.setAttribute("aria-label", tr("fov"));
+    shake.setAttribute("aria-label", tr("shake"));
+    crossSize.setAttribute("aria-label", tr("crosshairSize"));
+    // Swatch names + ON/OFF text are dynamic (not bound textContent).
+    refreshCrosshairUI();
+    refreshToggleUI();
   }
 
   applyTexts();

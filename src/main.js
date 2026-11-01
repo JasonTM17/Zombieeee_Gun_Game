@@ -217,15 +217,26 @@ import { createEngine } from "./core/engine.js";
 import { createSettings } from "./core/settings.js";
 import * as i18n from "./core/i18n.js";
 import { createAudio } from "./core/audio.js";
+import { createMusic } from "./core/music.js";
 import { createInput } from "./core/input.js";
 import { createLevel } from "./world/level.js";
 import { createCity } from "./world/city.js";
+import { createVegetation } from "./world/vegetation.js";
+import { createScenery } from "./world/scenery.js";
+import { createHazards } from "./world/hazards.js";
+import { createWeather } from "./world/weather.js";
+import { createWildlife } from "./world/wildlife.js";
+import { createSurvivors } from "./world/survivors.js";
 import { createAtmosphere } from "./world/atmosphere.js";
 import { createParticles } from "./systems/particles.js";
 import { createPickups } from "./systems/pickups.js";
 import { createExplosives } from "./systems/explosives.js";
+import { createThrowables } from "./systems/throwables.js";
 import { createEconomy } from "./systems/economy.js";
 import { createShop } from "./systems/shop.js";
+import { createMerchant } from "./systems/merchant.js";
+import { createPerks } from "./systems/perks.js";
+import { createContracts } from "./systems/contracts.js";
 import { createMissions, STORY_DIALOGUE } from "./systems/missions.js";
 import { createEvents } from "./systems/events.js"; // NIGHT 30 P2 §8.1
 import { createPlayer } from "./player/controller.js";
@@ -237,9 +248,17 @@ import { BOSS_CLASSES, bossTypeForWave } from "./zombies/bosses.js";
 import { createZones } from "./world/zones.js";
 import { createHud } from "./ui/hud.js";
 import { createShopUI } from "./ui/shop.js";
+import { createMerchantUI } from "./ui/merchant.js";
+import { createPerksUI } from "./ui/perks.js";
+import { createPerksHud } from "./ui/perks-hud.js";
+import { createContractsUI } from "./ui/contracts.js";
+import { createArmorHud } from "./ui/armor-hud.js";
+import { createThrowablesHud } from "./ui/throwables-hud.js";
 import { createMenus } from "./ui/menus.js";
 import { createDialogue } from "./ui/dialogue.js";
 import { createMap } from "./ui/map.js"; // NIGHT 30 P2 §8.1
+import { createHelp } from "./ui/help.js"; // controls reference overlay (H)
+import { createTutorial } from "./ui/tutorial.js"; // first-run onboarding
 import { createOrigin, ORIGIN_MAX_HP } from "./zombies/origin.js"; // NIGHT 30 P3 §3.1
 import { createEnding } from "./ui/ending.js"; // NIGHT 30 P3 §4.1
 import { createSave } from "./systems/save.js"; // GUN GAME 2.0 P4 §3.1
@@ -274,6 +293,7 @@ i18n.setLang(settings.get().lang);
 // --- 4-5. audio + input --------------------------------------------------------
 const audio = createAudio(settings); // reads settings volume at creation
 audio.startAmbient(); // flags the loop on; nodes start once the context exists
+const music = createMusic(bus, settings); // adaptive procedural soundtrack
 const input = createInput(canvas, settings);
 
 // --- 6-9. world -----------------------------------------------------------------
@@ -288,6 +308,15 @@ const zones = createZones(scene, level);
 // waypoints + open state into level through the private hooks, and arms the
 // dev-guard. Must exist before waves (district spawn pools) and the player.
 const city = createCity(scene, level);
+// Vegetation: 54 extra trees (live + dead) spread across all 7 districts,
+// with trunk colliders. Static geometry, deterministic seed, no per-frame cost.
+const vegetation = createVegetation(scene, level, city);
+// Set dressing: moon disc, skyline, lamp shafts, fire barrels, rubble,
+// sandbags, puddles, fireflies. Static except a cheap per-frame drift/flicker.
+const scenery = createScenery(scene, level, city);
+const weather = createWeather(scene, bus, settings, camera);
+const wildlife = createWildlife(scene, bus, level, city);
+const survivors = createSurvivors(scene, bus, level, city, i18n, camera);
 const atmosphere = createAtmosphere(scene);
 const particles = createParticles(scene);
 const pickups = createPickups(scene, bus);
@@ -303,6 +332,10 @@ const combat = createCombat(camera, scene, zombies, particles, audio, bus);
 // EXPANSION B5: grenade projectiles. Shares the SAME live zombies array with
 // combat (contact + blast damage read it fresh every update).
 const explosives = createExplosives(scene, camera, zombies, particles, audio, bus);
+// Throwable inventory: frag / molotov / proximity mine (F throw, V cycle).
+const throwables = createThrowables(scene, camera, zombies, particles, bus);
+// Chain-reacting red barrels / gas canisters across the districts.
+const hazards = createHazards(scene, bus, level, city, zombies, particles);
 // EXPANSION B1/B2: money + shop. The shop writes ownership flags onto
 // weapons.list entries and heals the player — created after both.
 //
@@ -338,6 +371,13 @@ bus.addEventListener("ui-restart", () => {
 });
 const economy = createEconomy(bus);
 const shop = createShop(bus, economy, weapons, player);
+// Physical arms dealer at the safehouse (G near the stall): exclusive guns,
+// explosive packs, armor plates and gear. Per-run stock + rotating deal.
+const merchant = createMerchant(bus, economy, weapons, player);
+// Per-run XP + level-up perks (damage/fire-rate/reload/speed/HP/regen/...).
+const perks = createPerks(bus, player, weapons, economy);
+// Safehouse contract board: 3 rotating side contracts, auto-paid rewards.
+const contracts = createContracts(bus, economy, player);
 // NIGHT 30 P1 (§5.6.2.1): missions after economy/shop, BEFORE waves. Scene +
 // level passed through the additive params (§5.1.3) so the POI meshes, the
 // beacon and the POI colliders are real; headless otherwise.
@@ -362,9 +402,21 @@ const hud = createHud(uiRoot, bus, audio, i18n);
 // EXPANSION B3: the shop overlay (DOM inside #ui, event-driven). After hud so
 // its overlay node sits after the HUD root in the DOM; it owns its z-index.
 const shopUI = createShopUI(uiRoot, bus, economy, shop, i18n);
+const throwablesHud = createThrowablesHud(uiRoot, bus);
+const merchantUI = createMerchantUI(uiRoot, bus, merchant, i18n, camera, player, scene, level);
+const perksUI = createPerksUI(uiRoot, bus, perks, i18n);
+const perksHud = createPerksHud(uiRoot, bus);
+const contractsUI = createContractsUI(uiRoot, bus, contracts, i18n, camera, player, scene, level);
+const armorHud = createArmorHud(uiRoot, bus);
 // GUN GAME 2.0 P4 (P4-K19): createMenus MOVED below the P4 modules — it now
 // takes the 5th `services` argument { save, profile, achievements }.
 const gamestate = createGamestate(bus, settings);
+// Modal overlays that freeze the world but show no pause menu (same pattern
+// as the shop / merchant): the reason keeps the run paused until it closes.
+bus.addEventListener("perks-choice-open", () => gamestate.addPause("perks"));
+bus.addEventListener("perks-choice-closed", () => gamestate.removePause("perks"));
+bus.addEventListener("contracts-open", () => gamestate.addPause("contracts"));
+bus.addEventListener("contracts-closed", () => gamestate.removePause("contracts"));
 // NIGHT 30 P1 (§5.6.2.1): dialogue after menus — the bottom dialogue box, the
 // intro slides and the outro overlay (self-styled inside #ui).
 const dialogue = createDialogue(uiRoot, bus, i18n);
@@ -430,6 +482,10 @@ const menus = createMenus(uiRoot, bus, settings, i18n, {
   profile,
   achievements,
 });
+// Controls reference overlay (H, main/pause menu buttons). Self-wired through
+// "help-toggle" / "help-open"; frees the cursor while it is open.
+const help = createHelp(uiRoot, bus, i18n);
+const tutorial = createTutorial(uiRoot, bus, i18n);
 
 // --- GUN GAME 2.0 P4 section (§3.3/§3.4/§5.4/P4-K13/P4-K15) -------------------
 
@@ -632,6 +688,19 @@ bus.addEventListener("fire", (e) => {
   }
 });
 
+// Bloater death burst FX (zombie.js owns the damage + the ground ring): a wet
+// blood splash, green-tinted sparks and a light shake at the corpse.
+bus.addEventListener("bloater-burst", (e) => {
+  const d = e && e.detail ? e.detail : {};
+  const p = d.position;
+  if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.z)) return;
+  const at = new THREE.Vector3(p.x, Number.isFinite(p.y) ? p.y + 0.4 : 0.4, p.z);
+  particles.spawnBlood(at, 26);
+  particles.spawnSpark(at);
+  particles.spawnSpark(at);
+  explosives.shake(0.55);
+});
+
 // EXPANSION C4: boss death drops are GUARANTEED (1 medkit + 1 ammo) but the
 // boss constructor cannot reach pickups — this event is the bridge. Unknown
 // kinds are ignored; the payload's fallback keeps the contract shape.
@@ -662,6 +731,23 @@ bus.addEventListener("survivor-rescued", () => {
   showDialogue([
     { speakerKey: "speaker_unknown", text: i18n.t("event_survivor_thanks") },
   ]);
+});
+
+// Survivor camps (world/survivors.js): a first-approach gift per NPC per run.
+// The module carries no economy/weapons refs — main applies the exact effect.
+bus.addEventListener("npc-gift", (e) => {
+  const d = e && e.detail ? e.detail : {};
+  const amount = Math.max(0, Number(d.amount) || 0);
+  if (d.kind === "money") {
+    economy.add(amount);
+  } else if (d.kind === "health") {
+    if (player.alive) player.hp = Math.min(100, player.hp + amount);
+    audio.pickup();
+  } else if (d.kind === "ammo") {
+    const w = weapons.list[weapons.current];
+    if (w && Number.isFinite(w.reserve)) w.reserve += w.magSize * amount;
+    audio.pickup();
+  }
 });
 
 // §8.4: the live event marker for the compass strip + map. events.active()
@@ -857,6 +943,11 @@ function freshRun(keepStoryProgress) {
   if (!keepStoryProgress) economy.reset(); // §5.6.3: kept when story keeps
   shop.reset(); // forget bought guns — weapons.reset() just un-owned them
   explosives.reset(); // clear live grenades + pending blast FX/shake
+  throwables.reset(); // fresh kit (2 frag / 1 molotov / 0 mines) + clear FX
+  hazards.reset(); // restore every barrel/canister + colliders
+  perks.reset(); // XP/level/perk stacks are per run
+  contracts.reset(); // reroll the contract board
+  combat.resetFx(); // hide pooled tracers/casings from the previous run
   zones.reset(); // re-lock both areas ("wave-start"{n:1} repeats this no-op)
   // NIGHT 30 P2 §8.3: events are WORLD state — reset on EVERY fresh run
   // (story-keep included). events.reset() emits "bloodmoon-active"
@@ -1344,6 +1435,7 @@ const hudExtrasScratch = {
   //               strip marker needs finite coords, hud.readExtras skips null)
   endless: null, // GUN GAME 2.0 P4 (P4-K12): {active, wave, score} | null
   cam: null, // GUN GAME 2.0 P4 (P4-K16): the camera for the floating numbers
+  weapons: null, // live armory list → HUD weapon-slot ownership/ammo
 };
 const hudBossScratch = { position: null, hp: 0, maxHp: 0, type: "" };
 const hudMissionScratch = { x: 0, z: 0 }; // reused — zero per-frame alloc
@@ -1353,6 +1445,8 @@ const mapExtrasScratch = { boss: null, yaw: 0, mission: null, event: null };
 const mapBossScratch = { x: 0, z: 0, type: "" };
 const mapEventScratch = { type: "", x: null, z: null, timeLeft: NaN };
 let mapTimer = 0; // 10 Hz map repaint accumulator (§4.0/§8.2)
+// Adaptive soundtrack scratch (zero allocation per frame — music.update reads it).
+const musicState = { state: "menu", hp: 100, wave: 0, boss: null };
 
 /**
  * NIGHT 30 P2 (P2-K13): the mission marker for the map + compass. Derives
@@ -1454,6 +1548,9 @@ function hudExtras() {
   // assignments (zero-alloc — endless.snapshot() reuses its own scratch).
   hudExtrasScratch.endless = endless.isActive() ? endless.snapshot() : null;
   hudExtrasScratch.cam = camera;
+  // HUD weapon-slot bar: the live armory (ownership + per-slot ammo). Refs
+  // only — the HUD reads name/owned/mag/reserve/magSize/reloading.
+  hudExtrasScratch.weapons = weapons.list;
   return hudExtrasScratch;
 }
 
@@ -1506,6 +1603,8 @@ function frame() {
   const st = gamestate.state;
   if (st === "playing") {
     player.update(dt); // writes camera yaw/pitch/bob absolutely
+    merchantUI.update(dt, player.position); // trader prompt / stall proximity
+    contractsUI.update(dt, player.position); // contract-board prompt / proximity
     if (player.alive) weapons.update(dt); // layers recoil DELTA on top; fires
     updateZombies(dt); // chase/attack (attacks call player.damage → death can flip state here)
     audio.update3D(camera, zombies); // NIGHT 30 P2 §8.2: 3D voice mix + murmur (1×/frame, after the zombie pass)
@@ -1515,7 +1614,16 @@ function frame() {
     pickups.update(dt, player.position);
     explosives.update(dt); // EXPANSION B5: grenade flight/detonation + shake decay
     particles.update(dt);
+    combat.update(dt); // tracers fade + brass casings fly
+    throwables.update(dt); // bombs in flight / fire pools / armed mines
+    hazards.update(dt); // barrel fuses + chain reactions + scorch FX
+    perks.update(dt); // regen + queued perk-choice pump
+    perksUI.update(dt); // perk choice overlay timers
     atmosphere.update(dt, player.position); // P1 §5.7: moon shadow follows
+    scenery.update(dt, player.position); // flames + fireflies drift
+    weather.update(dt, player.position); // rain / storm / fog cycle
+    wildlife.update(dt, player.position); // crows, rats, stray dogs
+    survivors.update(dt, player.position); // friendly camps + speech bubbles
     gamestate.update(dt);
     endless.update(dt); // GUN GAME 2.0 P4 (§5.4): bloodmoon retry machine (playing only → pause freezes it)
     profile.update(dt); // P4-K21: playtimeSec tick (playing only — pause/menu excluded)
@@ -1534,13 +1642,29 @@ function frame() {
     // dead player) and no wave logic runs.
     updateZombies(dt);
     particles.update(dt);
+    combat.update(dt); // let casings finish falling behind the death panel
     atmosphere.update(dt, player.position);
+    scenery.update(dt, player.position);
+    weather.update(dt, player.position);
+    wildlife.update(dt, player.position);
   } else if (st === "menu" || st === "intro") {
     // NIGHT 30 P1 §5.6.2.6: "intro" updates the world exactly like "menu" —
     // atmosphere only (the story slides render over the parked spawn view).
     atmosphere.update(dt, player.position); // zombies deliberately do NOT update
+    scenery.update(dt, player.position);
+    weather.update(dt, player.position);
+    wildlife.update(dt, player.position);
   }
   // paused: render only.
+
+  // Adaptive soundtrack + low-health heartbeat. Runs outside the state
+  // branches so menu/pause ducking and the gameover fade keep animating.
+  const musicBoss = liveBoss();
+  musicState.state = gamestate.state;
+  musicState.hp = Number(player.hp) || 0;
+  musicState.wave = Math.max(0, Math.round(Number(gamestate.wave) || 0));
+  musicState.boss = musicBoss && musicBoss.alive ? musicBoss.type : null;
+  music.update(dt, musicState);
 
   // NIGHT 30 P3 (§6.1): the ending sequence is driven OUTSIDE the state
   // branches — it runs UNDER pause reason "ending" (slow-zoom approach and
@@ -2325,6 +2449,68 @@ const debugApi = {
       new CustomEvent("settings-changed", { detail: { patch } })
     );
     return { difficulty: settings.get().difficulty };
+  },
+
+  /** Trader stock / deal / open state + the live catalog snapshot. */
+  merchantState() {
+    return { open: merchantUI.isOpen(), ...merchant.state() };
+  },
+
+  /** Open the trader overlay from anywhere (debug/verification only). */
+  openMerchant() {
+    merchantUI.open();
+    return { open: merchantUI.isOpen() };
+  },
+
+  /** Throwable inventory: {selected, counts}. */
+  throwablesState() {
+    return throwables.state();
+  },
+
+  /** Weather cycle snapshot: {mode, intensity, timer}. */
+  weatherState() {
+    return weather.state();
+  },
+
+  /** Force a weather mode: "clear"|"rain"|"storm"|"fog" (debug only). */
+  setWeather(mode) {
+    if (typeof weather.setMode === "function") weather.setMode(mode);
+    return weather.state();
+  },
+
+  /** XP / level / perk stacks / pending choices. */
+  perksState() {
+    return perks.state();
+  },
+
+  /** Grant XP (debug/verification): triggers the level-up choice at a bound. */
+  addXp(n) {
+    perks.addXp(Math.max(0, Number(n) || 0));
+    return perks.state();
+  },
+
+  /** Contract-board snapshot. */
+  contractsState() {
+    return contracts.state();
+  },
+
+  /** Open the contract board from anywhere (debug/verification only). */
+  openContracts() {
+    contractsUI.open();
+    return { open: contractsUI.isOpen() };
+  },
+
+  /** Hazard barrels: counts + detonated. */
+  hazardsState() {
+    return hazards.stats();
+  },
+
+  /** Force-detonate the nearest hazard (debug/verification only). */
+  detonateHazard(x, z) {
+    if (typeof hazards.detonateAt === "function") {
+      hazards.detonateAt(Number(x) || 0, Number(z) || 0);
+    }
+    return hazards.stats();
   },
 };
 

@@ -8,8 +8,12 @@
  *   pays a MONEY reward per TYPE (NOT per the score field — a zombie's score
  *   is its point value; money values differ):
  *       walker 50 / runner 75 / brute 200
+ *       crawler 60 / bloater 300 / armored 350        (multi-type expansion)
  *       butcher 1000 / spitter 800 / screamer 700 / golem 1500  (bosses, C4)
  *   Headshot pays +50% (×1.5), rounded to an integer. Unknown types pay 0.
+ *   Elite variants (user request) add detail.eliteMoneyMul (×1.6 frenzied /
+ *   ×1.8 ironhide / ×1.5 toxic / ×2 giant), applied exactly once here; the
+ *   zombie's `score` is a separate, already elite-shaped track.
  * - EVERY change emits "money-changed" {money, delta} on the bus:
  *   money = the NEW balance, delta = the signed amount just applied
  *   (negative for spend). A no-op (delta 0) emits nothing.
@@ -73,6 +77,10 @@ const REWARDS = {
   walker: 50,
   runner: 75,
   brute: 200,
+  // Multi-type expansion (new regular types — vị trí sau 3 type gốc).
+  crawler: 60,
+  bloater: 300,
+  armored: 350,
   butcher: 1000,
   spitter: 800,
   screamer: 700,
@@ -139,7 +147,13 @@ export function createEconomy(bus) {
     const d = e && e.detail ? e.detail : {};
     const base = REWARDS[d.type];
     if (!base) return; // unknown type pays 0
-    const amount = Math.round(base * (d.headshot ? HEADSHOT_MULT : 1) * (bloodmoonActive ? 2 : 1));
+    // Elite money rides on the base reward exactly once (the zombie sends
+    // eliteMoneyMul in the same detail; its `score` is a separate track).
+    const eliteMul = Number(d.eliteMoneyMul);
+    const mul = Number.isFinite(eliteMul) && eliteMul > 0 ? eliteMul : 1;
+    const amount = Math.round(
+      base * mul * (d.headshot ? HEADSHOT_MULT : 1) * (bloodmoonActive ? 2 : 1)
+    );
     add(amount);
   });
 

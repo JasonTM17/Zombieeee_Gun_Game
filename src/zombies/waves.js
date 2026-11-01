@@ -2,9 +2,15 @@
  * Wave director / zombie spawner.
  *
  * Wave n (1-based): total count = 5 + n*3 zombies, composed as:
- *   - brutes:  from wave 4, count = 1 + floor(n/5) of the total;
- *   - runners: from wave 2, ~25% of the total (Math.round);
- *   - the rest are walkers.
+ *   - brutes:   from wave 4, count = 1 + floor(n/5) of the total;
+ *   - runners:  from wave 2, ~25% of the total (Math.round);
+ *   - crawlers: from wave 3, max(1, round(total × 0.15));
+ *   - bloaters: from wave 6, 1 + floor((n − 6) / 6);
+ *   - armored:  from wave 9, 1 + floor((n − 9) / 8);
+ *   - walkers:  the rest = max(0, total − brutes − runners − crawlers −
+ *     bloaters − armored).
+ * The new types are carved OUT OF THE WALKERS — every existing count is
+ * unchanged, only the walker remainder shrinks.
  *
  * BOSS WAVES (EXPANSION feature C5; wave % 5 === 0):
  *   - minion count is HALVED (Math.ceil of half the regular total), with the
@@ -37,7 +43,8 @@
  * starting, then one zombie every 0.8–1.5 s (random) until the wave's count
  * is exhausted. Spawn position: a pool entry at least 15 m from the player
  * (if none qualifies, the farthest one); instantiate
- * `new Zombie(scene, type, position, bus)`.
+ * `new Zombie(scene, type, position, bus, eliteKindOrNull)` (elite rules
+ * below).
  *
  * SPAWN POOL (P1 "ĐÊM THỨ 30", docs/EXPANSION-P1.md §4.2): with the optional
  * 5th `city` argument the pool comes from the DISTRICT the player stands in
@@ -117,7 +124,9 @@
  *   "story" (fresh-run state); endless.start() sets "endless" AFTER reset.
  *   Endless composition (P4-K8, wave n — the "halve minions on wave %5" rule
  *   does NOT apply): total = 8 + n×4; runners = max(2, round(total×0.3));
- *   brutes from wave 3 = 1 + floor((n−3)/5); walkers = the rest.
+ *   brutes from wave 3 = 1 + floor((n−3)/5); crawlers from wave 2 =
+ *   max(1, round(total×0.15)); bloaters from wave 4 = 1 + floor((n−4)/6);
+ *   armored from wave 6 = 1 + floor((n−6)/8); walkers = the rest.
  * - Endless boss waves (P4-K10): the wave-%5 flag still flips (burst cadence
  *   and full-size composition), but NO story-cycle boss spawns there — the
  *   bloodmoon variant for wave %5 lives in systems/endless.js
@@ -140,6 +149,14 @@
  * Internal bookkeeping: once a zombie is dead ("zombie-killed") it no longer
  * counts toward wave-clear; drop it from the internal list when its corpse
  * finishes despawning ("zombie-despawned") or on reset().
+ *
+ * ELITE VARIANTS (user request — ADDITIVE): a regular spawn may turn elite
+ * (frenzied / ironhide / toxic / giant, uniform). Story from wave 4, endless
+ * from wave 3; chance = min(0.22, 0.06 + n × 0.004), ×0.5 on boss waves.
+ * At most 25% of a wave's minions (floor) turn elite; bosses, screamer
+ * summons and debug spawns never do. The kind is passed as Zombie's optional
+ * 5th constructor arg, so the shaped stats are ready before "zombie-spawned".
+ * Difficulty / NG+ multipliers still apply on top of the elite shape.
  *
  * NOTE: this module only advances spawn timers / intermission and checks the
  * alive flags — per-frame zombie.update() calls are driven by main.js over
@@ -175,7 +192,7 @@
  */
 
 import * as THREE from "three";
-import { Zombie } from "./zombie.js";
+import { Zombie, ELITE_KINDS } from "./zombie.js";
 import { BOSS_CLASSES, bossTypeForWave } from "./bosses.js";
 
 const FIRST_SPAWN_MIN = 1.0; // spec: first spawn ≤ 3 s after wave-start
@@ -209,6 +226,26 @@ const DIFFICULTY_MULTS = {
 // key BOSS_CLASSES"; bossTypeForWave's deterministic cycle stays story-only).
 const BOSS_KEYS = Object.keys(BOSS_CLASSES);
 
+// --- ELITE VARIANTS (user request — additive) --------------------------------
+// Regular zombies only, never bosses/summons/debug spawns. Story starts at
+// wave 4, endless at wave 3; chance = min(0.22, 0.06 + n × 0.004), halved on
+// boss waves. A wave can never turn more than 25% of its minions elite.
+const ELITE_MIN_WAVE_STORY = 4;
+const ELITE_MIN_WAVE_ENDLESS = 3;
+const ELITE_CHANCE_BASE = 0.06;
+const ELITE_CHANCE_PER_WAVE = 0.004;
+const ELITE_CHANCE_MAX = 0.22;
+const ELITE_BOSS_WAVE_MUL = 0.5;
+const ELITE_WAVE_RATIO = 0.25;
+const ELITE_ELIGIBLE = {
+  walker: 1,
+  runner: 1,
+  brute: 1,
+  crawler: 1,
+  bloater: 1,
+  armored: 1,
+};
+
 export function createWaves(scene, level, bus, zones, city) {
   const B = bus || new EventTarget();
   let wave = 0; // current wave number (0 = none started yet)
@@ -219,6 +256,10 @@ export function createWaves(scene, level, bus, zones, city) {
   let spawnedThisWave = 0;
   let waveTime = 0; // seconds since wave-start (drives the boss-wave burst)
   let bossWave = false; // current wave is a boss wave (wave % 5 === 0)
+  // Elite bookkeeping (per wave): how many turned elite so far + the 25% cap
+  // computed from the wave's minion queue in startWave().
+  let elitesThisWave = 0;
+  let eliteCap = 0;
   /** @type {import("./zombie.js").Zombie[]} everything spawned this wave (alive or corpse) */
   const tracked = [];
 
@@ -328,28 +369,43 @@ export function createWaves(scene, level, bus, zones, city) {
   /** Wave n composition per spec, shuffled so types interleave. Story boss
    *  waves halve the minion count (spec C5) and keep the brute/runner rules.
    *  Endless (P4-K8, FROZEN) uses its own full-size formula — the "halve on
-   *  wave %5" law does NOT apply in endless mode. */
+   *  wave %5" law does NOT apply in endless mode. Crawler/bloater/armored are
+   *  carved out of the walker remainder for both modes (new-type expansion). */
   function composition(n) {
     let total;
     let brutes;
     let runners;
+    let crawlers;
+    let bloaters;
+    let armored;
     if (mode === "endless") {
       // P4-K8: total = 8 + n×4; runner LUÔN ≥ 2 (30%); brute từ wave 3,
       // tỉ lệ tăng (wave 3→1, 8→2, 13→3); không chia đôi ở wave %5.
+      // Multi-type: crawler từ wave 2 (15%), bloater từ wave 4 (+1 mỗi 6),
+      // armored từ wave 6 (+1 mỗi 8) — lấy từ phần walker.
       total = 8 + n * 4;
       runners = Math.max(2, Math.round(total * 0.3));
       brutes = n >= 3 ? 1 + Math.floor((n - 3) / 5) : 0;
+      crawlers = n >= 2 ? Math.max(1, Math.round(total * 0.15)) : 0;
+      bloaters = n >= 4 ? 1 + Math.floor((n - 4) / 6) : 0;
+      armored = n >= 6 ? 1 + Math.floor((n - 6) / 8) : 0;
     } else {
       total = bossWave
         ? Math.ceil((5 + n * 3) / 2) // giảm NỬA minion (ceil keeps ≥ half)
         : 5 + n * 3;
       brutes = n >= 4 ? 1 + Math.floor(n / 5) : 0;
       runners = n >= 2 ? Math.round(total * 0.25) : 0;
+      crawlers = n >= 3 ? Math.max(1, Math.round(total * 0.15)) : 0;
+      bloaters = n >= 6 ? 1 + Math.floor((n - 6) / 6) : 0;
+      armored = n >= 9 ? 1 + Math.floor((n - 9) / 8) : 0;
     }
-    const walkers = Math.max(0, total - brutes - runners);
+    const walkers = Math.max(0, total - brutes - runners - crawlers - bloaters - armored);
     const list = [];
     for (let i = 0; i < brutes; i++) list.push("brute");
     for (let i = 0; i < runners; i++) list.push("runner");
+    for (let i = 0; i < crawlers; i++) list.push("crawler");
+    for (let i = 0; i < bloaters; i++) list.push("bloater");
+    for (let i = 0; i < armored; i++) list.push("armored");
     for (let i = 0; i < walkers; i++) list.push("walker");
     return shuffle(list);
   }
@@ -364,6 +420,28 @@ export function createWaves(scene, level, bus, zones, city) {
     return a;
   }
 
+  /**
+   * Elite roll for one regular spawn. Returns null when the wave/type is
+   * ineligible, the per-wave 25% cap is reached, or the roll misses.
+   * `type` is checked against the regular set — bosses never reach spawnOne,
+   * but the guard keeps that law explicit. Debug spawns and screamer summons
+   * construct their own Zombie without this path, so they stay non-elite.
+   * @param {string} type
+   * @returns {string|null} elite kind
+   */
+  function rollElite(type) {
+    if (!ELITE_ELIGIBLE[type]) return null;
+    const minWave = mode === "endless" ? ELITE_MIN_WAVE_ENDLESS : ELITE_MIN_WAVE_STORY;
+    if (wave < minWave || elitesThisWave >= eliteCap) return null;
+    let chance = Math.min(ELITE_CHANCE_MAX, ELITE_CHANCE_BASE + wave * ELITE_CHANCE_PER_WAVE);
+    if (bossWave) chance *= ELITE_BOSS_WAVE_MUL; // boss waves: elite minions are rarer
+    if (Math.random() >= chance) return null;
+    const kind = ELITE_KINDS[(Math.random() * ELITE_KINDS.length) | 0];
+    if (!kind) return null;
+    elitesThisWave++;
+    return kind;
+  }
+
   /** P4-K10: uniform random boss type from Object.keys(BOSS_CLASSES)
    *  (endless waves ≥ 8 only — the story cycle stays deterministic). */
   function randomBossType() {
@@ -376,6 +454,10 @@ export function createWaves(scene, level, bus, zones, city) {
     bossWave = n % 5 === 0; // spec: every 5th wave is a boss wave (flag kept in endless — P4-K10)
     queue = composition(n);
     spawnedThisWave = 0;
+    elitesThisWave = 0;
+    // 25% cap over the regular minions of THIS wave (boss excluded — a boss
+    // is never elite). floor keeps the count at or below the ratio.
+    eliteCap = Math.floor(queue.length * ELITE_WAVE_RATIO);
     spawnTimer = bossWave
       ? BOSS_FIRST_MIN + Math.random() * (BOSS_FIRST_MAX - BOSS_FIRST_MIN)
       : FIRST_SPAWN_MIN + Math.random() * (FIRST_SPAWN_MAX - FIRST_SPAWN_MIN);
@@ -725,7 +807,7 @@ export function createWaves(scene, level, bus, zones, city) {
         break;
       }
     }
-    const zombie = new Zombie(scene, type, new THREE.Vector3(x, 0, z), B);
+    const zombie = new Zombie(scene, type, new THREE.Vector3(x, 0, z), B, rollElite(type));
     applyDifficulty(zombie, false); // P4-K15: difficulty shape — TRƯỚC applyNgPlus
     applyNgPlus(zombie, false); // §4.7: NG+ hp ×1.25 / speed ×1.1 (regular)
     spawnedThisWave++;
@@ -800,6 +882,8 @@ export function createWaves(scene, level, bus, zones, city) {
     queue = [];
     wave = 0;
     spawnedThisWave = 0;
+    elitesThisWave = 0;
+    eliteCap = 0;
     spawnTimer = 0;
     interTimer = 0;
     waveTime = 0;

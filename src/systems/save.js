@@ -47,7 +47,7 @@
 /**
  * Một súng trong save. Reserve `null` = Infinity (pistol — P4-K3).
  * @typedef {Object} SaveWeaponEntry
- * @property {string} name - "pistol"|"shotgun"|"rifle"|"smg"|"sniper"|"minigun"|"grenade".
+ * @property {string} name - "pistol"|"shotgun"|"rifle"|"smg"|"sniper"|"minigun"|"grenade"|"magnum"|"dmr"|"railgun"|"sawnoff"|"crossbow".
  * @property {boolean} owned
  * @property {number|null} reserve - số nguyên ≥ 0; null = Infinity.
  * @property {{dmg: number, mag: number, rl: number}} upgrades - mỗi giá trị 0..3.

@@ -33,6 +33,20 @@
  *   B/M's extra "playing" check) and emitted in EVERY state: the HUD that
  *   listens is hidden in menus, so a stray toggle is harmless and the chosen
  *   state persists into the next run. Default is hidden (hud.js).
+ * - "help-toggle" — per keydown of H (auto-repeat ignored), user-requested
+ *   controls/help sheet (src/ui/help.js). Gated ONLY by !shopOpen (same rule
+ *   as E/F3): the overlay decides where it may appear and hides itself on
+ *   state changes, so no extra state check is duplicated here.
+ *
+ * Help overlay coordination (src/ui/help.js):
+ * - The sheet releases the pointer lock on open so its close button is
+ *   clickable. That unlock is EXPECTED: this module tracks the overlay via
+ *   bus "help-open"/"help-closed" and the pointerlockchange path must NOT
+ *   emit "pause-toggle" (help is a reference overlay — the game keeps
+ *   running). A short grace window also swallows the queued unlock when the
+ *   player closes the sheet again before the event is delivered.
+ * - "help-closed" never re-locks the pointer from here: the player's next
+ *   canvas click (or Esc/P) restores the lock through the normal paths.
  *
  * Shop coordination (EXPANSION C7 + integration note 1 in docs/EXPANSION.md):
  * - This module tracks the overlay via bus "shop-open" / "shop-closed"
@@ -107,6 +121,9 @@ import { bus } from "../systems/gamestate.js"; // shared bus — see wiring note
  */
 
 const PAUSE_DEDUPE_MS = 300;
+// Help overlay: its pointer-lock release is expected, not a pause. The grace
+// window covers a fast open→close before the queued pointerlockchange lands.
+const HELP_UNLOCK_GRACE_MS = 1000;
 
 export function createInput(canvas, settings) {
   /** @type {Set<string>} codes currently held (keyboard + "Mouse0..2") */
@@ -121,6 +138,8 @@ export function createInput(canvas, settings) {
   let lastPauseEmit = -Infinity;
   let lastKnownState = "menu";
   let shopOpen = false; // tracked via bus "shop-open"/"shop-closed" — see header
+  let helpOpen = false; // tracked via bus "help-open"/"help-closed" — see header
+  let helpUnlockAt = 0; // performance.now() of the help-triggered lock release
 
   const isLockedNow = () =>
     typeof document !== "undefined" && document.pointerLockElement === canvas;
@@ -193,6 +212,14 @@ export function createInput(canvas, settings) {
       if (!shopOpen && lastKnownState === "playing") {
         bus.dispatchEvent(new CustomEvent("map-toggle"));
       }
+    } else if (e.code === "KeyH") {
+      // H = controls/help sheet (user request). Auto-repeat never reaches
+      // this branch (the early e.repeat return above); only the shop keeps
+      // the key while open — same gate as E/F3. The overlay itself decides
+      // where it may appear and hides on state changes.
+      if (!shopOpen) {
+        bus.dispatchEvent(new CustomEvent("help-toggle"));
+      }
     } else if (e.code === "F3") {
       // F3 = FPS counter toggle (GUN GAME 2.0 P4, docs/EXPANSION-P4.md
       // §6.4/P4-K17). Gate is ONLY !shopOpen (like E — not B/M's extra
@@ -257,6 +284,20 @@ export function createInput(canvas, settings) {
       // cursor) — treating it as a pause would strand an orphan "user"
       // pause reason (docs/EXPANSION.md integration note 1).
       if (shopOpen) return;
+      // The help sheet released the lock on purpose (reference overlay — it
+      // must NOT pause the run). helpUnlockAt covers the case where the
+      // player closed it again before this event was delivered.
+      if (helpOpen) {
+        helpUnlockAt = 0;
+        return;
+      }
+      if (
+        helpUnlockAt &&
+        performance.now() - helpUnlockAt < HELP_UNLOCK_GRACE_MS
+      ) {
+        helpUnlockAt = 0;
+        return;
+      }
       // Lock lost: an Esc press the page never saw, or our own release on
       // pause/state change. Emit exactly once — the dedupe window absorbs
       // the case where the Esc keydown was also delivered.
@@ -268,7 +309,11 @@ export function createInput(canvas, settings) {
   bus.addEventListener("state-changed", (e) => {
     const detail = e && e.detail ? e.detail : {};
     lastKnownState = detail.state || lastKnownState;
-    if (lastKnownState === "menu") shopOpen = false; // safety: no shop outside a run
+    if (lastKnownState === "menu") {
+      shopOpen = false; // safety: no shop outside a run
+      helpOpen = false; // safety: help is a pure overlay, never a run state
+      helpUnlockAt = 0;
+    }
     if (lastKnownState !== "playing") releasePointerLock();
   });
 
@@ -285,10 +330,22 @@ export function createInput(canvas, settings) {
     if (lastKnownState === "playing") lockPointer();
   });
 
+  // Help overlay lifecycle (see header). "help-open" is dispatched BEFORE the
+  // overlay calls exitPointerLock(), so the pointerlockchange handler above
+  // already sees helpOpen=true and skips the pause. Closing never re-locks.
+  bus.addEventListener("help-open", () => {
+    helpOpen = true;
+    if (isLockedNow()) helpUnlockAt = performance.now();
+  });
+  bus.addEventListener("help-closed", () => {
+    helpOpen = false;
+  });
+
   // Recovery path: playing but lock was refused (e.g. re-lock cooldown right
   // after Esc) — a click on the canvas is a fresh user gesture.
   canvas.addEventListener("click", () => {
     if (shopOpen) return; // clicks belong to the shop overlay buttons
+    if (helpOpen) return; // clicks belong to the help sheet while it is up
     if (lastKnownState === "playing" && !isLockedNow()) lockPointer();
   });
 

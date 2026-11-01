@@ -8,9 +8,12 @@
  * Catalog (spec — DO NOT change the ids or prices):
  *   id        price  effect
  *   "smg"      400   own the SMG weapon (weapons.js def — feature B4)
+ *   "dmr"      700   own the marksman rifle (semi-auto, 52 dmg)
  *   "sniper"   800   own the sniper weapon (headshot ×3)
- *   "minigun" 1500   own the minigun (spin-up 0.6 s)
+ *   "magnum"   950   own the magnum revolver (85 dmg, headshot ×2.5)
  *   "grenade" 1200   own the grenade launcher (explosive projectiles — B5)
+ *   "minigun" 1500   own the minigun (spin-up 0.6 s)
+ *   "railgun" 1800   own the railgun (240 dmg, bolt-action)
  *   "ammo"     150   refill the FULL reserve of every OWNED weapon
  *                    (repeatable purchase)
  *   "medkit"   200   heal the player to FULL 100 HP (repeatable purchase)
@@ -20,7 +23,7 @@
  * - Not enough money → {ok:false, reason:"no-money"} (economy.spend fails).
  * - Unknown id → {ok:false, reason:"unknown"}.
  * - pistol / shotgun / rifle are owned FOR FREE from the start (unchanged
- *   legacy behavior) — owned() initially returns those three; the four new
+ *   legacy behavior) — owned() initially returns those three; the seven new
  *   weapons MUST be bought through the shop.
  * - buy() deducts through economy.spend() and applies the effect: weapons
  *   entries unlocked for switching / reserve refills / player heal.
@@ -29,7 +32,7 @@
  * every OWNED weapon carries three upgrade tracks — "dmg" (damage), "mag"
  * (magazine), "rl" (reload speed) — 3 levels each, priced by the NEXT level
  * [250, 500, 1000] (max 1750 per track). Purchase id: "upg:{weapon}:{track}"
- * (weapon = one of the 7 armory names, track = "dmg"|"mag"|"rl"). Failure
+ * (weapon = one of the 10 armory names, track = "dmg"|"mag"|"rl"). Failure
  * reasons reuse the shop's vocabulary:
  *   "unknown"   — the id is not a valid upgrade id (nor a catalog id),
  *   "owned"     — the weapon does not exist in the armory OR is not owned
@@ -44,7 +47,7 @@
  * wave-clear save sweeps them up).
  * upgradeInfo() → Array<{weapon, tracks: Array<{track, level, nextPrice}>}>
  * for the shop UI's upgrade panel — OWNED weapons only, in weapons.list
- * order; nextPrice is null once the track is maxed. The 6-entry CATALOG
+ * order; nextPrice is null once the track is maxed. The 9-entry CATALOG
  * above is unchanged — upgrades are NOT catalog entries; the UI renders the
  * panel dynamically from upgradeInfo().
  *
@@ -59,10 +62,12 @@
  *   on fresh runs — weapons.reset() un-owns the shop guns and money goes to
  *   0, so the private Set must not keep reporting them owned (the Set is
  *   private: nothing outside this module could clear it).
- * - Full reserve for the "ammo" purchase = the entry's `maxReserve` when the
- *   expanded WeaponState carries one, else this module's spec-table value
- *   (pistol ∞ / shotgun 24 / rifle 90 / smg 160 / sniper 25 / minigun 300 /
- *   grenade 12), else untouched. The pistol's Infinity is preserved.
+ * - Full reserve for the "ammo" purchase = the entry's `maxReserve`, else its
+ *   `startReserve` (the field every weapons.js runtime entry carries — this
+ *   also covers the two merchant-exclusive guns, which are NOT catalog
+ *   entries), else this module's spec-table value (pistol ∞ / shotgun 24 /
+ *   rifle 90 / smg 160 / sniper 25 / minigun 300 / grenade 12 / magnum 36 /
+ *   dmr 70 / railgun 12), else untouched. The pistol's Infinity is preserved.
  * - The "medkit" purchase writes player.hp = 100 directly (the controller
  *   exposes hp as a plain 0..100 property and has no heal method); a dead
  *   player is not resurrected.
@@ -82,8 +87,8 @@
 
 /**
  * @typedef {Object} ShopEntry
- * @property {string} id - catalog id ("smg"|"sniper"|"minigun"|"grenade"|"ammo"|"medkit").
- * @property {number} price - cost in money (400|800|1500|1200|150|200).
+ * @property {string} id - catalog id ("smg"|"dmr"|"sniper"|"magnum"|"grenade"|"minigun"|"railgun"|"ammo"|"medkit").
+ * @property {number} price - cost in money (400|700|800|950|1200|1500|1800|150|200).
  * @property {"weapon"|"ammo"|"medkit"} kind - effect kind.
  */
 
@@ -99,7 +104,7 @@
 /**
  * Per-weapon upgrade state (GUN GAME 2.0 — owned weapons only).
  * @typedef {Object} UpgradeInfo
- * @property {string} weapon - weapon name ("pistol".."grenade").
+ * @property {string} weapon - weapon name ("pistol".."railgun").
  * @property {UpgradeTrack[]} tracks - one entry per track, UPG_TRACKS order.
  */
 
@@ -128,13 +133,19 @@ const START_RESERVE = {
   sniper: 25,
   minigun: 300,
   grenade: 12,
+  magnum: 36,
+  dmr: 70,
+  railgun: 12,
 };
 
 const CATALOG = [
   { id: "smg", price: 400, kind: "weapon" },
+  { id: "dmr", price: 700, kind: "weapon" },
   { id: "sniper", price: 800, kind: "weapon" },
-  { id: "minigun", price: 1500, kind: "weapon" },
+  { id: "magnum", price: 950, kind: "weapon" },
   { id: "grenade", price: 1200, kind: "weapon" },
+  { id: "minigun", price: 1500, kind: "weapon" },
+  { id: "railgun", price: 1800, kind: "weapon" },
   { id: "ammo", price: 150, kind: "ammo" },
   { id: "medkit", price: 200, kind: "medkit" },
 ];
@@ -206,7 +217,9 @@ export function createShop(bus, economy, weapons, player) {
       if (!w || !ownedSet.has(w.name)) continue;
       const max = Number.isFinite(w.maxReserve)
         ? w.maxReserve
-        : START_RESERVE[w.name];
+        : Number.isFinite(w.startReserve)
+          ? w.startReserve // weapons.js runtime field (all 12 guns carry it)
+          : START_RESERVE[w.name];
       // Refill tops up — a reserve already above start (stockpiled pickups)
       // must never go DOWN from a purchase.
       if (max !== undefined && Number.isFinite(w.reserve)) {

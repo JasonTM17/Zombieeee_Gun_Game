@@ -11,6 +11,11 @@
  * - Wave + score, top center (i18n keys "wave", "score").
  * - Kill feed: 3 lines max, newest on top, each fading out (~3 s); listens
  *   "zombie-killed" on the bus. Boss types feed the same lines.
+ * - Weapon slot bar: bottom center, twelve fixed slots in key order (1 pistol
+ *   … 9 dmr, 0 railgun, - sawnoff, = crossbow) — digit + CSS-drawn icon + w*
+ *   label; gold = active, dimmed +
+ *   padlock = un-owned, "mag/reserve" + ammo tint + reload marker on the
+ *   active slot (see the WEAPON SLOT BAR note below).
  * - Crosshair: 4 ticks that expand with the current spread — listens
  *   "spread" {value} (radians) on the bus; offset = base + value * scale.
  * - Hitmarker: an X at the center, white — bold red when headshot; listens
@@ -110,6 +115,25 @@
  *   the P1 one above. All P2 widgets clear on run end (gameover/menu) and on
  *   show(false).
  *
+ * WEAPON SLOT BAR (additive; user request "các ô vũ khí ở dưới để người chơi
+ * biết"): fixed bottom-center strip of the twelve weapon slots in key order
+ * (1 pistol, 2 shotgun, 3 rifle, 4 smg, 5 sniper, 6 minigun, 7 grenade,
+ * 8 magnum, 9 dmr, 0 railgun, - sawnoff, = crossbow). Each
+ * slot shows the digit, a CSS-drawn silhouette (no image assets — see
+ * WEAPON_SLOTS) and the existing w* label; the ACTIVE slot is gold-lit and
+ * carries the compact "mag/reserve" (∞ for the pistol) plus a 2 px ammo tint
+ * and a reload marker; an UN-OWNED shop gun is dimmed/desaturated with a
+ * CSS-drawn padlock and NO ammo. weapons.js emits no ownership event (its bus
+ * traffic is "fire"/"spread" only), so ownership is polled from
+ * extras.weapons (main passes weapons.list through extras); when that field
+ * is absent the bar keeps its cached ownership (the starter three after a run
+ * end) and still tracks the active slot's ammo from update()'s `weapons`
+ * argument. The bar sits above the bottom edge; the intermission shop hint is
+ * shifted up 40 px so the two never overlap, and below 1040 px viewport width
+ * style.css's `--gg-weapon-bar-bottom` / `--gg-weapon-bar-width` lift the bar
+ * + hint clear of the health/ammo corner blocks. Every node is created once
+ * and the per-frame writes are gated on change.
+ *
  * update(player, weapons, gamestate[, extras]) — called by the main loop
  * EVERY FRAME while playing:
  *   @param player    - the Player object (read hp, alive, position).
@@ -133,7 +157,9 @@
  * trigger it directly.
  *
  * Bus events consumed: "zombie-killed", "spread", "hit", "wave-start",
- * "wave-clear", "settings-changed" (language only), plus the EXPANSION events
+ * "wave-clear", "settings-changed" (language + accessibility/game-feel
+ * patches: crosshairColor, crosshairSize, damageNumbers, reducedMotion), plus
+ * the EXPANSION events
  * "money-changed" {money, delta}, "boss-spawned" {type, zoneId, hp},
  * "zone-unlocked" {id, name}, "shop-open" / "shop-closed" {} and
  * "state-changed" {state} (run-end cleanup). Bus-driven sounds:
@@ -144,21 +170,32 @@
  * "bloodmoon-active" {active, duration}, "map-visibility" {open}. GUN GAME
  * 2.0 P4 (§6.4/§8): "damage-dealt" {pos, amount, headshot} (floating numbers),
  * "fps-toggle" {} (F3 counter), "achievement-unlocked" {id} (gold toast —
- * the achv_* name keys come from achievements.js's module-level bundle).
+ * the achv_* name keys come from achievements.js's module-level bundle),
+ * "codex-unlocked" {id, secret, nameKey, text} (gold dossier toast — help.js
+ * resolves detail.text; codexToast is the fallback).
  * extras.endless ({active, wave, score} — P4-K12) takes over the WAVE + SCORE
  * chips while Endless is active (integrator gap fill).
  *
  * Implementation notes:
+ * - Accessibility / game feel (user request): crosshair color/size ride the
+ *   --gg-crosshair-color / --gg-crosshair-scale custom properties, read from
+ *   "gungame.settings" at creation and live from "settings-changed" patches
+ *   (the HUD gets no settings ref). reducedMotion adds .reduced-motion to the
+ *   HUD root and suppresses the shot kick; damageNumbers:false ignores new
+ *   "damage-dealt" events and hides every live number immediately.
  * - No object allocation in the per-frame path: DOM writes are gated on value
  *   change, crosshair gap is one CSS custom property, decay uses a measured
  *   dt (update() has no dt parameter), the extras parsing fills a shared
  *   scratch object.
  * - Extra i18n keys registered here (merged, EN + VI): hudReloading,
- *   hudHeadshot, killWalker, killRunner, killBrute, wPistol, wShotgun,
- *   wRifle, and the EXPANSION keys hudMoney, hudShopHint, hudZoneToast,
- *   zoneNorth, zoneEast, bossButcher, bossSpitter, bossScreamer, bossGolem,
- *   killButcher, killSpitter, killScreamer, killGolem, wSmg, wSniper,
- *   wMinigun, wGrenade. Only THIS module's dict entries are touched (C8).
+ *   hudHeadshot, killWalker, killRunner, killBrute, killCrawler, killBloater,
+ *   killArmored (+ the crawler/bloater/armored display names), wPistol,
+ *   wShotgun, wRifle, weaponSlots, weaponLocked, and the EXPANSION keys
+ *   hudMoney, hudShopHint, hudZoneToast, zoneNorth, zoneEast, bossButcher,
+ *   bossSpitter, bossScreamer, bossGolem, killButcher, killSpitter,
+ *   killScreamer, killGolem, wSmg, wSniper, wMinigun, wGrenade, wMagnum,
+ *   wDmr, wRailgun, wSawnoff, wCrossbow. Only THIS
+ *   module's dict entries are touched (C8).
  *
  * @param {HTMLElement} container - the #ui element.
  * @param {EventTarget} bus
@@ -198,6 +235,12 @@
  * @property {import("three").Camera} [cam] - GUN GAME 2.0 P4 (P4-K12/K16):
  *   the live camera — floating damage numbers project through it each frame
  *   (Vector3.project). Missing → numbers stay invisible and age out.
+ * @property {import("../player/weapons.js").WeaponState[]|{list: import("../player/weapons.js").WeaponState[]}} [weapons]
+ *   Weapon slot bar (additive): the live weapons list — main passes
+ *   `weapons.list` (an object with a `.list` member is also accepted). Only
+ *   `name` + `owned` are read. Missing → the bar keeps its cached ownership
+ *   (the starter three after a run end) and still paints the active slot's
+ *   ammo from update()'s `weapons` argument.
  */
 
 /**
@@ -217,6 +260,16 @@
 // the screen through the camera main.js passes as extras.cam (P4-K12) — one
 // scratch Vector3, reused every frame (zero allocation, §1.4).
 import { Vector3 } from "three";
+import { CROSSHAIR_COLORS } from "../core/settings.js";
+
+// Accessibility / game feel (user request): the HUD is built after
+// settings.load() in main.js but receives no settings ref, so it reads the
+// persisted store directly at creation and follows "settings-changed" patches.
+// "white" is the pre-setting #e6f1ff tick color → untouched saves look identical.
+const SETTINGS_KEY = "gungame.settings";
+const CROSSHAIR_DEFAULT_COLOR = "white";
+const CROSSHAIR_SIZE_MIN = 0.75;
+const CROSSHAIR_SIZE_MAX = 1.5;
 
 // Crosshair geometry (px): gap = BASE + spread(rad) * PER_RAD + shot kick.
 const BASE_GAP = 8;
@@ -245,11 +298,162 @@ const KNOWN_WEAPONS = {
   sniper: "wSniper",
   minigun: "wMinigun",
   grenade: "wGrenade",
+  magnum: "wMagnum",
+  dmr: "wDmr",
+  railgun: "wRailgun",
+  sawnoff: "wSawnoff",
+  crossbow: "wCrossbow",
 };
+
+// Key badge per slot — MUST match weapons.js's switching (Digit1..0, Minus,
+// Equal) and the fixed weapons.list order. Index 10/11 are the two
+// merchant-exclusive guns.
+const WEAPON_KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "="];
+
+// Weapon slot bar (additive): fixed KEY order — index i is the weapon that
+// WEAPON_KEYS[i] selects and the weapons.list order (…8, 9, 0, -, =).
+// `icon` entries are
+// CSS-drawn silhouette parts inside a 34 x 10 px box, no image assets:
+// [x, y, w, h, radius, transform?] → one absolutely-positioned div each.
+const WEAPON_SLOTS = [
+  {
+    name: "pistol",
+    icon: [
+      [0, 2.5, 19, 3.5, 1],
+      [18, 3.5, 4, 1.5, 0],
+      [3.5, 6, 4.5, 3.5, 0, "skewX(-14deg)"],
+    ],
+  },
+  {
+    name: "shotgun",
+    icon: [
+      [0, 2.5, 6, 4, 1],
+      [0, 3, 20, 3, 1],
+      [14, 2, 20, 2, 0.5],
+      [18, 5.6, 6, 1.8, 0.5],
+    ],
+  },
+  {
+    name: "rifle",
+    icon: [
+      [0, 2.5, 5, 4, 1],
+      [0, 3, 17, 3, 1],
+      [16, 3.4, 18, 1.5, 0.5],
+      [8.5, 5.6, 3.5, 4, 0.5, "skewX(9deg)"],
+      [8, 1, 4, 1.5, 0.5],
+    ],
+  },
+  {
+    name: "smg",
+    icon: [
+      [0, 2.4, 3, 1.6, 0.5],
+      [3, 3, 16, 3, 1],
+      [18, 4, 9, 1.5, 0.5],
+      [7, 5.6, 3, 4, 0.5],
+      [3, 5.6, 3, 3.5, 0.5],
+    ],
+  },
+  {
+    name: "sniper",
+    icon: [
+      [0, 2.5, 5, 4, 1],
+      [0, 3, 23, 2.5, 1],
+      [22, 3.5, 12, 1.2, 0.5],
+      [7, 0.8, 10, 2, 0.5],
+    ],
+  },
+  {
+    name: "minigun",
+    icon: [
+      [0, 2, 11, 6, 1.5],
+      [11, 2, 23, 1.5, 0.5],
+      [11, 4.25, 23, 1.5, 0.5],
+      [11, 6.5, 23, 1.5, 0.5],
+      [1, 6.9, 7, 3, 1],
+    ],
+  },
+  {
+    name: "grenade",
+    icon: [
+      [0, 3, 3, 3, 1],
+      [2, 2, 26, 4, 2],
+      [27.5, 1, 3.5, 6, 1],
+      [6, 5.4, 6, 3.4, 1.7],
+      [2, 6, 3, 3.4, 0.5],
+    ],
+  },
+  {
+    name: "magnum",
+    icon: [
+      [0, 2.5, 14, 3.2, 1],
+      [11, 1.4, 7, 6, 3],
+      [18, 3, 9, 1.8, 0.5],
+      [2.5, 5.4, 4, 4.2, 0, "skewX(-14deg)"],
+      [8, 0.8, 3, 2, 0],
+    ],
+  },
+  {
+    name: "dmr",
+    icon: [
+      [0, 2.5, 5, 3.5, 1],
+      [4, 2.8, 16, 2.6, 1],
+      [19, 3.2, 13, 1.2, 0.5],
+      [6, 0.5, 9, 2, 1],
+      [9, 5.2, 3, 4, 0, "skewX(8deg)"],
+      [6, 5, 3, 3, 0.5],
+    ],
+  },
+  {
+    name: "railgun",
+    icon: [
+      [0, 1.5, 4, 2, 0.5],
+      [0, 2.5, 12, 4, 1],
+      [10, 2, 20, 1.4, 0.5],
+      [10, 3.8, 20, 1.4, 0.5],
+      [12, 1, 2, 6, 1],
+      [17, 1, 2, 6, 1],
+      [22, 1, 2, 6, 1],
+      [3, 6, 4, 3.5, 0.5],
+    ],
+  },
+  {
+    name: "sawnoff",
+    icon: [
+      [0, 2.4, 7, 4.2, 1], // stubby receiver
+      [5, 1.4, 15, 2, 0.5], // upper barrel
+      [5, 3.8, 15, 2, 0.5], // lower barrel
+      [19, 0.6, 6, 7.6, 1.5], // very wide muzzle face
+      [1, 5.6, 4, 4.2, 0, "skewX(-14deg)"], // wooden pistol grip
+      [8, 5.8, 3, 3, 0, "skewX(10deg)"], // break lever
+    ],
+  },
+  {
+    name: "crossbow",
+    icon: [
+      [0, 4.2, 6, 2, 0.5], // stock
+      [4, 4.1, 27, 1.3, 0.5], // bolt rail
+      [9, 0.4, 1.3, 9.2, 0.5], // limb riser
+      [9, 0.5, 4, 1.2, 0.5], // upper limb tip
+      [9, 8.3, 4, 1.2, 0.5], // lower limb tip
+      [13, 1.2, 4, 0.8, 0.5, "rotate(24deg)"], // upper string
+      [13, 7.6, 4, 0.8, 0.5, "rotate(-24deg)"], // lower string
+      [19, 2.1, 6, 2.1, 0.5], // scope
+    ],
+  },
+];
+/** Weapon name → slot index (extras.weapons entries may arrive in any order). */
+const WEAPON_INDEX = {};
+for (let i = 0; i < WEAPON_SLOTS.length; i++) {
+  WEAPON_INDEX[WEAPON_SLOTS[i].name] = i;
+}
+
 const KNOWN_TYPES = {
   walker: "killWalker",
   runner: "killRunner",
   brute: "killBrute",
+  crawler: "killCrawler",
+  bloater: "killBloater",
+  armored: "killArmored",
   butcher: "killButcher",
   spitter: "killSpitter",
   screamer: "killScreamer",
@@ -257,6 +461,46 @@ const KNOWN_TYPES = {
   origin: "killOrigin", // NIGHT 30 P3: final-boss kill-feed label
 };
 const BOSS_TYPES = { butcher: 1, spitter: 1, screamer: 1, golem: 1, origin: 1 }; // P3: the bar must hide on the Origin's kill too
+
+// Compact slot labels for the 12-slot bar (the full names live in the title
+// tooltip; two-line long names overflow the narrow slots on 1280 px screens).
+const WSLOT_SHORT = {
+  en: {
+    pistol: "PISTOL",
+    shotgun: "SHOTGUN",
+    rifle: "RIFLE",
+    smg: "SMG",
+    sniper: "SNIPER",
+    minigun: "MINIGUN",
+    grenade: "GRENADE",
+    magnum: "MAGNUM",
+    dmr: "DMR",
+    railgun: "RAILGUN",
+    sawnoff: "SAWN-OFF",
+    crossbow: "XBOW",
+  },
+  vi: {
+    pistol: "SÚNG NGẮN",
+    shotgun: "SHOTGUN",
+    rifle: "SÚNG TRƯỜNG",
+    smg: "SMG",
+    sniper: "SNIPER",
+    minigun: "MINIGUN",
+    grenade: "LỰU ĐẠN",
+    magnum: "MAGNUM",
+    dmr: "DMR",
+    railgun: "RAILGUN",
+    sawnoff: "CƯA ĐÔI",
+    crossbow: "NỎ",
+  },
+};
+// Elite feed accents (match zombie.js ELITE_DEFS colours).
+const ELITE_FEED_COLORS = {
+  frenzied: "#ff5a1e",
+  ironhide: "#9fb6d0",
+  toxic: "#54e04a",
+  giant: "#ffc02e",
+};
 
 // P2 (§4.3): compass strip marker color per event type (§4.2 palette).
 const EVENT_STRIP_COLORS = {
@@ -287,6 +531,13 @@ const HUD_BUNDLE = {
     killWalker: "Walker down",
     killRunner: "Runner down",
     killBrute: "Brute down",
+    killCrawler: "Crawler down",
+    killBloater: "Bloater down",
+    killArmored: "Armored down",
+    // Type display names (same ids zombies.js uses; kill-feed uses kill*).
+    crawler: "Crawler",
+    bloater: "Bloater",
+    armored: "Armored",
     wPistol: "Pistol",
     wShotgun: "Shotgun",
     wRifle: "Rifle",
@@ -306,14 +557,31 @@ const HUD_BUNDLE = {
     killScreamer: "Screamer down",
     killGolem: "Golem down",
     killOrigin: "Origin down",
+    // Elite variants (user request) — kill-feed prefix + badge.
+    eliteTag: "ELITE",
+    eliteFrenzied: "Frenzied",
+    eliteIronhide: "Ironhide",
+    eliteToxic: "Toxic",
+    eliteGiant: "Giant",
     wSmg: "SMG",
     wSniper: "Sniper",
     wMinigun: "Minigun",
     wGrenade: "Grenade Launcher",
+    wMagnum: "Magnum",
+    wDmr: "Marksman Rifle",
+    wRailgun: "Railgun",
+    wSawnoff: "Sawn-off",
+    wCrossbow: "Crossbow",
+    // Weapon slot bar (additive): aria-label + the locked-slot hint.
+    weaponSlots: "WEAPONS",
+    weaponLocked: "Locked",
     // GUN GAME 2.0 P4 (§8.4 — verbatim): gold toast on "achievement-unlocked".
     // The achievement names themselves come from the achv_* keys that
     // achievements.js registers at module level.
     achvToast: "🏆 ACHIEVEMENT — {name}",
+    // User request: gold toast on "codex-unlocked" (help.js). help.js passes
+    // detail.text already localized; this key is the fallback when it is not.
+    codexToast: "📖 DOSSIER UNLOCKED — {name}",
   },
   vi: {
     hudReloading: "ĐANG NẠP ĐẠN…",
@@ -321,6 +589,13 @@ const HUD_BUNDLE = {
     killWalker: "Hạ gục Walker",
     killRunner: "Hạ gục Runner",
     killBrute: "Hạ gục Brute",
+    killCrawler: "Hạ gục Crawler",
+    killBloater: "Hạ gục Bloater",
+    killArmored: "Hạ gục Giáp Sắt",
+    // Type display names (same ids zombies.js uses; kill-feed uses kill*).
+    crawler: "Bò Lết",
+    bloater: "Phình Độc",
+    armored: "Giáp Sắt",
     wPistol: "Súng ngắn",
     wShotgun: "Shotgun",
     wRifle: "Súng trường",
@@ -340,12 +615,28 @@ const HUD_BUNDLE = {
     killScreamer: "Hạ gục Screamer",
     killGolem: "Hạ gục Golem",
     killOrigin: "Hạ gục Origin",
+    // Elite variants (user request) — kill-feed prefix + badge.
+    eliteTag: "TINH ANH",
+    eliteFrenzied: "Cuồng Loạn",
+    eliteIronhide: "Da Sắt",
+    eliteToxic: "Độc Tố",
+    eliteGiant: "Khổng Lồ",
     wSmg: "SMG",
     wSniper: "Súng bắn tỉa",
     wMinigun: "Minigun",
     wGrenade: "Súng phóng lựu",
+    wMagnum: "Súng Lục Magnum",
+    wDmr: "Súng Bắn Tỉa DMR",
+    wRailgun: "Súng Điện Từ",
+    wSawnoff: "Súng Cưa Đôi",
+    wCrossbow: "Nỏ Săn",
+    // Weapon slot bar (additive): aria-label + the locked-slot hint.
+    weaponSlots: "VŨ KHÍ",
+    weaponLocked: "Chưa mở khóa",
     // GUN GAME 2.0 P4 (§8.4 — verbatim): gold toast on "achievement-unlocked".
     achvToast: "🏆 THÀNH TỰU — {name}",
+    // User request: gold toast on "codex-unlocked" (help.js) — VI fallback.
+    codexToast: "📖 MỞ HỒ SƠ — {name}",
   },
 };
 
@@ -762,12 +1053,14 @@ export function createHud(container, bus, audio, i18n) {
   });
 
   // "B — SHOP" hint chip, bottom center, visible during wave intermission.
+  // Rides 40 px above the weapon slot bar (which owns the bottom edge), so
+  // the two never overlap — including the small-window lift below.
   const hintWrap = make("div", "shop-hint-wrap", root);
   css(hintWrap, {
     position: "absolute",
     left: "0",
     right: "0",
-    bottom: "0",
+    bottom: "calc(40px + var(--gg-weapon-bar-bottom, 0px))",
     display: "flex",
     justifyContent: "center",
     alignItems: "flex-end",
@@ -801,6 +1094,247 @@ export function createHud(container, bus, audio, i18n) {
   });
   hintKey.textContent = "B";
   const hintAction = make("span", "shop-hint-action", hint);
+
+  // --- WEAPON SLOT BAR (additive; see the header note) -------------------------
+  // Bottom center, above the bottom edge. Twelve fixed slots in KEY order;
+  // all nodes are created once, the per-frame path only rewrites changes.
+  // The bar is not interactive (#ui stays pointer-events: none).
+  const wbarWrap = make("div", "weapon-bar-wrap", root);
+  css(wbarWrap, {
+    position: "absolute",
+    left: "0",
+    right: "0",
+    // Small windows lift the strip above the corner blocks (style.css media
+    // query supplies the offset; 0 = flush with the bottom edge).
+    bottom: "var(--gg-weapon-bar-bottom, 0px)",
+    display: "flex",
+    justifyContent: "center",
+    alignItems: "flex-end",
+    pointerEvents: "none",
+    zIndex: "4",
+  });
+  const wbar = make("div", "weapon-bar", wbarWrap);
+  css(wbar, {
+    display: "flex",
+    alignItems: "stretch",
+    gap: "4px",
+    // 12 × 56 px slots + 11 × 4 px gaps + 8 px padding + 2 px border = 726 px.
+    // On narrow windows style.css lifts the strip above the corner blocks and
+    // may narrow it (--gg-weapon-bar-width). Above 1040 px the fallback keeps
+    // 270 px clear on each side for the health/ammo corner blocks, so the bar
+    // stays 726 px at 1280 (well under 760) and shrinks in between; slots
+    // tighten via flex.
+    width: "var(--gg-weapon-bar-width, min(726px, calc(100vw - 540px)))",
+    maxWidth: "calc(100vw - 16px)",
+    marginBottom: "10px",
+    padding: "4px",
+    background: "rgba(6, 10, 16, 0.62)",
+    border: "1px solid var(--gg-line)",
+    borderRadius: "8px",
+    boxShadow: "0 6px 20px rgba(0, 0, 0, 0.45)",
+  });
+
+  /**
+   * Per-slot DOM + write caches (one object per slot, created once).
+   * `tone`: -1 unpainted, 0 owned idle, 1 active, 2 locked.
+   * @type {{el: HTMLElement, key: HTMLElement, icon: HTMLElement,
+   *   lbl: HTMLElement, ammo: HTMLElement, tint: HTMLElement,
+   *   tintFill: HTMLElement, lock: HTMLElement, reload: HTMLElement,
+   *   name: string, tone: number, ammoTxt: string, ammoShown: boolean,
+   *   tintOn: boolean, pct: number, tintTone: number, reloading: boolean}[]}
+   */
+  const wbarSlots = [];
+  for (let i = 0; i < WEAPON_SLOTS.length; i++) {
+    const def = WEAPON_SLOTS[i];
+    const el = make("div", "wslot", wbar);
+    css(el, {
+      position: "relative",
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      gap: "1px",
+      flex: "1 1 56px",
+      minWidth: "0",
+      maxWidth: "56px",
+      padding: "3px 3px 4px",
+      overflow: "hidden",
+      background: "rgba(10, 15, 24, 0.72)",
+      border: "1px solid rgba(36, 51, 77, 0.9)",
+      borderRadius: "5px",
+      color: "#8fa1b8", // icon parts paint with currentColor
+      transition:
+        "background 0.12s ease-out, border-color 0.12s ease-out, box-shadow 0.12s ease-out",
+    });
+
+    const top = make("div", "wslot-top", el);
+    css(top, {
+      display: "flex",
+      width: "100%",
+      height: "11px",
+      alignItems: "center",
+    });
+    const key = make("span", "wslot-key", top);
+    css(key, {
+      padding: "1px 3px",
+      fontSize: "9px",
+      lineHeight: "9px",
+      fontWeight: "800",
+      fontFamily: "ui-monospace, Consolas, monospace",
+      color: "#cfe0ff",
+      background: "#0b1322",
+      border: "1px solid #33465f",
+      borderRadius: "3px",
+    });
+    key.textContent = WEAPON_KEYS[i] || String(i + 1);
+
+    // Live ammo — ACTIVE slot only ("mag/reserve", ∞ for the pistol).
+    const ammo = make("span", "wslot-ammo", el);
+    css(ammo, {
+      position: "absolute",
+      top: "4px",
+      right: "5px",
+      fontSize: "9px",
+      lineHeight: "9px",
+      fontFamily: "ui-monospace, Consolas, monospace",
+      fontVariantNumeric: "tabular-nums",
+      color: "var(--gg-gold)",
+      visibility: "hidden",
+    });
+
+    // CSS-drawn padlock (shackle + body) — no emoji/image dependency.
+    const lock = make("span", "wslot-lock", el);
+    css(lock, {
+      position: "absolute",
+      top: "3px",
+      right: "5px",
+      width: "8px",
+      height: "10px",
+      display: "none",
+      color: "#5c6b80",
+    });
+    css(make("span", "wslot-lock-shackle", lock), {
+      position: "absolute",
+      left: "1px",
+      top: "0",
+      width: "6px",
+      height: "5px",
+      border: "1px solid currentColor",
+      borderBottom: "none",
+      borderRadius: "3px 3px 0 0",
+    });
+    css(make("span", "wslot-lock-body", lock), {
+      position: "absolute",
+      left: "0",
+      top: "4px",
+      width: "8px",
+      height: "5px",
+      background: "currentColor",
+      borderRadius: "1px",
+    });
+
+    // CSS-drawn silhouette (see WEAPON_SLOTS) — 34 x 10 px box.
+    const icon = make("div", "wslot-icon", el);
+    css(icon, {
+      position: "relative",
+      flexShrink: "0",
+      width: "34px",
+      height: "10px",
+    });
+    for (let p = 0; p < def.icon.length; p++) {
+      const part = def.icon[p];
+      const node = make("span", "wslot-icon-part", icon);
+      css(node, {
+        position: "absolute",
+        left: part[0] + "px",
+        top: part[1] + "px",
+        width: part[2] + "px",
+        height: part[3] + "px",
+        borderRadius: (part[4] || 0) + "px",
+        background: "currentColor",
+      });
+      if (part[5]) node.style.transform = part[5];
+    }
+
+    const lblRow = make("div", "wslot-lbl-row", el);
+    css(lblRow, {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      width: "100%",
+      height: "19px", // two lines of 9 px — uniform slot height
+    });
+    const lbl = make("div", "wslot-lbl", lblRow);
+    css(lbl, {
+      fontSize: "9px",
+      lineHeight: "9px",
+      letterSpacing: "0.02em",
+      textAlign: "center",
+      textTransform: "uppercase",
+      color: "var(--gg-text-dim)",
+      overflow: "hidden",
+      display: "-webkit-box",
+      WebkitBoxOrient: "vertical",
+      WebkitLineClamp: "2",
+      wordBreak: "break-word",
+    });
+
+    // Thin ammunition tint at the slot's bottom edge — active slot only.
+    const tint = make("div", "wslot-tint", el);
+    css(tint, {
+      position: "absolute",
+      left: "3px",
+      right: "3px",
+      bottom: "1px",
+      height: "2px",
+      borderRadius: "1px",
+      background: "rgba(255, 255, 255, 0.1)",
+      overflow: "hidden",
+      display: "none",
+    });
+    const tintFill = make("div", "wslot-tint-fill", tint);
+    css(tintFill, {
+      height: "100%",
+      width: "0%",
+      background: "#7ee89b",
+    });
+
+    // Reloading marker — takes the ammo position of the ACTIVE slot (the
+    // tint stays visible, so the slot never reads as "no ammo").
+    const reload = make("div", "wslot-reload", el);
+    css(reload, {
+      position: "absolute",
+      top: "3px",
+      right: "5px",
+      padding: "0",
+      fontSize: "10px",
+      lineHeight: "10px",
+      color: "var(--gg-gold)",
+      background: "none",
+      border: "none",
+      display: "none",
+    });
+    reload.textContent = "↻";
+
+    wbarSlots.push({
+      el,
+      key,
+      icon,
+      lbl,
+      ammo,
+      tint,
+      tintFill,
+      lock,
+      reload,
+      name: def.name,
+      tone: -1,
+      ammoTxt: "",
+      ammoShown: false,
+      tintOn: false,
+      pct: -1,
+      tintTone: -1,
+      reloading: false,
+    });
+  }
 
   // P1 "E — INTERACT" hint — centered just under the crosshair (never over
   // it; §5.4.3). Shown/hidden by "interact-near" {target, near}; carries the
@@ -958,6 +1492,74 @@ export function createHud(container, bus, audio, i18n) {
   /** Scratch Vector3 for number projection — one instance, reused (§1.4). */
   const dmgV = new Vector3();
 
+  // Accessibility / game feel (user request): boot values come from
+  // localStorage (see readHudSettings below), then live patches from the
+  // settings screen. Defaults reproduce the pre-setting look exactly.
+  let crosshairColor = CROSSHAIR_DEFAULT_COLOR;
+  let crosshairSize = 1;
+  let damageNumbersOn = true;
+  let reducedMotionOn = false;
+
+  /** Push the color/size preset onto the crosshair's CSS custom properties. */
+  function applyCrosshairSettings() {
+    const hex = CROSSHAIR_COLORS[crosshairColor] || CROSSHAIR_COLORS.white;
+    cross.style.setProperty("--gg-crosshair-color", hex);
+    cross.style.setProperty("--gg-crosshair-scale", String(crosshairSize));
+  }
+
+  /** Same 0.05 quantization as settings.js (boot/foreign values included). */
+  function normalizeCrosshairSize(v) {
+    return Math.round(clamp(v, CROSSHAIR_SIZE_MIN, CROSSHAIR_SIZE_MAX) * 20) / 20;
+  }
+
+  /** damageNumbers off → ignore new "damage-dealt" events + hide live ones. */
+  function setDamageNumbers(on) {
+    damageNumbersOn = on !== false;
+    if (!damageNumbersOn) hideDmgNumbers();
+  }
+
+  /** reducedMotion → no shot kick; CSS shortens the remaining HUD pulses. */
+  function setReducedMotion(on) {
+    reducedMotionOn = on === true;
+    root.classList.toggle("reduced-motion", reducedMotionOn);
+    if (reducedMotionOn) kick = 0;
+  }
+
+  /** Boot-safe read of the persisted accessibility settings. */
+  function readHudSettings() {
+    let raw = null;
+    try {
+      if (typeof localStorage !== "undefined") {
+        raw = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "null");
+      }
+    } catch {
+      raw = null; // corrupt JSON / blocked storage → pre-setting defaults
+    }
+    if (!raw || typeof raw !== "object") raw = {};
+    if (
+      typeof raw.crosshairColor === "string" &&
+      CROSSHAIR_COLORS[raw.crosshairColor]
+    ) {
+      crosshairColor = raw.crosshairColor;
+    }
+    if (typeof raw.crosshairSize === "number" && Number.isFinite(raw.crosshairSize)) {
+      crosshairSize = normalizeCrosshairSize(raw.crosshairSize);
+    }
+    applyCrosshairSettings();
+    setDamageNumbers(raw.damageNumbers !== false);
+    setReducedMotion(raw.reducedMotion === true);
+  }
+
+  // Weapon slot bar caches (additive). Ownership starts at the guaranteed
+  // starter set (weapons.js: pistol/shotgun/rifle owned, the shop guns not);
+  // extras.weapons corrects it as soon as main passes weapons.list.
+  const wbarOwned = WEAPON_SLOTS.map((_, i) => i < 3);
+  let wbarActive = 0; // active slot index (0 = pistol at spawn)
+  let wbarActiveName = ""; // active weapon name last painted
+  let wbarMag = -1; // last painted active mag
+  let wbarRes = ""; // last painted reserve text
+  let wbarAmmoTxt = ""; // "mag/reserve" — rebuilt only when either changes
+
   // Per-frame scratch for the optional extras argument (zero allocation).
   const bossScratch = {
     has: false,
@@ -989,6 +1591,161 @@ export function createHud(container, bus, audio, i18n) {
     const label = key ? tr(key) : String(name || "");
     wLabelCache.set(name, label);
     return label;
+  }
+
+  // --- weapon slot bar helpers (additive) --------------------------------------
+
+  /**
+   * Paint one slot's state: 0 = owned idle, 1 = active (gold glow), 2 = locked
+   * (dimmed/desaturated + padlock, no ammo). Gated on the cached tone.
+   */
+  function paintSlotTone(s, tone) {
+    if (s.tone === tone) return;
+    s.tone = tone;
+    const locked = tone === 2;
+    const on = tone === 1;
+    s.el.style.opacity = locked ? "0.45" : "1";
+    s.el.style.filter = locked ? "grayscale(0.9)" : "none";
+    s.el.style.background = on
+      ? "rgba(56, 43, 12, 0.9)"
+      : "rgba(10, 15, 24, 0.72)";
+    s.el.style.borderColor = on
+      ? "var(--gg-gold)"
+      : locked
+        ? "rgba(36, 51, 77, 0.5)"
+        : "rgba(36, 51, 77, 0.9)";
+    s.el.style.boxShadow = on
+      ? "0 0 12px rgba(255, 211, 94, 0.42), inset 0 0 10px rgba(255, 211, 94, 0.16)"
+      : "none";
+    s.el.style.color = locked ? "#56637a" : on ? "#ffe9b0" : "#8fa1b8";
+    s.lbl.style.color = locked
+      ? "#5b6a80"
+      : on
+        ? "#ffe9b0"
+        : "var(--gg-text-dim)";
+    s.key.style.color = locked ? "#5b6a80" : on ? "#0b1322" : "#cfe0ff";
+    s.key.style.background = on ? "var(--gg-gold)" : "#0b1322";
+    s.key.style.borderColor = on ? "#ffe9b0" : "#33465f";
+    s.lock.style.display = locked ? "block" : "none";
+  }
+
+  /**
+   * Active-slot ammo: text, 2 px tint width + color. An empty string hides
+   * the text (idle/locked slot, or the reload marker's turn); `showTint`
+   * keeps the tint up for the active slot even while reloading.
+   * `tone`: 0 low (≤20 %), 1 mid (≤50 %), 2 high.
+   */
+  function paintSlotAmmo(s, txt, pct, tone, showTint) {
+    if (s.ammoTxt !== txt) {
+      s.ammoTxt = txt;
+      s.ammo.textContent = txt;
+    }
+    const show = txt !== "";
+    if (s.ammoShown !== show) {
+      s.ammoShown = show;
+      s.ammo.style.visibility = show ? "visible" : "hidden";
+    }
+    const tintOn = show || showTint === true;
+    if (s.tintOn !== tintOn) {
+      s.tintOn = tintOn;
+      s.tint.style.display = tintOn ? "block" : "none";
+    }
+    if (!tintOn) return;
+    if (pct !== s.pct) {
+      s.pct = pct;
+      s.tintFill.style.width = pct + "%";
+    }
+    if (tone !== s.tintTone) {
+      s.tintTone = tone;
+      s.tintFill.style.background =
+        tone === 0 ? "#ff6b5e" : tone === 1 ? "#e0a23c" : "#7ee89b";
+    }
+  }
+
+  /** Reloading marker — ACTIVE slot only. */
+  function paintSlotReload(s, on) {
+    if (s.reloading === on) return;
+    s.reloading = on;
+    s.reload.style.display = on ? "block" : "none";
+  }
+
+  /** Re-apply the cached ownership (the active slot always wins). */
+  function paintBarOwnership() {
+    for (let i = 0; i < wbarSlots.length; i++) {
+      const s = wbarSlots[i];
+      paintSlotTone(s, i === wbarActive ? 1 : wbarOwned[i] ? 0 : 2);
+    }
+  }
+
+  /** Re-resolve every label/title (first paint + live language switch). */
+  function paintBarLabels() {
+    const lockedHint = tr("weaponLocked");
+    wbar.setAttribute("aria-label", tr("weaponSlots"));
+    for (let i = 0; i < wbarSlots.length; i++) {
+      const s = wbarSlots[i];
+      const label = weaponLabel(s.name);
+      const lang = i18n && typeof i18n.getLang === "function" ? i18n.getLang() : "en";
+      const short = (WSLOT_SHORT[lang] || WSLOT_SHORT.en)[s.name];
+      s.lbl.textContent = short || label;
+      s.el.title =
+        (WEAPON_KEYS[i] || String(i + 1)) +
+        " · " +
+        label +
+        (wbarOwned[i] ? "" : " — " + lockedHint);
+      s.reload.title = tr("hudReloading");
+    }
+  }
+
+  /**
+   * Poll extras.weapons for ownership (weapons.js emits no ownership event:
+   * its bus traffic is "fire"/"spread" only). Accepts weapons.list directly
+   * or an object carrying it; unknown/absent data is ignored, so the bar
+   * degrades to its cached ownership instead of guessing. Zero allocation.
+   */
+  function readBarWeapons(arg) {
+    if (!arg || typeof arg !== "object") return;
+    const w = arg.weapons;
+    const list = Array.isArray(w)
+      ? w
+      : w && Array.isArray(w.list)
+        ? w.list
+        : null;
+    if (!list) return;
+    let changed = false;
+    for (let i = 0; i < list.length; i++) {
+      const entry = list[i];
+      if (!entry || typeof entry !== "object") continue;
+      const idx = WEAPON_INDEX[entry.name];
+      if (idx === undefined) continue;
+      const owned = entry.owned === true;
+      if (wbarOwned[idx] !== owned) {
+        wbarOwned[idx] = owned;
+        changed = true;
+      }
+    }
+    if (changed) {
+      paintBarOwnership();
+      paintBarLabels(); // the locked hint in the tooltip changed
+    }
+  }
+
+  /** Run-end reset: starter ownership, pistol highlighted, no ammo paint. */
+  function resetWeaponBar() {
+    wbarOwned[0] = true;
+    wbarOwned[1] = true;
+    wbarOwned[2] = true;
+    for (let i = 3; i < wbarOwned.length; i++) wbarOwned[i] = false;
+    wbarActive = 0;
+    wbarActiveName = "";
+    wbarMag = -1;
+    wbarRes = "";
+    wbarAmmoTxt = "";
+    for (let i = 0; i < wbarSlots.length; i++) {
+      paintSlotAmmo(wbarSlots[i], "", 0, 2, false);
+      paintSlotReload(wbarSlots[i], false);
+    }
+    paintBarOwnership();
+    paintBarLabels(); // locked hints in the tooltips follow the reset
   }
 
   /** Boss display name from its type id; falls back to the raw id. */
@@ -1222,8 +1979,11 @@ export function createHud(container, bus, audio, i18n) {
     renderTracker();
     paintQuotaChip();
     if (eHintShown) eHintLbl.textContent = tr("interact_hint");
+    paintBarLabels(); // weapon slot bar: labels + tooltips (additive)
   }
+  readHudSettings(); // accessibility / game feel boot values
   applyLang();
+  paintBarOwnership(); // first paint: starter locks + pistol active
 
   // --- flash / vignette ---------------------------------------------------------
   function flashDamage(intensity) {
@@ -1236,8 +1996,16 @@ export function createHud(container, bus, audio, i18n) {
   // --- kill feed ----------------------------------------------------------------
   function addFeedLine(d) {
     const key = KNOWN_TYPES[d.type];
-    const label = key ? tr(key) : String(d.type || "Zombie");
+    const baseLabel = key ? tr(key) : String(d.type || "Zombie");
+    const elite = ELITE_FEED_COLORS[d.elite] ? d.elite : null;
+    const label = elite ? tr("elite" + elite[0].toUpperCase() + elite.slice(1)) + " · " + baseLabel : baseLabel;
     const line = make("div", "feed-line" + (d.headshot ? " hs" : ""), null);
+    if (elite) {
+      line.style.borderRightColor = ELITE_FEED_COLORS[elite];
+      const tag = make("span", "tag", line);
+      tag.textContent = tr("eliteTag");
+      tag.style.background = ELITE_FEED_COLORS[elite];
+    }
     if (d.headshot) {
       make("span", "tag", line).textContent = tr("hudHeadshot");
     }
@@ -1484,6 +2252,7 @@ export function createHud(container, bus, audio, i18n) {
    * (P4-K16 "thừa → bỏ"). The div stays display:none until the next update()
    * positions it through extras.cam. */
   function spawnDamageNumber(d) {
+    if (!damageNumbersOn) return; // accessibility: setting off → no new numbers
     if (!d || typeof d !== "object") return;
     const p = d.pos;
     const amount = Number(d.amount);
@@ -1524,7 +2293,9 @@ export function createHud(container, bus, audio, i18n) {
    * principle as the bloodmoon chip. `cam` (extras.cam) missing → numbers
    * stay invisible but keep aging (P4-K16 "cam thiếu → bỏ số"). */
   function tickDamageNumbers(dt, cam) {
-    const usableCam = !!cam && typeof cam.project === "function";
+    // A camera has no project() method of its own — Vector3.project(camera)
+    // needs the camera's matrices (main passes the live PerspectiveCamera).
+    const usableCam = !!cam && !!cam.matrixWorldInverse && !!cam.projectionMatrix;
     const w = window.innerWidth;
     const h = window.innerHeight;
     for (let i = 0; i < dmgPool.length; i++) {
@@ -1592,6 +2363,7 @@ export function createHud(container, bus, audio, i18n) {
 
   // --- bus -----------------------------------------------------------------------
   bus.addEventListener("spread", (e) => {
+    if (reducedMotionOn) return; // accessibility: no crosshair kick
     const d = e && e.detail ? e.detail : {};
     const v = Number(d.value);
     if (Number.isFinite(v) && v > 0) {
@@ -1761,13 +2533,29 @@ export function createHud(container, bus, audio, i18n) {
       hideHint();
       clearStoryWidgets(); // P1: tracker + quota + hint E are run-scoped
       clearEventWidgets(); // P2: banner + bloodmoon chip + compass (§4.3)
+      resetWeaponBar(); // weapon bar: back to the starter ownership
       intermission = false;
     }
   });
 
   bus.addEventListener("settings-changed", (e) => {
     const patch = e && e.detail && e.detail.patch ? e.detail.patch : null;
-    if (patch && patch.lang) applyLang();
+    if (!patch) return;
+    if (patch.lang) applyLang();
+    // Accessibility / game feel (user request): live crosshair + HUD gates.
+    if (
+      typeof patch.crosshairColor === "string" &&
+      CROSSHAIR_COLORS[patch.crosshairColor]
+    ) {
+      crosshairColor = patch.crosshairColor;
+      applyCrosshairSettings();
+    }
+    if (typeof patch.crosshairSize === "number" && Number.isFinite(patch.crosshairSize)) {
+      crosshairSize = normalizeCrosshairSize(patch.crosshairSize);
+      applyCrosshairSettings();
+    }
+    if (typeof patch.damageNumbers === "boolean") setDamageNumbers(patch.damageNumbers);
+    if (typeof patch.reducedMotion === "boolean") setReducedMotion(patch.reducedMotion);
   });
 
   // --- P2 event widgets (docs/EXPANSION-P2.md §4.3) ------------------------------
@@ -1840,6 +2628,20 @@ export function createHud(container, bus, audio, i18n) {
     const d = e && e.detail ? e.detail : {};
     const id = String(d.id || "");
     showToast(tr("achvToast", { name: tr("achv_" + id) }), true);
+  });
+
+  // Dossier unlock (user request): help.js resolves the full localized body in
+  // detail.text, so the HUD needs no per-character name keys. codexToast stays
+  // the fallback for any other emitter (and the one new key this module owns).
+  bus.addEventListener("codex-unlocked", (e) => {
+    const d = e && e.detail ? e.detail : {};
+    const body = typeof d.text === "string" ? d.text : "";
+    if (body) {
+      showToast(body, true);
+      return;
+    }
+    const name = d.nameKey ? tr(String(d.nameKey)) : "";
+    showToast(tr("codexToast", { name }), true);
   });
 
   // --- extras parsing (per-frame, zero allocation) -----------------------------
@@ -2005,6 +2807,47 @@ export function createHud(container, bus, audio, i18n) {
       prevReloading = reloading;
     }
 
+    // --- weapon slot bar (additive; see the header note) -------------------
+    // Ownership is polled: weapons.js emits no ownership event (only
+    // "fire"/"spread"), so extras.weapons is the source. Absent → the cached
+    // ownership stays and the active slot's ammo still tracks update()'s
+    // `weapons` argument (graceful degradation, never an invented lock).
+    readBarWeapons(extras);
+    if (wname !== wbarActiveName) {
+      const prev = wbarActive;
+      const idx = WEAPON_INDEX[wname];
+      wbarActiveName = wname;
+      wbarActive = idx === undefined ? -1 : idx;
+      if (prev >= 0 && prev !== wbarActive) {
+        // Clear the ammo/tint/reload of the slot we just left.
+        paintSlotAmmo(wbarSlots[prev], "", 0, 2, false);
+        paintSlotReload(wbarSlots[prev], false);
+      }
+      paintBarOwnership();
+      paintBarLabels(); // tooltips follow the active/locked state
+    }
+    if (wbarActive >= 0) {
+      const slot = wbarSlots[wbarActive];
+      // "mag/reserve" — one string rebuild only when a number changes.
+      if (mag !== wbarMag || resText !== wbarRes) {
+        wbarMag = mag;
+        wbarRes = resText;
+        wbarAmmoTxt = mag + "/" + resText;
+      }
+      const size = clamp(Math.round(Number(weapons.magSize) || 1), 1, 9999);
+      const pct = clamp(Math.round((mag / size) * 100), 0, 100);
+      // While reloading the marker takes the ammo text's place; the tint
+      // stays (live mag fraction), so the slot still reads as loaded.
+      paintSlotAmmo(
+        slot,
+        reloading ? "" : wbarAmmoTxt,
+        pct,
+        pct <= 20 ? 0 : pct <= 50 ? 1 : 2,
+        true
+      );
+      paintSlotReload(slot, reloading);
+    }
+
     // Top-center wave + score. GUN GAME 2.0 P4 (P4-K12/§6.4): while Endless
     // is active, extras.endless ({wave, score} from endless.snapshot()) takes
     // over BOTH chips — gamestate.score keeps drifting with the STORY score
@@ -2156,6 +2999,7 @@ export function createHud(container, bus, audio, i18n) {
       hideHint();
       clearStoryWidgets(); // P1: tracker + quota + hint E
       clearEventWidgets(); // P2: banner + bloodmoon chip + compass
+      resetWeaponBar(); // weapon bar: starter ownership, no ammo paint
       intermission = false;
     }
   }

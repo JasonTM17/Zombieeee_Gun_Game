@@ -259,11 +259,17 @@
   width: 0;
   height: 0;
   --gap: 10px;
+  /* Accessibility / game feel: settings.js values applied by hud.js. The
+     defaults reproduce the original 8 px ticks at #e6f1ff, 1x scale. */
+  --gg-crosshair-color: #e6f1ff;
+  --gg-crosshair-scale: 1;
+  transform: scale(var(--gg-crosshair-scale, 1));
+  transform-origin: center;
 }
 
 .crosshair .tick {
   position: absolute;
-  background: #e6f1ff;
+  background: var(--gg-crosshair-color, #e6f1ff);
   box-shadow: 0 0 3px rgba(0, 0, 0, 0.9);
 }
 
@@ -301,7 +307,7 @@
   height: 2px;
   left: -1px;
   top: -1px;
-  background: #e6f1ff;
+  background: var(--gg-crosshair-color, #e6f1ff);
 }
 
 /* --- hitmarker (X; red + bolder on headshot) ---------------------------------- */
@@ -361,6 +367,21 @@
     opacity: 0;
     transform: scale(1);
   }
+}
+
+/* Accessibility: reduced motion (settings screen) — the crosshair shot kick is
+   suppressed in hud.js; these rules shorten/disable the remaining HUD pulses. */
+.hud-root.reduced-motion .hitmarker.show {
+  animation-duration: 0.08s;
+}
+
+.hud-root.reduced-motion .flash.on {
+  animation-duration: 0.18s;
+}
+
+.hud-root.reduced-motion.crit .lowhp {
+  animation: none;
+  opacity: 0.35;
 }
 
 /* --- health (bottom left) ------------------------------------------------------ */
@@ -472,6 +493,18 @@
   }
   50% {
     opacity: 0.25;
+  }
+}
+
+/* --- weapon slot bar (built by hud.js, inline-styled) -----------------------
+   The bar owns the bottom center. Below 1040 px the health / ammo corner
+   blocks would crowd it: lift it (and the shop hint riding above it) and
+   keep the full 562 px slot strip so every label stays readable. */
+
+@media (max-width: 1040px) {
+  #ui {
+    --gg-weapon-bar-bottom: 96px;
+    --gg-weapon-bar-width: min(562px, calc(100vw - 16px));
   }
 }
 
@@ -676,6 +709,12 @@
   margin-bottom: 6px;
 }
 
+/* The accessibility block adds six rows — tighten the settings stack so the
+   full panel still fits a 720 px viewport without scrolling. */
+.screen-settings .settings-grid {
+  gap: 12px;
+}
+
 .setting-row {
   display: grid;
   grid-template-columns: 150px 1fr 64px;
@@ -702,6 +741,70 @@
   color: var(--gg-accent);
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+/* --- accessibility / game feel panel (user request) ------------------------------- */
+
+.settings-section-title {
+  margin: 6px 0 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--gg-line);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--gg-gold);
+}
+
+.swatch-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.swatch-btn {
+  appearance: none;
+  width: 34px;
+  height: 22px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 5px;
+  cursor: pointer;
+  transition:
+    transform 0.1s,
+    border-color 0.12s,
+    box-shadow 0.12s;
+}
+
+.swatch-btn:hover {
+  transform: translateY(-1px);
+}
+
+.swatch-btn.active {
+  border-color: var(--gg-gold);
+  box-shadow: 0 0 10px rgba(255, 211, 94, 0.35);
+}
+
+.swatch-btn:focus-visible {
+  outline: 2px solid var(--gg-accent);
+  outline-offset: 2px;
+}
+
+.setting-toggle {
+  justify-self: start;
+  min-width: 88px;
+}
+
+.setting-toggle.on {
+  border-color: var(--gg-gold);
+  color: var(--gg-gold);
+  box-shadow: 0 0 10px rgba(255, 211, 94, 0.22);
+}
+
+.settings-live-hint {
+  margin-top: 10px;
 }
 
 /* --- how-to-play key table ------------------------------------------------------------ */
