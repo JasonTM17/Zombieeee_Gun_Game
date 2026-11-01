@@ -37,6 +37,12 @@
  *   "ui-play"/"ui-restart"/"ui-play-free" → reset() (economy.js:139-144
  *   pattern); main.js vẫn gọi trực tiếp trong freshRun().
  *
+ * NIGHT 30 PART 3 (docs/EXPANSION-P3.md §3.5): nghe "origin-alive" {alive}
+ * — Origin còn sống thì scheduler TẠM DỪNG (tickScheduler early-return TRƯỚC
+ * khi giảm nextTimer — không event MỚI trong trận boss cuối); event ĐANG chạy
+ * (supply/survivor/horde/bloodmoon) tiếp tục đếm tự nhiên đến "event-end".
+ * reset() hạ cờ (fresh-run state).
+ *
  * LƯU Ý TRIỂN KHAI (bổ sung cho JSDoc stub — mọi mục hợp đồng giữ nguyên):
  * - Còi hụ horde: synth cục bộ gesture-gated (pattern createGateSound
  *   city.js:522-601) — đọc volume từ settings storage và cập nhật theo
@@ -390,6 +396,9 @@ export function createEvents(bus, city, audio, hooks, scene) {
   const activeEvents = [];
   let nextTimer = FIRST_MIN + Math.random() * (FIRST_MAX - FIRST_MIN);
   let lastType = /** @type {string|null} */ (null);
+  // NIGHT 30 P3 §3.5: Origin còn sống → scheduler đóng băng (không event mới;
+  // event đang chạy vẫn kết tự nhiên). Cờ đặt qua "origin-alive" {alive}.
+  let originFight = false;
   let warnedNoSpawnRunner = false;
   let warnedNoSupplyOpened = false;
 
@@ -1086,6 +1095,10 @@ export function createEvents(bus, city, audio, hooks, scene) {
 
   // --- scheduler tick (§3.2) -----------------------------------------------------------
   function tickScheduler(dt) {
+    // NIGHT 30 P3 §3.5: Origin fight → TẠM DỪNG. Early-return TRƯỚC khi giảm
+    // nextTimer (timer giữ nguyên) — không event mới; event đang chạy ở
+    // update() dưới vẫn đếm thời lượng tự nhiên đến "event-end".
+    if (originFight) return;
     nextTimer -= dt;
     if (nextTimer > 0) return;
     // Due, but bloodmoon excludes every other event (§3.2): hold the due timer
@@ -1172,6 +1185,7 @@ export function createEvents(bus, city, audio, hooks, scene) {
     }
     nextTimer = FIRST_MIN + Math.random() * (FIRST_MAX - FIRST_MIN);
     lastType = null;
+    originFight = false; // P3 §3.5: fresh-run state — scheduler mở lại
     refreshSnapshot();
   }
 
@@ -1201,6 +1215,14 @@ export function createEvents(bus, city, audio, hooks, scene) {
   B.addEventListener("ui-play", reset);
   B.addEventListener("ui-restart", reset);
   B.addEventListener("ui-play-free", reset);
+
+  // NIGHT 30 P3 §3.5: Origin phát "origin-alive" {alive:true|false} khi rise
+  // bắt đầu / chết hoặc dispose (origin.js) — scheduler đóng băng đúng lúc,
+  // không đụng gì khác (forceEvent là debug API, hành vi giữ nguyên).
+  B.addEventListener("origin-alive", (e) => {
+    const d = e && /** @type {CustomEvent} */ (e).detail ? /** @type {CustomEvent} */ (e).detail : {};
+    originFight = d.alive === true;
+  });
 
   return { update, forceEvent, active, reset };
 }

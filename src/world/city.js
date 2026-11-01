@@ -61,6 +61,16 @@
  * a non-enumerable `__dispose()` on the returned object (NOT part of the
  * frozen City contract) for the integrator to call before level.dispose().
  *
+ * NIGHT 30 PART 3 (docs/EXPANSION-P3.md §3.4): `openVault(open?)` drives the
+ * central vault door built by level.js (§3.2). When level.js exposes its
+ * private `__vaultOpen` hook the call is a pure proxy (P3-K1); otherwise the
+ * disc (found once by its unique CylinderGeometry(2,2,0.6,24)-at-origin
+ * build) is animated from here: 2 s ease-in slide to y = 8 + retuned rumble
+ * (pitch −30%) + red PointLight fade-in that holds, collider spliced when
+ * the slide completes, disc parked out of the scene; close reverses within
+ * 0.5 s and re-pushes the collider. Idempotent — returns true only on a
+ * real state change.
+ *
  * Bus events consumed: none. Bus events emitted: none (gate opening is
  * driven by main.js calling setGateOpen after "gate-open"; city never
  * touches the bus).
@@ -128,6 +138,10 @@
  *   setGateOpen - open/close one gate per §3.4 mechanics (sink 1.0 s,
  *   emissive swap, collider removed after the sink, synthesized rumble).
  *   Idempotent; pair unordered; returns true only when the state changed.
+ * @property {(open?: boolean) => boolean} openVault - NIGHT 30 P3 (§3.4):
+ *   open/close the central vault door at (0,0) — 2 s slide up + rumble +
+ *   red inner light; collider spliced when the slide completes, disc parks
+ *   out of the scene. Idempotent; returns true only when the state changed.
  */
 
 import * as THREE from "three";
@@ -518,8 +532,17 @@ function makeGateIconTexture() {
  * explosives.js createBoomSynth): deep noise sweep + sub tone drop, played
  * once per gate transition. Gesture-gated AudioContext, settings-aware
  * volume, fully silent when WebAudio is unavailable.
+ *
+ * NIGHT 30 P3 (docs/EXPANSION-P3.md §3.4, P3-K1): `pitchMul` retones the SAME
+ * synth for the vault door (0.7 ≈ 30% lower pitch, sweeps stretched ×1.3 so
+ * the heavier steel reads longer). Default 1 → byte-identical gate rumble.
+ *
+ * @param {number} [pitchMul=1] - frequency multiplier (0 < mul; 1 = gates)
+ * @returns {() => void}
  */
-function createGateSound() {
+function createGateSound(pitchMul = 1) {
+  const pitch = Math.min(4, Math.max(0.1, pitchMul));
+  const durMul = 2 - pitch; // 1 → 1.0 (unchanged), 0.7 → 1.3 (heavier sweep)
   const SETTINGS_KEY = "gungame.settings";
   /** @type {AudioContext|null} */
   let ctx = null;
@@ -572,31 +595,31 @@ function createGateSound() {
     src.buffer = noiseBuf;
     const filt = ctx.createBiquadFilter();
     filt.type = "lowpass";
-    filt.frequency.setValueAtTime(420, t0);
-    filt.frequency.exponentialRampToValueAtTime(70, t0 + 0.9);
+    filt.frequency.setValueAtTime(420 * pitch, t0);
+    filt.frequency.exponentialRampToValueAtTime(70 * pitch, t0 + 0.9 * durMul);
     filt.Q.value = 1.1;
     const g = ctx.createGain();
     g.gain.setValueAtTime(0.0001, t0);
-    g.gain.linearRampToValueAtTime(0.5, t0 + 0.05);
-    g.gain.exponentialRampToValueAtTime(0.0001, t0 + 1.0);
+    g.gain.linearRampToValueAtTime(0.5, t0 + 0.05 * durMul);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + 1.0 * durMul);
     src.connect(filt);
     filt.connect(g);
     g.connect(master);
     src.start(t0, Math.random() * 0.9);
-    src.stop(t0 + 1.05);
+    src.stop(t0 + 1.05 * durMul);
     // Sub thud under the grind.
     const osc = ctx.createOscillator();
     osc.type = "sine";
-    osc.frequency.setValueAtTime(88, t0);
-    osc.frequency.exponentialRampToValueAtTime(32, t0 + 0.8);
+    osc.frequency.setValueAtTime(88 * pitch, t0);
+    osc.frequency.exponentialRampToValueAtTime(32 * pitch, t0 + 0.8 * durMul);
     const og = ctx.createGain();
     og.gain.setValueAtTime(0.0001, t0);
-    og.gain.linearRampToValueAtTime(0.4, t0 + 0.04);
-    og.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.9);
+    og.gain.linearRampToValueAtTime(0.4, t0 + 0.04 * durMul);
+    og.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.9 * durMul);
     osc.connect(og);
     og.connect(master);
     osc.start(t0);
-    osc.stop(t0 + 0.95);
+    osc.stop(t0 + 0.95 * durMul);
   };
 }
 
@@ -629,6 +652,7 @@ export function createCity(scene, level) {
     for (const t of textures) t.dispose();
     textures.length = 0;
     stopAnimLoop();
+    stopVaultAnim(); // NIGHT 30 P3: cancel the vault rAF loop too
   }
 
   // --- district + gate live records -------------------------------------------
@@ -1335,6 +1359,9 @@ export function createCity(scene, level) {
 
   // --- register the 12 city gates into level (§3.5.3-3.5.4, private hooks) -------
   const rumble = createGateSound();
+  // Vault rumble: same synth retuned ~30% lower (P3-K1) — the final door is
+  // heavier steel than a district barrier.
+  const vaultRumble = createGateSound(0.7);
   if (level && typeof /** @type {any} */ (level).__cityRegisterGates === "function") {
     /** @type {any} */ (level).__cityRegisterGates(gates);
   }
@@ -1477,8 +1504,173 @@ export function createCity(scene, level) {
     return true;
   }
 
+  // ===========================================================================
+  // VAULT DOOR (NIGHT 30 PART 3 — docs/EXPANSION-P3.md §3.4, P3-K1)
+  // ===========================================================================
+  // The steel disc itself is built by level.js (§3.2: Ø 4 m, half-buried at
+  // (0,0), collider {−2..2 × −2..2}) and level keeps mesh+collider OWNERSHIP —
+  // geometry/material disposal stays in level.dispose(). THIS module drives
+  // the open/close: when level.js exposes its private `__vaultOpen` hook
+  // (contract split) openVault() is a pure proxy; otherwise it animates the
+  // disc from here (this build's file split — see the header note).
+  //
+  // Open: slide y 0 → 8 over 2.0 s (ease-in) + local rumble (pitch −30%) +
+  // red PointLight (0xff3b30) 0 → 30 fade-in at (0, 1.5, 0) that then HOLDS;
+  // when the slide completes the collider is spliced from level.colliders and
+  // the disc is REMOVED from the scene (it parks above the vault shaft —
+  // geometry/material stay alive, owned by level.js).
+  // Close (fresh-run reset path): reverse — disc re-attached and back at floor
+  // within 0.5 s, collider pushed back (idempotent push, gates.js P1 fix
+  // pattern), light faded out.
+  // Idempotent: a call that does not change the target state returns false.
+  // The rAF loop follows the gate-animation pattern (city.js animTick).
+
+  const VAULT_OPEN_MS = 2000; // §3.4: 2 s slide up (ease-in)
+  const VAULT_CLOSE_MS = 500; // §3.4: reverse "tức thời" (≤ 0.5 s)
+  const VAULT_TOP_Y = 8; // §3.4: disc parks at y = 8
+  const VAULT_LIGHT_INTENSITY = 30; // §3.4: 0 → 30, distance 25
+
+  /**
+   * Private level.js hook when the level provides it (P3-K1 delegation).
+   * Probed ONCE at city build — non-enumerable, so it never shows on the
+   * documented Level contract.
+   */
+  const vaultHook =
+    level && typeof /** @type {any} */ (level).__vaultOpen === "function"
+      ? /** @type {any} */ (level).__vaultOpen
+      : null;
+
+  /** The level.js disc mesh (found lazily on first use, cached). */
+  let vaultDisc = null;
+  /** Its collider record in level.colliders (cached). */
+  let vaultCollider = null;
+  /** Red glow from inside the shaft; 0 intensity until the door opens. */
+  const vaultLight = new THREE.PointLight(0xff3b30, 0, 25, 2);
+  vaultLight.position.set(0, 1.5, 0);
+  scene.add(vaultLight);
+  lights.push(vaultLight); // disposeCity() removes it
+  /** Target state — the idempotency guard (like Gate.open). */
+  let vaultOpen = false;
+  /** @type {{toOpen: boolean, start: number, fromY: number}|null} */
+  let vaultAnim = null;
+  let vaultRaf = 0;
+
+  /**
+   * Locate the level.js vault disc: the only CylinderGeometry(2, 2, 0.6, 24)
+   * mesh at the origin flagged solid (level.js §3.2 build block). One O(n)
+   * scene scan on first use, then cached — never in a per-frame path.
+   * @returns {THREE.Mesh|null}
+   */
+  function findVaultDisc() {
+    if (vaultDisc) return vaultDisc;
+    for (let i = 0; i < scene.children.length; i++) {
+      const o = scene.children[i];
+      if (!(/** @type {any} */ (o).isMesh)) continue;
+      const geo = /** @type {any} */ (o).geometry;
+      if (!geo || geo.type !== "CylinderGeometry") continue;
+      const gp = geo.parameters;
+      if (!gp || gp.radiusTop !== 2 || gp.radiusBottom !== 2 || gp.height !== 0.6 || gp.radialSegments !== 24) continue;
+      if (Math.abs(o.position.x) > 1e-3 || Math.abs(o.position.y) > 1e-3 || Math.abs(o.position.z) > 1e-3) continue;
+      if (o.userData.solid !== true) continue;
+      vaultDisc = /** @type {THREE.Mesh} */ (o);
+      break;
+    }
+    return vaultDisc;
+  }
+
+  /**
+   * Locate the vault collider record: the exact 4×4 box centered on (0,0)
+   * (level.js §3.2 — the only collider with those bounds in the game).
+   * @returns {{minX: number, maxX: number, minZ: number, maxZ: number}|null}
+   */
+  function findVaultCollider() {
+    if (vaultCollider) return vaultCollider;
+    if (!level || !level.colliders) return null;
+    for (let i = 0; i < level.colliders.length; i++) {
+      const c = level.colliders[i];
+      // level.js §3.2: the vault box is 4×4 CENTERED on (0,0) — maxZ is −2,
+      // not +2 (integrator fix: the +2 typo made this scan never match, so
+      // the open splice and the close re-push both silently no-op'd).
+      if (c && c.minX === -2 && c.maxX === 2 && c.minZ === -2 && c.maxZ === -2) {
+        vaultCollider = c;
+        break;
+      }
+    }
+    return vaultCollider;
+  }
+
+  /** Vault rAF step — same clock/pattern as the gate animTick above. */
+  function vaultTick(now) {
+    vaultRaf = 0;
+    const a = vaultAnim;
+    if (!a) return;
+    const dur = a.toOpen ? VAULT_OPEN_MS : VAULT_CLOSE_MS;
+    const p = Math.min(1, Math.max(0, (now - a.start) / dur));
+    if (vaultDisc) {
+      // Ease-in both ways (§3.4 specifies ease-in for the open slide).
+      const k = p * p;
+      const targetY = a.toOpen ? VAULT_TOP_Y : 0;
+      vaultDisc.position.y = a.fromY + (targetY - a.fromY) * k;
+    }
+    if (a.toOpen) vaultLight.intensity = VAULT_LIGHT_INTENSITY * p; // hold at 1
+    else vaultLight.intensity = VAULT_LIGHT_INTENSITY * (1 - p); // fade out
+    if (p >= 1) {
+      vaultAnim = null;
+      if (a.toOpen) {
+        // §3.4: collider out ONLY when the slide finished (never mid-anim —
+        // a mid-anim close must still be able to re-push it).
+        const col = findVaultCollider();
+        if (col && level && level.colliders) {
+          const idx = level.colliders.indexOf(col);
+          if (idx !== -1) level.colliders.splice(idx, 1);
+        }
+        // Park the disc out of the scene; geometry/material stay level's.
+        if (vaultDisc && vaultDisc.parent) vaultDisc.parent.remove(vaultDisc);
+      } else {
+        // Collider back (guarded push — P1 idempotency pattern, gates.js).
+        const col = findVaultCollider();
+        if (col && level && level.colliders && level.colliders.indexOf(col) === -1) {
+          level.colliders.push(col);
+        }
+      }
+    }
+    if (vaultAnim) vaultRaf = requestAnimationFrame(vaultTick);
+  }
+
+  function stopVaultAnim() {
+    if (vaultRaf) {
+      cancelAnimationFrame(vaultRaf);
+      vaultRaf = 0;
+    }
+    vaultAnim = null;
+  }
+
+  /**
+   * Mở/đóng cửa vault (0,0) — cửa trượt lên 2 s + rumble + ánh sáng đỏ bên
+   * trong (docs/EXPANSION-P3.md §3.4). Ủy quyền level.__vaultOpen khi hook
+   * tồn tại (P3-K1); không thì tự animate từ đây.
+   * @param {boolean} [open=true]
+   * @returns {boolean} true khi trạng thái THẬT SỰ đổi (idempotent)
+   */
+  function openVault(open = true) {
+    if (vaultHook) return vaultHook(open !== false) !== false;
+    const next = open !== false;
+    if (next === vaultOpen) return false; // no-op — kể cả khi đang trượt tới đó
+    vaultOpen = next;
+    const disc = findVaultDisc();
+    if (!disc) return false; // level layout drifted — nothing to animate
+    // Close path with a completed open behind it: the disc parks OUT of the
+    // scene — re-attach before sliding it back down.
+    if (!next && !disc.parent) scene.add(disc);
+    // Restart cleanly from wherever the disc hangs (setGateOpen pattern).
+    vaultAnim = { toOpen: next, start: performance.now(), fromY: disc.position.y };
+    if (!vaultRaf) vaultRaf = requestAnimationFrame(vaultTick);
+    vaultRumble();
+    return true;
+  }
+
   // --- public City (frozen shape — private extras are non-enumerable) -------------
-  const api = { districts, districtAt, gateBetween, setGateOpen };
+  const api = { districts, districtAt, gateBetween, setGateOpen, openVault };
   Object.defineProperty(api, "__dispose", { value: disposeCity, enumerable: false, writable: false });
   return api;
 }

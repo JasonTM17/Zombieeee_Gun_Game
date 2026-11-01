@@ -1,13 +1,17 @@
 /**
  * ============================================================================
- * MISSIONS — chuỗi 9 nhiệm vụ cốt truyện "ĐÊM THỨ 30 · Phần 1"
- * (docs/EXPANSION-P1.md §5.1; nội dung thoại: docs/STORY.md — nguyên văn).
+ * MISSIONS — chuỗi 10 nhiệm vụ cốt truyện "ĐÊM THỨ 30" (P1 §5.1 + P3 §3.7;
+ * nội dung thoại: docs/STORY.md + docs/EXPANSION-P3.md §7.3 — nguyên văn).
  * ============================================================================
  * State machine: every mission is locked → active → done. Exactly ONE active
  * mission at a time; completing it auto-activates the next one. `current`
- * is 1-BASED (m1 = 1 … m9 = 9); 0 = not started; 10 = chain finished
- * (free-roam). Mission 9 completion also opens the five remaining steel
- * gates via "gate-open" (docs/EXPANSION-P1.md §5.1.1 table — decision K2/K6).
+ * is 1-BASED (m1 = 1 … m10 = 10 — P3-K2); 0 = not started; 11 = chain
+ * finished (free-roam — was 10 before P3 stretched the chain 9 → 10).
+ * Mission 9 completion also opens the five remaining steel gates via
+ * "gate-open" (docs/EXPANSION-P1.md §5.1.1 table — decision K2/K6).
+ * Mission 10 "Nguồn Gốc" (P3 §3.7): single {type:"boss"} objective targeting
+ * the ORIGIN — completes through BOTH "zombie-killed" {type:"origin"} (BOSS_TYPES)
+ * AND the "origin-defeated" bus event (P3-K3, both idempotent via setProgress).
  *
  * Objectives (one mission has 1–3):
  *   {type: "activate", target: "target_generator", targets: ["generator-1",
@@ -24,8 +28,8 @@
  * Quota counting (decision K4): a "zombie-killed" {type, headshot, position}
  * counts ONLY when type ∈ {walker, runner, brute} AND
  * city.districtAt(position.x, position.z) === the quota district. Boss kills
- * feed ONLY the "boss" objective (type ∈ {butcher, spitter, screamer,
- * golem}). When the quota need is reached the module fires
+ * feed ONLY the "boss" objective (type ∈ {butcher, spitter, screamer, golem,
+ * origin — P3}). When the quota need is reached the module fires
  * "quota-done" {districtId} exactly once per district.
  *
  * Interaction (docs/EXPANSION-P1.md §5.1.3): this module CREATES the
@@ -78,23 +82,33 @@
  * "quota-done" {districtId}, "pickup-story" {item, target},
  * "interact" {target}, "interact-near" {target, near},
  * "mission-reset" {} (from reset()).
- * Bus events consumed: "zombie-killed", "interact-press"
+ * Bus events consumed: "zombie-killed", "interact-press", "origin-defeated"
+ * (P3 §3.7 — completes m10's boss objective; the payload is ignored, the
+ * kill path through "zombie-killed" {type:"origin"} is the primary one and
+ * this listener is the belt-and-braces route from P3-K3).
  * ("interact"/"pickup-story" are self-emitted; handling them directly is
  * allowed as long as the payloads above stay on the bus verbatim). An
  * "interact-press" only lands while the run is live (this module tracks its
  * own update() freshness — presses from menus/pause/intro are ignored).
  *
  * i18n keys owned by THIS module (register via i18n.registerBundle, flat
- * keys, EN + VI verbatim from docs/EXPANSION-P1.md §7.3–§7.6): mission1..9_
- * title, obj_*, item_*, target_*, mission_progress, mission_complete_toast,
- * quota_counter, quota_done_toast, gate_open_toast, interact_hint.
+ * keys, EN + VI verbatim from docs/EXPANSION-P1.md §7.3–§7.6 +
+ * docs/EXPANSION-P3.md §7.2–§7.3): mission1..10_title, obj_*, item_*,
+ * target_*, mission_progress ({n}/10 — P3), mission_complete_toast,
+ * quota_counter, quota_done_toast, gate_open_toast, interact_hint, plus the
+ * m10 dialogue line keys (m10_radio_line1/2, m10_you_line1 — dialogue.js
+ * owns m1..m9 texts; the m10 lines live here because Builder A does not own
+ * dialogue.js, §2 table; the text is §7.3 verbatim).
  * The `district_*` keys belong to city.js and are intentionally NOT
  * registered here (i18n.t falls back to the key itself until city registers
  * them).
  *
- * STORY_DIALOGUE (export, §5.1.5): map "m1".."m9" → {start: [{speaker, key}…],
- * done: […]} with speaker ∈ "radio"|"you"|"unknown" and keys/order EXACTLY
- * per docs/EXPANSION-P1.md §7.7 (text lives verbatim in docs/STORY.md §3).
+ * STORY_DIALOGUE (export, §5.1.5 + P3 §7.3): map "m1".."m10" →
+ * {start: [{speaker, key}…], done: […]} with speaker ∈ "radio"|"you"|
+ * "unknown" and keys/order EXACTLY per docs/EXPANSION-P1.md §7.7 (m1..m9
+ * text lives verbatim in docs/STORY.md §3) + docs/EXPANSION-P3.md §7.3 (m10).
+ * m9 and m10 have NO done-lines (m9: reach chạm cửa → m10 cascade chạy ngay;
+ * m10: màn kết thay thoại done — P3-K4).
  *
  * reset(): back to mission 1 locked, clears progress, disposes POI meshes,
  * emits "mission-reset". Does NOT emit "mission-start" (main.js activates
@@ -138,10 +152,10 @@
 
 /**
  * @typedef {Object} Missions
- * @property {number} current - active mission index (1..9), 0 = none, 10 =
- *   chain complete (free-roam).
+ * @property {number} current - active mission index (1..10), 0 = none, 11 =
+ *   chain complete (free-roam) — P3-K2: 10 is now mission 10 itself.
  * @property {MissionObjective[]} objectives - live view of the active
- *   mission's objectives (empty when current is 0 or 10).
+ *   mission's objectives (empty when current is 0 or 11).
  * @property {(dt: number, playerPos: {x: number, z: number}) => void} update
  *   Per-frame tick while playing: reach checks + survive timer (survive only
  *   ticks while the player is inside quarantine; leaving pauses it).
@@ -181,6 +195,12 @@ i18n.registerBundle({
     mission7_title: "Into the Swarm",
     mission8_title: "The Warden",
     mission9_title: "The Last Door",
+    mission10_title: "The Origin", // P3 §7.2 verbatim
+    // m10 dialogue lines — text §7.3 verbatim (dialogue.js owns m1..m9; this
+    // module registers the m10 set — see the header note).
+    m10_radio_line1: "There... that's the thing that started all of this.",
+    m10_radio_line2: "Kill it. Save every one of us.",
+    m10_you_line1: "One last job. For all of them.",
     item_supply: "Supply Pack",
     item_medicine: "Medicine Box",
     item_fuel: "Fuel Can",
@@ -194,7 +214,7 @@ i18n.registerBundle({
     obj_reach: "Reach the marker",
     obj_boss: "Kill the boss",
     obj_survive: "Survive: {n}/{need} s",
-    mission_progress: "MISSION {n}/9",
+    mission_progress: "MISSION {n}/10", // P3 §7.2: chain 9 → 10
     mission_complete_toast: "MISSION COMPLETE +{money}$",
     quota_counter: "🧟 {n}/{need}",
     quota_done_toast: "DISTRICT CLEARED",
@@ -211,6 +231,10 @@ i18n.registerBundle({
     mission7_title: "Vào Tâm Dịch",
     mission8_title: "Vệ Binh Cách Ly",
     mission9_title: "Cánh Cửa Cuối",
+    mission10_title: "Nguồn Gốc", // P3 §7.2 verbatim
+    m10_radio_line1: "Đó... đó là thứ đã bắt đầu tất cả.",
+    m10_radio_line2: "Diệt nó. Cứu tất cả chúng tôi.",
+    m10_you_line1: "Việc cuối cùng thôi. Vì tất cả bọn họ.",
     item_supply: "Gói Tiếp Tế",
     item_medicine: "Hộp Thuốc",
     item_fuel: "Can Xăng",
@@ -224,7 +248,7 @@ i18n.registerBundle({
     obj_reach: "Tới điểm đánh dấu",
     obj_boss: "Hạ boss",
     obj_survive: "Trụ lại: {n}/{need} s",
-    mission_progress: "NHIỆM VỤ {n}/9",
+    mission_progress: "NHIỆM VỤ {n}/10", // P3 §7.2: chain 9 → 10
     mission_complete_toast: "NHIỆM VỤ HOÀN THÀNH +{money}$",
     quota_counter: "🧟 {n}/{need}",
     quota_done_toast: "KHU ĐÃ SẠCH",
@@ -339,14 +363,25 @@ export const STORY_DIALOGUE = {
     ],
     done: [],
   },
+  // P3 §7.3 verbatim: 3 start lines, NO done lines (màn kết thay thoại done
+  // — P3-K4). Keys' EN/VI text lives in THIS module's bundle (§7.3).
+  m10: {
+    start: [
+      { speaker: "radio", key: "m10_radio_line1" },
+      { speaker: "radio", key: "m10_radio_line2" },
+      { speaker: "you", key: "m10_you_line1" },
+    ],
+    done: [],
+  },
 };
 
 // --- static data (docs/WORLD.md §11 POI table; docs/EXPANSION-P1.md §5.1.1) --
 
 /** Zombie types that feed a quota objective (decision K4). */
 const QUOTA_TYPES = { walker: true, runner: true, brute: true };
-/** Boss types that feed the "boss" objective (decision K4). */
-const BOSS_TYPES = { butcher: true, spitter: true, screamer: true, golem: true };
+/** Boss types that feed the "boss" objective (decision K4 + P3-K3/1:
+ *  "origin" lands m10's objective through the same "zombie-killed" path). */
+const BOSS_TYPES = { butcher: true, spitter: true, screamer: true, golem: true, origin: true };
 
 const INTERACT_RADIUS = 2; // §5.1.3: E works within 2 m
 const HINT_RADIUS = 3; // §5.1.3: "E — TƯƠNG TÁC" hint at 3 m
@@ -477,6 +512,17 @@ const MISSION_DEFS = [
     ],
     objectives: [{ type: "reach", target: "final-door" }],
   },
+  // P3 §3.7 (1): the FINAL mission — the Origin rises from the vault once
+  // this activates. main.js hears "mission-start" {index:10} → city.openVault()
+  // + spawnOriginInternal(); the boss objective completes via "zombie-killed"
+  // {type:"origin"} AND "origin-defeated" (P3-K3, both idempotent).
+  {
+    titleKey: "mission10_title",
+    district: "quarantine",
+    reward: 600,
+    gates: [],
+    objectives: [{ type: "boss" }],
+  },
 ];
 
 // --- factory ------------------------------------------------------------------
@@ -496,12 +542,12 @@ export function createMissions(busArg, city, economy, sceneArg, levelArg) {
     (city && (city.__level || city.level)) ||
     null;
 
-  /** Mission states: index 0 → m1 … 8 → m9. */
+  /** Mission states: index 0 → m1 … 9 → m10 (P3-K2). */
   const states = MISSION_DEFS.map(() => ({
     status: /** @type {"locked"|"active"|"done"} */ ("locked"),
     objectives: /** @type {MissionObjective[]} */ ([]),
   }));
-  let current = 0; // 1..9 active, 0 = not started, 10 = free-roam
+  let current = 0; // 1..10 active (P3-K2), 0 = not started, 11 = free-roam
 
   /** Per-district quota-done guard (§5.1.2 — exactly once per district). */
   const quotaDone = new Set();
@@ -595,7 +641,7 @@ export function createMissions(busArg, city, economy, sceneArg, levelArg) {
   }
 
   function currentObjectives() {
-    return current >= 1 && current <= 9 ? states[current - 1].objectives : [];
+    return current >= 1 && current <= 10 ? states[current - 1].objectives : [];
   }
 
   /** One "objective-progress" {mission, objective, done, need} on change. */
@@ -625,7 +671,7 @@ export function createMissions(busArg, city, economy, sceneArg, levelArg) {
 
   /** All objectives of the active mission done → complete + advance. */
   function checkMissionComplete() {
-    if (current < 1 || current > 9) return;
+    if (current < 1 || current > 10) return; // P3-K2: chain now 1..10
     const st = states[current - 1];
     for (let i = 0; i < st.objectives.length; i++) {
       if (!st.objectives[i].complete) return;
@@ -637,8 +683,8 @@ export function createMissions(busArg, city, economy, sceneArg, levelArg) {
     for (let g = 0; g < def.gates.length; g++) {
       emit("gate-open", { from: def.gates[g][0], to: def.gates[g][1] });
     }
-    if (index >= 9) {
-      current = 10; // free-roam
+    if (index >= MISSION_DEFS.length) {
+      current = MISSION_DEFS.length + 1; // 11 = free-roam (P3-K2)
       clearNearHints();
       refreshPoiVisibility();
       refreshBeacon();
@@ -655,7 +701,7 @@ export function createMissions(busArg, city, economy, sceneArg, levelArg) {
     near.clear();
   }
 
-  /** Activate mission `index` (1..9): fresh objectives + "mission-start". */
+  /** Activate mission `index` (1..10): fresh objectives + "mission-start". */
   function activateMission(index) {
     const def = MISSION_DEFS[index - 1];
     current = index;
@@ -930,8 +976,9 @@ export function createMissions(busArg, city, economy, sceneArg, levelArg) {
 
   /**
    * Visibility policy: a POI's pieces appear when its mission activates
-   * (`mission <= current`) and stay as world state afterwards (current = 10
-   * keeps machines lit). Collected ITEMS hide individually through their
+   * (`mission <= current`) and stay as world state afterwards (current = 11
+   * keeps machines lit — free-roam after the chain). Collected ITEMS hide
+   * individually through their
    * zero-scaled instance matrix — the shared InstancedMesh itself must stay
    * visible while sibling instances remain (a per-target toggle would hide
    * all three packs when one is picked up). Run-scoped on mission
@@ -974,7 +1021,7 @@ export function createMissions(busArg, city, economy, sceneArg, levelArg) {
 
   /** First unfinished position of the active mission (event-driven). */
   function beaconTarget() {
-    if (current < 1 || current > 9) return null;
+    if (current < 1 || current > 10) return null; // P3-K2: 1..10
     const st = states[current - 1];
     for (let i = 0; i < st.objectives.length; i++) {
       const o = st.objectives[i];
@@ -1020,7 +1067,7 @@ export function createMissions(busArg, city, economy, sceneArg, levelArg) {
   // --- bus handlers ------------------------------------------------------------
 
   function onZombieKilled(e) {
-    if (current < 1 || current > 9) return;
+    if (current < 1 || current > 10) return; // P3-K2: 1..10
     const d = e && e.detail ? e.detail : {};
     const type = d.type;
     if (!type) return;
@@ -1063,7 +1110,7 @@ export function createMissions(busArg, city, economy, sceneArg, levelArg) {
   }
 
   function onPress() {
-    if (current < 1 || current > 9) return;
+    if (current < 1 || current > 10) return; // P3-K2: 1..10
     // Freshness guard: update() drives the game — a press older than the
     // guard window comes from menus/pause/intro where the world is frozen.
     if (performance.now() - lastUpdateAt > PRESS_STALE_MS) return;
@@ -1124,7 +1171,7 @@ export function createMissions(busArg, city, economy, sceneArg, levelArg) {
       }
     }
 
-    if (current < 1 || current > 9) return;
+    if (current < 1 || current > 10) return; // P3-K2: 1..10
     const st = states[current - 1];
     const objs = st.objectives;
     for (let i = 0; i < objs.length; i++) {
@@ -1199,7 +1246,9 @@ export function createMissions(busArg, city, economy, sceneArg, levelArg) {
 
   function skipToMission(n) {
     const target = Math.round(Number(n));
-    if (!(target >= 1 && target <= 9)) return false;
+    if (!(target >= 1 && target <= 10)) return false; // P3-K2: skip 10 = m10
+    // (skip 10 arms m10; the world spawn of the Origin is main.js's job — it
+    // listens "mission-start" {index:10} → city.openVault() + spawn.)
     buildPois();
     for (let i = 1; i < target; i++) {
       const st = states[i - 1];
@@ -1234,7 +1283,7 @@ export function createMissions(busArg, city, economy, sceneArg, levelArg) {
 
   /** Force-complete the first unfinished objective of the active mission. */
   function completeObjective() {
-    if (current < 1 || current > 9) return false;
+    if (current < 1 || current > 10) return false; // P3-K2: 1..10
     const objs = states[current - 1].objectives;
     for (let i = 0; i < objs.length; i++) {
       const o = objs[i];
@@ -1269,7 +1318,7 @@ export function createMissions(busArg, city, economy, sceneArg, levelArg) {
   }
 
   function fillQuota() {
-    if (current < 1 || current > 9) return false;
+    if (current < 1 || current > 10) return false; // P3-K2: 1..10
     const objs = states[current - 1].objectives;
     for (let i = 0; i < objs.length; i++) {
       const o = objs[i];
@@ -1294,7 +1343,7 @@ export function createMissions(busArg, city, economy, sceneArg, levelArg) {
     }
     return {
       mission: current,
-      titleKey: current >= 1 && current <= 9 ? MISSION_DEFS[current - 1].titleKey : null,
+      titleKey: current >= 1 && current <= 10 ? MISSION_DEFS[current - 1].titleKey : null,
       quotaDone: quota ? quota.done : 0,
       quotaNeed: quota ? quota.need : 0,
       quotaDistrict: quota ? quota.district : null,
@@ -1312,8 +1361,29 @@ export function createMissions(busArg, city, economy, sceneArg, levelArg) {
 
   // --- listeners ---------------------------------------------------------------------
 
+  /**
+   * P3 §3.7 (3) / P3-K3 (2): "origin-defeated" → m10's boss objective. The
+   * PRIMARY path is "zombie-killed" {type:"origin"} via BOSS_TYPES; this
+   * listener is the belt-and-braces route from the spec. setProgress() blocks
+   * double-counting through its complete-guard, so firing both is safe. The
+   * payload is ignored (§7.1 — a debug-synthetic {debug:true} completes too).
+   */
+  function onOriginDefeated() {
+    if (current < 1 || current > 10) return; // P3-K2: 1..10
+    const objs = states[current - 1].objectives;
+    for (let i = 0; i < objs.length; i++) {
+      const o = objs[i];
+      if (o.type === "boss" && !o.complete) {
+        setProgress(o, 1);
+        break;
+      }
+    }
+    checkMissionComplete();
+  }
+
   B.addEventListener("zombie-killed", onZombieKilled);
   B.addEventListener("interact-press", onPress);
+  B.addEventListener("origin-defeated", onOriginDefeated);
 
   return {
     get current() {
