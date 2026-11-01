@@ -62,6 +62,15 @@
  * (combat owns audio); zombie.takeDamage() does NOT emit a hit-sound event —
  * this avoids 8 stacked sounds for one shotgun blast.
  *
+ * GUN GAME 2.0 P4 events (docs/EXPANSION-P4.md §8.1) — emitted/consumed by
+ * THIS module:
+ * - "save-request"      {reason: "mission-complete"|"wave-clear"|"player-died"|"ui-quit"|"story-start"|"debug"}
+ *                        gamestate (the 4 trigger listeners) + main.js
+ *                        ("story-start" before beginFreshStory) + debug API
+ *                        ("debug") → gamestate's own listener routes it to
+ *                        gamestate.saveDeps.saveNow(reason) (main.js assigns
+ *                        saveDeps right after createSave; null → no-op).
+ *
  * NOTE on user gestures: bus.dispatchEvent is SYNCHRONOUS, so calling
  * input.lockPointer() inside a "ui-*" listener still counts as user
  * activation for the Pointer Lock API.
@@ -182,6 +191,11 @@ export const bus = new EventTarget();
  *   bossesKilled = "zombie-killed" count with type in the boss set
  *   {butcher, spitter, screamer, golem, origin}. All counters reset in
  *   freshRun() (per-run semantics — P3-K11 frozen wording).
+ * @property {{saveNow: (reason: string) => {ok: boolean, ts?: number}} | null} saveDeps
+ *   GUN GAME 2.0 P4 (docs/EXPANSION-P4.md §3.2, P4-K1): save wiring assigned
+ *   by main.js right after createSave (`gamestate.saveDeps = { saveNow }`).
+ *   While null the "save-request" listener is a no-op — autosave silently
+ *   disabled. This module NEVER builds the snapshot itself: main.js owns it.
  */
 
 export function createGamestate(busArg, settings) {
@@ -465,6 +479,42 @@ export function createGamestate(busArg, settings) {
   B.addEventListener("zombie-killed", (e) => {
     const d = e && e.detail ? e.detail : {};
     if (d.type && BOSS_KILL_TYPES[d.type]) bossesKilled += 1;
+  });
+
+  // --- GUN GAME 2.0 P4 (docs/EXPANSION-P4.md §3.2): save wiring — Builder A ---
+  // ADDITIVE block only: pause-by-reason, run stats, ngPlus and every legacy
+  // listener above are untouched.
+  //
+  // gamestate.saveDeps is assigned by main.js right after createSave
+  // (`gamestate.saveDeps = { saveNow: save.saveNow }` — P4-K1/K19); while it
+  // is null the "save-request" listener below is a deliberate no-op.
+  gamestate.saveDeps = null;
+
+  /** Fire one save request; `reason` names the trigger (P4-K1). */
+  function requestSave(reason) {
+    B.dispatchEvent(new CustomEvent("save-request", { detail: { reason } }));
+  }
+
+  // The 4 autosave triggers. Registration order matters and is already right:
+  // createGamestate() runs BEFORE main.js registers its own "ui-quit" listener
+  // (main.js wires listeners after the factories), so on "ui-quit" this
+  // requestSave fires while the run state still qualifies for a snapshot
+  // ("paused"/"gameover" — §3.3), and on "player-died" it fires after the
+  // gameover listener above has flipped the state (snapshot still allowed —
+  // "lưu trước gameover" per P4-K1; score/kills/mission are unchanged by the
+  // flip). main.js's snapshot() returns null at endless / menu states, so
+  // wave-clears in Endless and quits from the menu no-op safely.
+  B.addEventListener("mission-complete", () => requestSave("mission-complete"));
+  B.addEventListener("wave-clear", () => requestSave("wave-clear"));
+  B.addEventListener("player-died", () => requestSave("player-died"));
+  B.addEventListener("ui-quit", () => requestSave("ui-quit"));
+
+  B.addEventListener("save-request", (e) => {
+    const deps = gamestate.saveDeps;
+    if (deps && typeof deps.saveNow === "function") {
+      const d = e && e.detail ? e.detail : {};
+      deps.saveNow(typeof d.reason === "string" && d.reason ? d.reason : "auto");
+    }
   });
 
   return gamestate;

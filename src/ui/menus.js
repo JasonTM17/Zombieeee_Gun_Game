@@ -5,7 +5,11 @@
  * in src/core/i18n.js) may be registered via i18n.registerBundle().
  *
  * Screens (show(name) with name in):
- * - "main":     PLAY / CHƠI TỰ DO / SETTINGS / HOW TO PLAY.
+ * - "main":     TIẾP TỤC (GUN GAME 2.0 P4 §3.5 — visible ONLY while
+ *               services?.save?.hasSave(), first button above PLAY) / PLAY /
+ *               CHƠI TỰ DO / SETTINGS / HOW TO PLAY.
+ *               TIẾP TỤC → emit "ui-continue" (P4-K2: main.js's menu-gated
+ *               listener restores the run from "gungame.save.v1").
  *               PLAY → emit "ui-play" — P1 meaning (docs/EXPANSION-P1.md
  *               §5.5): start the STORY (intro slides → mission 1; main.js
  *               wires gamestate.startStory() + dialogue.showIntro()).
@@ -43,8 +47,9 @@
  *
  * Implementation notes:
  * - Extra i18n keys registered here (merged, EN + VI): tagline, startHint,
- *   settingsTip, pausedHint, and the P1 key freePlay ("Free Roam" /
- *   "CHƠI TỰ DO" — docs/EXPANSION-P1.md §5.5.2).
+ *   settingsTip, pausedHint, the P1 key freePlay ("Free Roam" /
+ *   "CHƠI TỰ DO" — docs/EXPANSION-P1.md §5.5.2) and the GUN GAME 2.0 P4 key
+ *   continueGame ("Continue" / "TIẾP TỤC" — §8.2).
  * - The language button calls i18n.setLang(next) AND settings.set({lang})
  *   (persistence), re-emits "settings-changed" {patch:{lang}} and re-renders
  *   every bound label so the switch is live on all screens.
@@ -55,6 +60,12 @@
  * @param {{t: Function, registerBundle: Function, setLang: Function, getLang: Function}} i18n
  *   The i18n module namespace (see src/core/i18n.js); the language button also
  *   calls i18n.setLang(lang) alongside settings.set({lang}).
+ * @param {{save?: {hasSave: () => boolean}, profile?: Object, achievements?: Object} | null} [services]
+ *   GUN GAME 2.0 P4 (§3.5, P4-K20): optional services bag main.js passes
+ *   (`{ save, profile, achievements }`). `save.hasSave()` drives the TIẾP TỤC
+ *   button's visibility (re-evaluated every time the main screen is shown, so
+ *   clearSave()/a new save refresh it). Later P4 screens read the other
+ *   services; a missing bag degrades gracefully, never throws.
  * @returns {Menus}
  */
 
@@ -72,6 +83,8 @@ const MENU_BUNDLE = {
     pausedHint: "Take a breath — the horde is still out there.",
     // P1 (docs/EXPANSION-P1.md §5.5.2): the free-roam start button.
     freePlay: "Free Roam",
+    // GUN GAME 2.0 P4 (§8.2): the TIẾP TỤC button (visible while a save exists).
+    continueGame: "Continue",
   },
   vi: {
     tagline: "Gắn đạn. Ngắm bắn. Sống sót qua đêm.",
@@ -80,6 +93,8 @@ const MENU_BUNDLE = {
     pausedHint: "Hít một hơi thật sâu — bầy zombie vẫn chờ ngoài kia.",
     // P1 (docs/EXPANSION-P1.md §5.5.2): the free-roam start button.
     freePlay: "CHƠI TỰ DO",
+    // GUN GAME 2.0 P4 (§8.2): the TIẾP TỤC button (visible while a save exists).
+    continueGame: "TIẾP TỤC",
   },
 };
 
@@ -107,7 +122,7 @@ function fmtInt(n) {
   return String(Math.max(0, Math.round(Number(n) || 0)));
 }
 
-export function createMenus(container, bus, settings, i18n) {
+export function createMenus(container, bus, settings, i18n, services) {
   if (!container || typeof container.appendChild !== "function") {
     throw new Error("createMenus: container (#ui) is required");
   }
@@ -146,6 +161,12 @@ export function createMenus(container, bus, settings, i18n) {
   make("h1", "game-title", pMain).textContent = "GUN GAME";
   bind(make("p", "tagline", pMain), "tagline");
   const mainNav = make("div", "nav", pMain);
+  // GUN GAME 2.0 P4 (§3.5): TIẾP TỤC — FIRST node of the nav (above CHƠI),
+  // plain "btn" class (CHƠI keeps primary). Emits "ui-continue" (P4-K2: from
+  // the menu main.js's restore listener runs; the P3 ending listener of the
+  // same name is a harmless no-op there — removePause("ending") no-ops).
+  // Visibility is driven by services.save.hasSave() — see refreshContinue().
+  const continueBtn = button("continueGame", "btn", () => emitUi("ui-continue"), mainNav);
   button("play", "btn btn-primary", () => emitUi("ui-play"), mainNav);
   // P1 "CHƠI TỰ DO" right below PLAY (docs/EXPANSION-P1.md §5.5.2): free-roam
   // start — no intro slides, mission 1 active immediately (main.js wires it).
@@ -310,11 +331,27 @@ export function createMenus(container, bus, settings, i18n) {
     showScreen("howto");
   }
 
+  // GUN GAME 2.0 P4 (§3.5): the TIẾP TỤC button exists only while a readable
+  // save is present. services.save.hasSave() runs through the corruption guard
+  // (a broken key reads as "no save"), so the button can never lead into a
+  // dead restore. Re-evaluated on every show("main") — one localStorage read
+  // per menu open, never per frame — so clearSave()/a fresh autosave refresh
+  // it the next time the menu opens. style.css has no global ".hidden" rule
+  // (only ".hud-root.hidden"), so the inline display toggle does the real
+  // hiding; the class rides along for a future stylesheet rule.
+  function refreshContinue() {
+    const save = services && services.save;
+    const has = !!(save && typeof save.hasSave === "function" && save.hasSave());
+    continueBtn.classList.toggle("hidden", !has);
+    continueBtn.style.display = has ? "" : "none";
+  }
+
   function showScreen(name) {
     for (const key in screens) {
       screens[key].classList.toggle("visible", key === name);
     }
     if (name === "settings") refreshSettingsUI();
+    if (name === "main") refreshContinue(); // §3.5: re-check hasSave each open
   }
 
   function applyTexts() {
@@ -326,6 +363,7 @@ export function createMenus(container, bus, settings, i18n) {
 
   applyTexts();
   refreshLangButton();
+  refreshContinue(); // initial TIẾP TỤC state (hidden when no save / no services)
 
   return { show: showScreen };
 }
