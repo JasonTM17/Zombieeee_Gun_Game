@@ -4,7 +4,7 @@
  * preferences live here.
  *
  * Defaults:
- *   { sensitivity: 1, volume: 0.8, lang: "en", highScore: 0 }
+ *   { sensitivity: 1, volume: 0.8, lang: "en", highScore: 0, difficulty: "normal" }
  *
  * Every read path (load()/get()) must SAFE-MERGE over the defaults:
  * missing or wrong-typed fields fall back to the default, unknown fields are
@@ -13,6 +13,7 @@
  *   volume:      number in 0..1
  *   lang:        "en" | "vi"
  *   highScore:   non-negative integer
+ *   difficulty:  "easy" | "normal" | "hard" (GUN GAME 2.0 P4 — P4-K18)
  * Corrupt/missing localStorage entries must never throw — return defaults.
  *
  * @returns {SettingsStore}
@@ -24,6 +25,8 @@
  * @property {number} volume - master audio volume, 0..1, default 0.8.
  * @property {"en"|"vi"} lang - UI language, default "en".
  * @property {number} highScore - best score so far, default 0.
+ * @property {"easy"|"normal"|"hard"} difficulty - zombie hp/dmg/spawn-density
+ *   preset, default "normal" (GUN GAME 2.0 P4, docs/EXPANSION-P4.md P4-K18).
  */
 
 /**
@@ -46,6 +49,7 @@ const DEFAULTS = Object.freeze({
   volume: 0.8,
   lang: "en",
   highScore: 0,
+  difficulty: "normal", // GUN GAME 2.0 P4 (P4-K18)
 });
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -71,6 +75,11 @@ function sanitize(raw) {
     }
     if (typeof o.highScore === "number" && Number.isFinite(o.highScore) && o.highScore >= 0) {
       out.highScore = Math.floor(o.highScore);
+    }
+    // GUN GAME 2.0 P4 (P4-K18): only the three frozen presets pass; anything
+    // else (missing / typo / old save without the field) → default "normal".
+    if (o.difficulty === "easy" || o.difficulty === "normal" || o.difficulty === "hard") {
+      out.difficulty = o.difficulty;
     }
   }
   return out;

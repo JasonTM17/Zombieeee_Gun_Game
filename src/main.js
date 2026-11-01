@@ -166,7 +166,48 @@
  *   clamps 0..10 (11 = free-roam). The m9 showOutro block is GONE (P3-K4 —
  *   the real ending replaced it).
  * - Debug API (§6.4): spawnOrigin(), damageOrigin(n), originState(),
- *   skipToEnding(); getState() += { origin, ngPlus }.
+ * skipToEnding(); getState() += { origin, ngPlus }.
+ *
+ * GUN GAME 2.0 P4 wiring (docs/EXPANSION-P4.md §7 — everything below is
+ * additive; the pre-existing creation order keeps its relative sequence):
+ * - BOOTSTRAP (P4-K19): after `ending` the order is profile → save →
+ *   gamestate.saveDeps = { saveNow } → endless → achievements → menus (menus
+ *   MOVED down here and gains the 5th `services` argument
+ *   { save, profile, achievements }). Nothing between the old menus position
+ *   and here reads `menus` at evaluation time (applyScreenState only runs on
+ *   events / after the bootstrap), so the move is side-effect free.
+ * - BOOT-SEED (P4-K19): one "settings-changed" {patch:{difficulty}} fires
+ *   right after waves creation so its difficulty cache starts correct;
+ *   main's own cache is seeded directly from settings (the event fires before
+ *   main's listener is registered).
+ * - DIFFICULTY (P4-K15): main caches {hpMul, dmgMul, densityMul} from
+ *   "settings-changed" and shapes its OWN spawn paths — event runners
+ *   (spawnEventRunner), debug spawnZombie, the debug/m8 boss
+ *   (spawnBossInternal) and the ORIGIN (spawnOriginInternal: the instance
+ *   already bakes the NG+ ×1.25 at construction, main multiplies the
+ *   difficulty preset on top — same value as 3000 × hpMul × ngPlus).
+ * - SAVE (§3.1-3.4): buildSaveSnapshot() feeds createSave; the gamestate 4
+ *   triggers ("mission-complete"/"wave-clear"/"player-died"/"ui-quit") reach
+ *   it through gamestate.saveDeps. beginFreshStory() calls
+ *   save.saveNow("story-start") FIRST (P4-K1 trigger 5). "ui-continue" from
+ *   the menu (P4-K2) restores §3.4: money, weapons.applySaveState,
+ *   missions.skipToMission / begin, zone + gate unlock, story re-arm,
+ *   startStory()+beginPlay() (intro slides dropped by dialogue.hide()).
+ * - ENDLESS (§5.4): "ui-endless" → storyMode(false) → ngPlus=false →
+ *   freshRun(false) → teleportDistrictInternal("quarantine") → endless.start()
+ *   → gamestate.start() → lockPointer. endless.update(dt) + profile.update(dt)
+ *   run in the playing branch; hudExtras gain `endless` + `cam` (P4-K12/K16).
+ *   "endless-over" → menus.show("endlessOver") (P4-K13). ui-quit/ui-restart
+ *   drop the mode first (endless.stop() — idempotent), and an `endlessRun`
+ *   guard keeps the endless gameover frame from autosaving a dead run as a
+ *   story save (the §3.3 state gate alone lets "gameover" through).
+ * - UPGRADES (P4-K6): NG+ / NG+ death-restart capture owned weapons'
+ *   upgrade levels via weapons.getStats() BEFORE the reset and restore them
+ *   with weapons.setUpgrades() after the re-own (same road as the owned ids).
+ * - COMBAT (§7.2): combat.js emits "damage-dealt" per landed pellet (HUD
+ *   floating numbers); DEBUG (§7.3): saveNow/hasSave/endlessState/
+ *   achievementsState/setDifficulty + getState() += {save, endless,
+ *   difficulty}.
  */
 
 import * as THREE from "three";
@@ -197,8 +238,12 @@ import { createShopUI } from "./ui/shop.js";
 import { createMenus } from "./ui/menus.js";
 import { createDialogue } from "./ui/dialogue.js";
 import { createMap } from "./ui/map.js"; // NIGHT 30 P2 §8.1
-import { createOrigin } from "./zombies/origin.js"; // NIGHT 30 P3 §3.1
+import { createOrigin, ORIGIN_MAX_HP } from "./zombies/origin.js"; // NIGHT 30 P3 §3.1
 import { createEnding } from "./ui/ending.js"; // NIGHT 30 P3 §4.1
+import { createSave } from "./systems/save.js"; // GUN GAME 2.0 P4 §3.1
+import { createEndless } from "./systems/endless.js"; // GUN GAME 2.0 P4 §5.2
+import { createProfile } from "./systems/profile.js"; // GUN GAME 2.0 P4 §5.3
+import { createAchievements } from "./systems/achievements.js"; // GUN GAME 2.0 P4 §6.1
 import { bus, createGamestate } from "./systems/gamestate.js";
 import { createDebugHook } from "./core/debug.js";
 
@@ -300,13 +345,23 @@ const missions = createMissions(bus, city, economy, scene, level);
 // optional 5th argument — district spawn pools, 60-alive cap, density
 // multipliers (legacy pool when absent, which the debug harness relies on).
 const waves = createWaves(scene, level, bus, zones, city);
+// GUN GAME 2.0 P4 (P4-K19 boot-seed): seed waves' difficulty cache BEFORE the
+// first frame — settings loaded above carries the persisted preset. Only
+// waves listens "settings-changed" at this point (menus is created later,
+// P4-K19; main seeds its own cache directly at declaration).
+bus.dispatchEvent(
+  new CustomEvent("settings-changed", {
+    detail: { patch: { difficulty: settings.get().difficulty } },
+  })
+);
 
 // --- 14-16. hud + menus + gamestate ---------------------------------------------
 const hud = createHud(uiRoot, bus, audio, i18n);
 // EXPANSION B3: the shop overlay (DOM inside #ui, event-driven). After hud so
 // its overlay node sits after the HUD root in the DOM; it owns its z-index.
 const shopUI = createShopUI(uiRoot, bus, economy, shop, i18n);
-const menus = createMenus(uiRoot, bus, settings, i18n);
+// GUN GAME 2.0 P4 (P4-K19): createMenus MOVED below the P4 modules — it now
+// takes the 5th `services` argument { save, profile, achievements }.
 const gamestate = createGamestate(bus, settings);
 // NIGHT 30 P1 (§5.6.2.1): dialogue after menus — the bottom dialogue box, the
 // intro slides and the outro overlay (self-styled inside #ui).
@@ -357,6 +412,153 @@ const map = createMap(uiRoot, bus, city);
 // three panel buttons re-emit "ui-continue" / "ui-ngplus" / "ui-quit" (main
 // owns the responses below).
 const ending = createEnding(uiRoot, bus, gamestate, audio, i18n, camera);
+
+// --- GUN GAME 2.0 P4 bootstrap (P4-K19, order FROZEN) -------------------------
+// profile → save → saveDeps → endless → achievements → menus (moved here with
+// the 5th services bag). Every dependency already exists: waves (302),
+// gamestate (310), events (322), weapons (250). buildSaveSnapshot is a
+// hoisted declaration in the P4 section below — valid at createSave time.
+const profile = createProfile(bus);
+const save = createSave(bus, { snapshot: buildSaveSnapshot });
+gamestate.saveDeps = { saveNow: save.saveNow }; // P4-K1: triggers → saveNow
+const endless = createEndless(bus, { waves, events, gamestate, profile });
+const achievements = createAchievements(bus, { gamestate, endless, weapons });
+const menus = createMenus(uiRoot, bus, settings, i18n, {
+  save,
+  profile,
+  achievements,
+});
+
+// --- GUN GAME 2.0 P4 section (§3.3/§3.4/§5.4/P4-K13/P4-K15) -------------------
+
+// True from "ui-endless" until the next non-endless run start / quit. The
+// §3.3 state gate alone lets the endless GAMEOVER frame through ("gameover"
+// is a legal snapshot state, and endless.isActive() is already false by
+// then) — a quit from the SINH TỐN KẾT THÚC screen would otherwise write the
+// dead endless run as a story continue-save. This flag closes that hole
+// (P4-K1's "chặn save ở endless", gameover edge).
+let endlessRun = false;
+
+/**
+ * §3.3: the FULL SaveData for save.js (normalized again by save.js before the
+ * write). Returns null — a saveNow no-op — when Endless is live/just over, or
+ * when the state is not a live run ("menu"/"intro": a quit or story-start
+ * from there must never overwrite the previous save).
+ * @returns {import("./systems/save.js").SaveData|null}
+ */
+function buildSaveSnapshot() {
+  if (endless.isActive() || endlessRun) return null; // P4-K1: no saves in Endless
+  const st = gamestate.state;
+  if (st !== "playing" && st !== "paused" && st !== "gameover") return null;
+  // P4-K22 mission clamp: 1..10 stay; 11 (chain done) → 10 (resume = re-fight
+  // the Origin); 0 (never started) → 0 (restore plays from m1).
+  let mission = Math.round(Number(missions.current));
+  if (!Number.isFinite(mission) || mission < 0) mission = 0;
+  if (mission > 10) mission = 10;
+  const weaponsSave = [];
+  for (let i = 0; i < weapons.list.length; i++) {
+    const w = weapons.list[i];
+    const u = w.upgrades || { dmg: 0, mag: 0, rl: 0 };
+    weaponsSave.push({
+      name: w.name,
+      owned: w.owned === true,
+      // P4-K3: Infinity (pistol) → null; every other reserve a rounded ≥ 0.
+      reserve: Number.isFinite(w.reserve)
+        ? Math.max(0, Math.round(w.reserve))
+        : null,
+      upgrades: { dmg: u.dmg | 0, mag: u.mag | 0, rl: u.rl | 0 },
+    });
+  }
+  const objs = Array.isArray(missions.objectives) ? missions.objectives : [];
+  const objectives = [];
+  for (let i = 0; i < objs.length; i++) {
+    const o = objs[i];
+    objectives.push({
+      type: o.type,
+      district: o.district,
+      done: o.done,
+      need: o.need,
+      complete: o.complete,
+    });
+  }
+  const s = settings.get();
+  return {
+    v: 1, // save.js normalizeSave re-stamps + clamps every field
+    storyRun: storyRun === true,
+    ngPlus: gamestate.ngPlus === true,
+    mission,
+    // P4-K5: debug/verification only — restore replays via skipToMission.
+    objectivesSnapshot: { state: missions.getState(), objectives },
+    money: economy.get(),
+    weapons: weaponsSave,
+    unlockedDistricts: reachableDistricts("safehouse"),
+    currentDistrict: city.districtAt(player.position.x, player.position.z),
+    wave: gamestate.wave,
+    score: gamestate.score,
+    highScore: s.highScore,
+    difficulty: s.difficulty,
+  };
+}
+
+/** §7.3: a FRESH {active, wave, score} clone (endless.snapshot() reuses one
+ * scratch object — the debug API and getState() must hand out copies). */
+function endlessSnapshotFresh() {
+  const s = endless.snapshot();
+  return { active: s.active, wave: s.wave, score: s.score };
+}
+
+// §5.4 / P4-K14 — start Endless from the SINH TỒN button, order FROZEN:
+// story off → ngPlus off → clean world → quarantine teleport → endless.start()
+// (sets waves mode) → playing → pointer lock. missions stay reset (tracker
+// hidden) and events.update keeps running (the bloodmoon machine needs it).
+bus.addEventListener("ui-endless", () => {
+  endlessRun = true;
+  storyMode(false);
+  gamestate.ngPlus = false;
+  freshRun(false);
+  teleportDistrictInternal("quarantine");
+  endless.start();
+  gamestate.start();
+  input.lockPointer();
+});
+
+// P4-K13: the over screen covers the gameover panel — this listener is
+// registered AFTER gamestate's gameover listener (createGamestate ran
+// earlier), so the last menus.show() of the "player-died" dispatch wins.
+bus.addEventListener("endless-over", () => {
+  menus.show("endlessOver");
+});
+
+// P4-K15: main's difficulty preset for its OWN spawn paths (event runners,
+// debug spawns, the debug/m8 boss, the Origin). Same table as waves.js
+// DIFFICULTY_MULTS — frozen §6.4. Seeded directly from settings (the
+// boot-seed event fired before this listener existed).
+const MAIN_DIFFICULTY = {
+  easy: { hpMul: 0.75, dmgMul: 0.7, densityMul: 0.8 },
+  normal: { hpMul: 1, dmgMul: 1, densityMul: 1 },
+  hard: { hpMul: 1.35, dmgMul: 1.3, densityMul: 1.2 },
+};
+const MAIN_DIFF_DEFAULT = MAIN_DIFFICULTY.normal;
+let mainDiff = MAIN_DIFFICULTY[settings.get().difficulty] || MAIN_DIFF_DEFAULT;
+
+/**
+ * Shape one freshly created unit on main's spawn paths — identical rules to
+ * waves.js applyDifficulty (P4-K15): regular hp ×hpMul; boss maxHp ×hpMul
+ * (hp reset to it); dmg ×dmgMul when numeric; speed untouched. Normal is an
+ * exact no-op so the pre-P4 paths stay byte-identical.
+ * @param {import("./zombies/zombie.js").Zombie} z
+ * @param {boolean} isBoss
+ */
+function applyDifficultyTo(z, isBoss) {
+  if (!z || mainDiff === MAIN_DIFF_DEFAULT) return;
+  if (isBoss) {
+    z.maxHp = Math.round(z.maxHp * mainDiff.hpMul);
+    z.hp = z.maxHp;
+  } else {
+    z.hp = Math.round(z.hp * mainDiff.hpMul);
+  }
+  if (typeof z.dmg === "number") z.dmg = z.dmg * mainDiff.dmgMul;
+}
 
 // --- bus wiring -------------------------------------------------------------------
 
@@ -656,6 +858,16 @@ function freshRun(keepStoryProgress) {
   bus.dispatchEvent(
     new CustomEvent("ng-plus", { detail: { active: gamestate.ngPlus === true } })
   );
+  // GUN GAME 2.0 P4 (P4-K15): waves.reset() likewise cleared its DIFFICULTY
+  // cache back to normal — re-arm it from the persisted settings, mirroring
+  // the ng-plus re-emit above. Without this, the preset chosen in the menu
+  // would silently revert to normal after the first freshRun. (The boot-seed
+  // at waves creation covers only the pre-first-run state, P4-K19.)
+  bus.dispatchEvent(
+    new CustomEvent("settings-changed", {
+      detail: { patch: { difficulty: settings.get().difficulty } },
+    })
+  );
   if (keepStoryProgress && missions.current > 6) {
     // Past mission 6 the interiors belong to the run — unseal again (the
     // unlockForWave path is the same one mission 6's completion used).
@@ -709,6 +921,11 @@ function dialogueLines(kind, index) {
  * after them). NIGHT 30 P3 (§6.3): a fresh STORY start drops the NG+ rule
  * BEFORE freshRun so its "ng-plus" re-emit carries {active:false} (P3-K9). */
 function beginFreshStory() {
+  // GUN GAME 2.0 P4 (P4-K1): autosave trigger 5 — snapshot the run being
+  // replaced BEFORE any reset (no-op from "menu": buildSaveSnapshot returns
+  // null outside a live run).
+  save.saveNow("story-start");
+  endlessRun = false; // a story start is never an endless run
   storyMode(false); // §5.6.4 order: {active:false} → zones.reset → missions.reset → {active:true}
   gamestate.ngPlus = false; // P3-K9: fresh story = base rules
   freshRun(false); // zones.reset() + closeAllCityGates() + openVault(false) + missions.reset() inside
@@ -750,6 +967,16 @@ bus.addEventListener("ui-play", () => {
     // same road beginNGPlus() uses; the plain story keep — P1 §5.6.3 — keeps
     // only money + missions and is left untouched).
     const owned = gamestate.ngPlus === true ? shop.owned() : null;
+    // GUN GAME 2.0 P4 (P4-K6): NG+ death-restart keeps the UPGRADE LEVELS too
+    // — capture via getStats() BEFORE weapons.reset() zeroes them.
+    const ownedUpg = [];
+    if (owned) {
+      for (let i = 0; i < owned.length; i++) {
+        const st = weapons.getStats(owned[i]);
+        if (st) ownedUpg.push({ name: owned[i], u: st.upgrades });
+      }
+    }
+    endlessRun = false; // any ui-play is a fresh non-endless run
     freshRun(true);
     storyMode(true); // re-assert (idempotent) after the zones.reset above
     if (owned) {
@@ -759,6 +986,11 @@ bus.addEventListener("ui-play", () => {
         const w = weapons.list.find((x) => x.name === owned[i]);
         if (w) w.owned = true;
       }
+      // P4-K6: restore the captured levels (setUpgrades clamps + applies the
+      // effective damage/magSize in one call).
+      for (let i = 0; i < ownedUpg.length; i++) {
+        weapons.setUpgrades(ownedUpg[i].name, ownedUpg[i].u);
+      }
     }
     gamestate.start(); // → playing directly
     reAnnounceMission();
@@ -766,6 +998,7 @@ bus.addEventListener("ui-play", () => {
     // PLAY AGAIN after a FREE-ROAM death (§5.6.3 "từ CHƠI TỰ DO": clean reset
     // like before) — free replay, no intro slides, mission 1 re-activated.
     storyMode(false);
+    endlessRun = false; // any ui-play is a fresh non-endless run
     freshRun(false);
     storyRun = false;
     keepStory = false;
@@ -786,6 +1019,7 @@ bus.addEventListener("ui-play-free", () => {
   // the re-emit inside carries {active:false} (P3-K9).
   storyMode(true);
   gamestate.ngPlus = false;
+  endlessRun = false; // any ui-play is a fresh non-endless run
   freshRun(false);
   storyRun = false;
   keepStory = false;
@@ -798,11 +1032,19 @@ bus.addEventListener("ui-resume", () => {
   input.lockPointer();
 });
 bus.addEventListener("ui-restart", () => {
+  // GUN GAME 2.0 P4: a pause-menu RESTART inside an Endless run must drop the
+  // mode too (waves.reset() inside freshRun() flips waves back to "story",
+  // but endless would stay active — its score machine and the HUD chips would
+  // leak into the restarted run). Idempotent when not active.
+  endless.stop();
+  endlessRun = false;
   freshRun();
   gamestate.restart();
   input.lockPointer();
 });
 bus.addEventListener("ui-quit", () => {
+  endless.stop(); // GUN GAME 2.0 P4 (P4-K13): FIRST line — idempotent when not active
+  endlessRun = false; // (the gamestate autosave trigger already fired before this)
   freshRun();
   gamestate.toMenu();
 });
@@ -822,11 +1064,79 @@ bus.addEventListener("ui-continue", () => {
   input.lockPointer();
 });
 
+// --- GUN GAME 2.0 P4 (P4-K2): TIẾP TỤC — restore path, §3.4 ---------------------
+// A SECOND "ui-continue" listener, registered right after the P3 one. The P3
+// listener is a harmless no-op from the menu (removePause("ending") when the
+// reason is unset). Gate: menu state + a readable save (readSave runs the
+// corruption guard, so a broken key early-returns here too).
+bus.addEventListener("ui-continue", () => {
+  if (gamestate.state !== "menu" || !save.hasSave()) return;
+  const data = save.readSave();
+  if (!data) return; // corrupted between the two reads (P4-K2 edge)
+
+  // §3.4 — the 10 steps, in order:
+  gamestate.ngPlus = data.ngPlus === true; // 2 — BEFORE freshRun (re-emit carries the right price)
+  endlessRun = false; // 3 is a non-endless world
+  freshRun(false); // 3 — clean world: economy 0, weapons reset, gates closed,
+  //                // vault closed, missions reset, zones locked
+  economy.add(data.money | 0); // 4
+  weapons.applySaveState(data.weapons || []); // 5 (Builder B — §4.3)
+  // 6 — mission chain; restore avoids the briefing dialogue (P4-K22): the
+  // suppressStartDialogue flag covers BOTH branches (skipToMission's
+  // mission-start AND missions.begin()'s m1 briefing — showing a briefing
+  // over the menu only for it to be hidden by step 10's hide() would also
+  // strand main's dialogue-queue busy flag).
+  suppressStartDialogue = true;
+  if (data.mission >= 1 && data.mission <= 10) {
+    missions.skipToMission(data.mission); // m8 boss / m10 vault+Origin side effects included (P4-K22)
+  } else {
+    missions.begin(); // mission 0 → play from m1 (P4-K22)
+  }
+  suppressStartDialogue = false;
+  if (data.mission > 6) zones.unlockForWave(Number.MAX_SAFE_INTEGER); // 7 — quarantine interiors
+  // 8 — re-open every gate on the BFS route to each saved unlocked district.
+  const districts = Array.isArray(data.unlockedDistricts)
+    ? data.unlockedDistricts
+    : [];
+  for (let i = 0; i < districts.length; i++) {
+    const id = districts[i];
+    if (id === "safehouse") continue;
+    const route = districtRoute("safehouse", id);
+    if (!route) continue; // unreachable (graph changed) — skip silently
+    for (let g = 0; g < route.length; g++) {
+      city.setGateOpen(route[g].from, route[g].to, true);
+    }
+  }
+  storyRun = true; // 9 — the restored run is story-shaped (PLAY semantics)
+  keepStory = false;
+  storyMode(true); // re-arm the zones story-guard after freshRun above
+  // 10 — startStory() flips to "intro" (its state-changed emit calls
+  // dialogue.showIntro() synchronously) then beginPlay() returns to playing;
+  // dialogue.hide() drops the slides + their onDone before missions could be
+  // re-begun. resetDialogueQueue() keeps main's queue flags consistent with
+  // the hide (same pair as freshRun — a dropped onDone must not strand busy).
+  gamestate.startStory();
+  gamestate.beginPlay();
+  dialogue.hide();
+  resetDialogueQueue();
+  gamestate.score = data.score | 0;
+  gamestate.wave = data.wave | 0; // informational — the director restarts at wave 1 (P4-K4)
+  input.lockPointer();
+});
+
 /** NEW GAME+ (P3-K15): keep MONEY + OWNED GUNS + settings, reset the world
  * and the mission chain back to m1, arm the ×1.25 hp / ×1.10 speed rule. */
 function beginNGPlus() {
   const owned = shop.owned(); // capture the ids BEFORE shop.reset()
+  // GUN GAME 2.0 P4 (P4-K6): capture the upgrade levels too — freshRun(true)
+  // below runs weapons.reset() which zeroes them.
+  const ownedUpg = [];
+  for (let i = 0; i < owned.length; i++) {
+    const st = weapons.getStats(owned[i]);
+    if (st) ownedUpg.push({ name: owned[i], u: st.upgrades });
+  }
   storyMode(false);
+  endlessRun = false; // NG+ is a story-shaped run, never endless
   freshRun(true); // economy holds (story-keep road, §5.6.3) + ending.hide()
   storyRun = true; // death-restart of NG+ keeps the money
   keepStory = false;
@@ -836,6 +1146,11 @@ function beginNGPlus() {
     // the shop only mirrors it. Match by catalog id ("smg"|"sniper"|…).
     const w = weapons.list.find((x) => x.name === owned[i]);
     if (w) w.owned = true;
+  }
+  // P4-K6: restore the captured levels (setUpgrades clamps 0..3 + applies
+  // the effective damage/magSize).
+  for (let i = 0; i < ownedUpg.length; i++) {
+    weapons.setUpgrades(ownedUpg[i].name, ownedUpg[i].u);
   }
   missions.reset(); // freshRun(true) skipped it — the chain restarts at m1
   closeAllCityGates(); // freshRun(true) skipped it
@@ -938,10 +1253,20 @@ bus.addEventListener("mission-complete", (e) => {
 });
 
 // Live volume from the settings screen (menus already persisted it).
+// GUN GAME 2.0 P4 (P4-K15 §7.1.6): the difficulty preset rides the same
+// event — main caches it for its own spawn paths (waves.js caches its own).
 bus.addEventListener("settings-changed", (e) => {
   const patch = e && e.detail ? e.detail.patch : null;
   if (patch && Object.prototype.hasOwnProperty.call(patch, "volume")) {
     audio.setVolume(patch.volume);
+  }
+  if (
+    patch &&
+    (patch.difficulty === "easy" ||
+      patch.difficulty === "normal" ||
+      patch.difficulty === "hard")
+  ) {
+    mainDiff = MAIN_DIFFICULTY[patch.difficulty];
   }
 });
 
@@ -1003,6 +1328,8 @@ const hudExtrasScratch = {
   mission: null, // NIGHT 30 P2 §8.4 (P2-K13): {x, z} | null
   event: null, // NIGHT 30 P2 §8.4: {type, x, z} | null (bloodmoon → null: the
   //               strip marker needs finite coords, hud.readExtras skips null)
+  endless: null, // GUN GAME 2.0 P4 (P4-K12): {active, wave, score} | null
+  cam: null, // GUN GAME 2.0 P4 (P4-K16): the camera for the floating numbers
 };
 const hudBossScratch = { position: null, hp: 0, maxHp: 0, type: "" };
 const hudMissionScratch = { x: 0, z: 0 }; // reused — zero per-frame alloc
@@ -1108,6 +1435,11 @@ function hudExtras() {
   } else {
     hudExtrasScratch.event = null;
   }
+  // GUN GAME 2.0 P4 (P4-K12/K16): the endless chip source + the camera the
+  // HUD projects the floating damage numbers through. Both are plain ref
+  // assignments (zero-alloc — endless.snapshot() reuses its own scratch).
+  hudExtrasScratch.endless = endless.isActive() ? endless.snapshot() : null;
+  hudExtrasScratch.cam = camera;
   return hudExtrasScratch;
 }
 
@@ -1171,6 +1503,8 @@ function frame() {
     particles.update(dt);
     atmosphere.update(dt, player.position); // P1 §5.7: moon shadow follows
     gamestate.update(dt);
+    endless.update(dt); // GUN GAME 2.0 P4 (§5.4): bloodmoon retry machine (playing only → pause freezes it)
+    profile.update(dt); // P4-K21: playtimeSec tick (playing only — pause/menu excluded)
     hud.update(player, weapons.getState(), gamestate, hudExtras());
     // NIGHT 30 P2 §8.2: the M overlay repaints at 10 Hz (map.js also paints
     // itself immediately on every open/toggle).
@@ -1345,6 +1679,7 @@ function spawnEventRunner(x, z) {
     }
   }
   const zombie = new Zombie(scene, "runner", tmpPos.set(px, 0, pz), bus);
+  applyDifficultyTo(zombie, false); // GUN GAME 2.0 P4 (P4-K15): difficulty shape
   debugZombies.push(zombie);
   bus.dispatchEvent(new CustomEvent("zombie-spawned", { detail: { zombie } }));
   return zombie;
@@ -1395,6 +1730,7 @@ function spawnBossInternal(type, inFront) {
     }
   }
   const boss = new Ctor(scene, Math.max(1, gamestate.wave), tmpPos.set(x, 0, z), bus);
+  applyDifficultyTo(boss, true); // GUN GAME 2.0 P4 (P4-K15): difficulty shape
   debugZombies.push(boss);
   bus.dispatchEvent(new CustomEvent("zombie-spawned", { detail: { zombie: boss } }));
   bus.dispatchEvent(
@@ -1440,7 +1776,29 @@ function ensureLiveRunForDebug() {
 function spawnOriginInternal() {
   if (originRef && originRef.alive) return { error: "origin-alive" };
   city.openVault(); // idempotent — a re-fight finds the vault already open
+  // GUN GAME 2.0 P4 (P4-K15 §7.1.6): re-announce the CURRENT NG+ rule BEFORE
+  // creating the Origin. origin.js registers its "ng-plus" listener inside
+  // createOrigin (origin.js:872 — a module flag read at construction), so an
+  // Origin's first creation in a session would otherwise MISS every earlier
+  // "ng-plus" emit (the flag fix below only reaches Origins #2+; waves' own
+  // flag already holds this value — same-value no-op there). The dispatch
+  // also arms the instance's NG+ speed ×1.1 whenever the listener exists.
+  bus.dispatchEvent(
+    new CustomEvent("ng-plus", { detail: { active: gamestate.ngPlus === true } })
+  );
   const origin = createOrigin(scene, bus, city);
+  // (P4-K15 §7.1.6, continued): the CONTRACT formula, applied deterministically
+  // by OVERWRITE — round(3000 × hpMul × (ngPlus ? 1.25 : 1)) — immune to the
+  // listener-registration timing above (a missed event leaves the instance at
+  // 3000 flat; a caught one bakes ×1.25 in — the overwrite lands on the same
+  // contract value either way, never a double apply). The Origin carries no
+  // flat `dmg` field (per-move tables live in the phase constants) — the dmg
+  // line is a guarded no-op per the contract's "nếu có".
+  origin.maxHp = Math.round(
+    ORIGIN_MAX_HP * mainDiff.hpMul * (gamestate.ngPlus === true ? 1.25 : 1)
+  );
+  origin.hp = origin.maxHp;
+  if (typeof origin.dmg === "number") origin.dmg *= mainDiff.dmgMul;
   debugZombies.push(origin);
   bus.dispatchEvent(
     new CustomEvent("zombie-spawned", { detail: { zombie: origin } })
@@ -1452,6 +1810,56 @@ function spawnOriginInternal() {
   );
   originRef = origin;
   return { type: origin.type, hp: origin.hp, maxHp: origin.maxHp };
+}
+
+/**
+ * GUN GAME 2.0 P4 (§5.4): the body of the debug teleportDistrict() — shared
+ * with the "ui-endless" start sequence so the SINH TỒN start lands through
+ * the EXACT same district-center + blocked-offset logic ("dùng đúng logic
+ * offset teleportDistrict('quarantine') hiện có"). The quarantine center
+ * (0, 0) is the solid vault door, so the offset fallback steps out to the
+ * nearest clear cell. Returns the debug-shaped result; the ui-endless path
+ * ignores it. Callers that care about success check the `error` field.
+ * @param {string} id
+ */
+function teleportDistrictInternal(id) {
+  const wanted = String(id == null ? "" : id);
+  const to = city.districts.find((d) => d.id === wanted);
+  if (!to) {
+    return {
+      error: "unknown-district",
+      valid: city.districts.map((d) => d.id),
+    };
+  }
+  const from =
+    city.districtAt(player.position.x, player.position.z) || "safehouse";
+  const route = districtRoute(from, wanted);
+  if (route === null) {
+    return { error: "unreachable", from, target: wanted };
+  }
+  const opened = [];
+  for (let i = 0; i < route.length; i++) {
+    if (city.setGateOpen(route[i].from, route[i].to, true)) {
+      opened.push(route[i].from + "->" + route[i].to);
+    }
+  }
+  let cx = to.center.x;
+  let cz = to.center.z;
+  if (level.isBlocked(cx, cz, 0.5)) {
+    const offs = [
+      [0, 4], [0, -4], [4, 0], [-4, 0], [0, 8], [0, -8], [8, 0], [-8, 0],
+    ];
+    for (const [ox, oz] of offs) {
+      if (!level.isBlocked(cx + ox, cz + oz, 0.5)) {
+        cx += ox;
+        cz += oz;
+        break;
+      }
+    }
+  }
+  player.velocity.set(0, 0, 0);
+  player.position.set(cx, 0, cz); // camera follows on the next player.update
+  return { from, target: wanted, opened, x: cx, z: cz };
 }
 
 const debugApi = {
@@ -1513,6 +1921,12 @@ const debugApi = {
           ? { alive: true, phase: originRef.phase }
           : null,
       ngPlus: gamestate.ngPlus === true,
+      // GUN GAME 2.0 P4 additions (docs/EXPANSION-P4.md §7.3): the save
+      // presence, the live Endless snapshot (fresh clone) and the difficulty
+      // preset.
+      save: { hasSave: save.hasSave() },
+      endless: endlessSnapshotFresh(),
+      difficulty: settings.get().difficulty,
     };
   },
 
@@ -1532,6 +1946,7 @@ const debugApi = {
       pz = spot.z;
     }
     const zombie = new Zombie(scene, kind, tmpPos.set(px, 0, pz), bus);
+    applyDifficultyTo(zombie, false); // GUN GAME 2.0 P4 (P4-K15): difficulty shape
     debugZombies.push(zombie);
     bus.dispatchEvent(new CustomEvent("zombie-spawned", { detail: { zombie } }));
     return zombie;
@@ -1755,45 +2170,12 @@ const debugApi = {
    * route (debug-only — mission bookkeeping untouched). The quarantine center
    * (0, 0) IS the vault door (solid, §3.2), so blocked centers step out to the
    * nearest clear offset (main.js:696-726 open-before-teleport pattern).
+   * GUN GAME 2.0 P4 (§5.4): the body moved to teleportDistrictInternal() so
+   * the "ui-endless" start sequence reuses the EXACT same offset logic —
+   * this debug wrapper's behavior is unchanged.
    */
   teleportDistrict(id) {
-    const wanted = String(id == null ? "" : id);
-    const to = city.districts.find((d) => d.id === wanted);
-    if (!to) {
-      return {
-        error: "unknown-district",
-        valid: city.districts.map((d) => d.id),
-      };
-    }
-    const from =
-      city.districtAt(player.position.x, player.position.z) || "safehouse";
-    const route = districtRoute(from, wanted);
-    if (route === null) {
-      return { error: "unreachable", from, target: wanted };
-    }
-    const opened = [];
-    for (let i = 0; i < route.length; i++) {
-      if (city.setGateOpen(route[i].from, route[i].to, true)) {
-        opened.push(route[i].from + "->" + route[i].to);
-      }
-    }
-    let cx = to.center.x;
-    let cz = to.center.z;
-    if (level.isBlocked(cx, cz, 0.5)) {
-      const offs = [
-        [0, 4], [0, -4], [4, 0], [-4, 0], [0, 8], [0, -8], [8, 0], [-8, 0],
-      ];
-      for (const [ox, oz] of offs) {
-        if (!level.isBlocked(cx + ox, cz + oz, 0.5)) {
-          cx += ox;
-          cz += oz;
-          break;
-        }
-      }
-    }
-    player.velocity.set(0, 0, 0);
-    player.position.set(cx, 0, cz); // camera follows on the next player.update
-    return { from, target: wanted, opened, x: cx, z: cz };
+    return teleportDistrictInternal(id);
   },
 
   // --- NIGHT 30 P2 debug API (docs/EXPANSION-P2.md §8.7) -------------------
@@ -1892,6 +2274,43 @@ const debugApi = {
       );
     }
     return { state: gamestate.state, ending: ending.isActive() };
+  },
+
+  // --- GUN GAME 2.0 P4 debug API (docs/EXPANSION-P4.md §7.3) ----------------
+
+  /** One autosave with reason "debug" — {ok, ts} (no-op outside a live run). */
+  saveNow() {
+    return save.saveNow("debug");
+  },
+
+  /** True while a readable "gungame.save.v1" exists (corruption-guarded). */
+  hasSave() {
+    return save.hasSave();
+  },
+
+  /** Live Endless snapshot {active, wave, score} — a FRESH object (the
+   *  endless.snapshot() scratch is shared with the HUD extras). */
+  endlessState() {
+    return endlessSnapshotFresh();
+  },
+
+  /** The unlocked achievement ids (achievements.js storage order). */
+  achievementsState() {
+    return achievements.unlockedIds();
+  },
+
+  /**
+   * Persist a difficulty preset + broadcast it (waves.js + main cache the
+   * multipliers). An invalid value flows through settings.sanitize → back to
+   * "normal" (P4-K18) — the return always reports the STORED value.
+   */
+  setDifficulty(d) {
+    const patch = { difficulty: typeof d === "string" ? d : "" };
+    settings.set(patch);
+    bus.dispatchEvent(
+      new CustomEvent("settings-changed", { detail: { patch } })
+    );
+    return { difficulty: settings.get().difficulty };
   },
 };
 

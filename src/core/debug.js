@@ -76,6 +76,17 @@
  * createDebugHook() is called (before registration), so console calls never
  * crash in menu state.
  *
+ * GUN GAME 2.0 P4 api (docs/EXPANSION-P4.md §7.3) — same pattern:
+ * - saveNow(): one autosave with reason "debug" ({ok, ts}).
+ * - hasSave(): whether a readable "gungame.save.v1" exists.
+ * - endlessState(): {active, wave, score} — a fresh clone of the live
+ *   Endless snapshot.
+ * - achievementsState(): the unlocked achievement ids.
+ * - setDifficulty(d): persist + broadcast the preset ("easy"|"normal"|"hard";
+ *   invalid → settings sanitize back to "normal").
+ * - getState(): the legacy snapshot PLUS {save: {hasSave}, endless,
+ *   difficulty}.
+ *
  * @returns {DebugHook}
  */
 
@@ -93,7 +104,9 @@
  *   teleportDistrict?: Function,
  *   forceEvent?: Function, audioState?: Function,
  *   spawnOrigin?: Function, damageOrigin?: Function,
- *   originState?: Function, skipToEnding?: Function
+ *   originState?: Function, skipToEnding?: Function,
+ *   saveNow?: Function, hasSave?: Function, endlessState?: Function,
+ *   achievementsState?: Function, setDifficulty?: Function
  * }) => void} register - install the real api onto window.__game.
  */
 
@@ -134,6 +147,13 @@ const DEBUG_KEYS = [
   "damageOrigin",
   "originState",
   "skipToEnding",
+  // GUN GAME 2.0 P4 (docs/EXPANSION-P4.md §7.3) — wired by main.js at
+  // register() time; keys absent from this list are still ignored.
+  "saveNow",
+  "hasSave",
+  "endlessState",
+  "achievementsState",
+  "setDifficulty",
 ];
 
 export function createDebugHook() {

@@ -24,6 +24,11 @@
  *   their legacy x2), sniper x3.
  * - For each landed pellet: zombie.takeDamage(dmg, headshot) (returns true if
  *   this killed it) and particles.spawnBlood(hitPoint, 8..14).
+ * - GUN GAME 2.0 P4 (P4-K16): each landed pellet also emits
+ *   "damage-dealt" {pos: Vector3, amount, headshot} on the bus (pos = the ray
+ *   hit point clone, amount = the dmg actually applied) — the HUD's floating
+ *   damage numbers. This is combat.js's only additional emit; the per-CALL
+ *   "hit" event above is unchanged.
  * - Per shoot() call that landed at least one pellet (NOT per pellet):
  *   audio.zombieHit() once, audio.hitmarker(headshot) once (headshot = any
  *   headshot pellet landed), and emit "hit" {headshot, killed} on the bus
@@ -210,6 +215,16 @@ export function createCombat(camera, scene, zombies, particles, audio, bus) {
         if (!foundZombie.alive) continue; // died from an earlier pellet this shot
         const headshot = foundPart === "head";
         const dmg = headshot ? damage * headMult : damage;
+        // GUN GAME 2.0 P4 (§7.2, P4-K16): one emit PER LANDED PELLET — the
+        // HUD's floating damage numbers. `dmg` is the value actually applied
+        // (headshot multiplier already in); pos clones the ray hit point
+        // (the hitBuf entry is reused internally by three.js). The single
+        // emit point of combat.js — hitscan/headshotMult logic untouched.
+        bus.dispatchEvent(
+          new CustomEvent("damage-dealt", {
+            detail: { pos: hit.point.clone(), amount: dmg, headshot },
+          })
+        );
         const killed = foundZombie.takeDamage(dmg, headshot) === true;
         if (particles) {
           particles.spawnBlood(hit.point, 8 + Math.floor(Math.random() * 7)); // 8..14
