@@ -50,6 +50,14 @@
  * - "zombie-voice"      {kind: "idle"|"alert"|"chase"|"attack"|"pain"|"death", type, position: Vector3 clone} → zombie.js + bosses.js (P2-K16 payload) → audio.js (recipe + 3D mix, cap 8)
  * - "interact-near"     {target: "item_supply", near: boolean} — events.js emits it for the supply crate (existing HUD chip route, missions' shape)
  *
+ * NIGHT 30 P3 events (docs/EXPANSION-P3.md §7.1) — consumed by THIS module:
+ * - "ending-active"     {active: boolean}           ending.js (chuỗi kết) → addPause/removePause("ending") — P3-K10, same pattern as "outro-active"
+ * - Run stats (P3-K11): "money-changed" {delta > 0} → moneyEarned; "player-died"
+ *   → deaths; "zombie-killed" {type ∈ butcher|spitter|screamer|golem|origin}
+ *   → bossesKilled. Snapshot via gamestate.runStats(); counters reset in
+ *   freshRun() (per-run semantics — P3-K11 frozen wording). The NG+ flag
+ *   (gamestate.ngPlus) is OWNED by main.js (P3-K9/P3-K15) — no listener here.
+ *
  * NOTE on zombie hit sounds: combat.js calls audio.zombieHit() directly
  * (combat owns audio); zombie.takeDamage() does NOT emit a hit-sound event —
  * this avoids 8 stacked sounds for one shotgun blast.
@@ -133,9 +141,10 @@ export const bus = new EventTarget();
  */
 
 /**
- * @typedef {("shop"|"user"|"outro")} PauseReason - why the run is frozen. "user" is
+ * @typedef {("shop"|"user"|"outro"|"ending")} PauseReason - why the run is frozen. "user" is
  * the legacy Esc/P pause; "shop" is set while the shop overlay is open; "outro"
- * while the full-screen story outro owns the display.
+ * while the full-screen story outro owns the display; "ending" (NIGHT 30 P3,
+ * P3-K10) while the boss-defeat ending sequence owns the display.
  */
 
 /**
@@ -162,6 +171,17 @@ export const bus = new EventTarget();
  * @property {() => void} beginPlay - NIGHT 30 P1 (§5.6.1): ONLY from "intro"
  *   → state "playing" + emit. A no-op from any other state (guards the
  *   intro-slides onDone double-call).
+ * @property {boolean} ngPlus - NIGHT 30 P3 (P3-K9/P3-K15): New Game+ is active
+ *   for the current run. OWNED by main.js (beginNGPlus sets it true; the fresh
+ *   story / free-roam starts set it false) — this module never flips it and
+ *   freshRun() leaves it untouched.
+ * @property {() => {timeSec: number, kills: number, moneyEarned: number, deaths: number, bossesKilled: number}} runStats
+ *   NIGHT 30 P3 (P3-K11): snapshot for the ending screen. timeSec = seconds
+ *   since the last freshRun(); kills mirrors gamestate.kills; moneyEarned =
+ *   Σ positive "money-changed" deltas; deaths = "player-died" count;
+ *   bossesKilled = "zombie-killed" count with type in the boss set
+ *   {butcher, spitter, screamer, golem, origin}. All counters reset in
+ *   freshRun() (per-run semantics — P3-K11 frozen wording).
  */
 
 export function createGamestate(busArg, settings) {
@@ -174,6 +194,10 @@ export function createGamestate(busArg, settings) {
     score: 0,
     wave: 1,
     kills: 0,
+    // NIGHT 30 P3 (P3-K9/P3-K15): NG+ flag — main.js owns it, freshRun() never
+    // touches it (a keep-story restart must not drop the NG+ rule mid-run).
+    ngPlus: false,
+    runStats,
     start,
     startStory,
     beginPlay,
@@ -186,6 +210,33 @@ export function createGamestate(busArg, settings) {
     removePause,
     hasPause,
   };
+
+  // --- NIGHT 30 P3 run stats (P3-K11) -----------------------------------------
+  // The ending screen reads these through runStats(). Counters are closure
+  // state (not on the object) so nothing outside can desync them; only
+  // freshRun() zeroes them. runStartAt uses performance.now() (P3-K11).
+  let moneyEarned = 0;
+  let deaths = 0;
+  let bossesKilled = 0;
+  let runStartAt = performance.now();
+  // "zombie-killed" types that count as a BOSS for the ending stat (P3-K11:
+  // the four part-2 bosses + the Origin).
+  const BOSS_KILL_TYPES = { butcher: 1, spitter: 1, screamer: 1, golem: 1, origin: 1 };
+
+  /**
+   * Snapshot of the run stats for the ending screen (P3-K11). Kills mirror
+   * gamestate.kills live; the rest are the counters above.
+   * @returns {{timeSec: number, kills: number, moneyEarned: number, deaths: number, bossesKilled: number}}
+   */
+  function runStats() {
+    return {
+      timeSec: Math.max(0, Math.floor((performance.now() - runStartAt) / 1000)),
+      kills: gamestate.kills,
+      moneyEarned,
+      deaths,
+      bossesKilled,
+    };
+  }
 
   // --- pause by reason (EXPANSION, docs/EXPANSION.md) --------------------------
   // paused ⇔ this set is non-empty. Esc/P toggles ONLY the "user" reason;
@@ -269,6 +320,13 @@ export function createGamestate(busArg, settings) {
     gamestate.score = 0;
     gamestate.kills = 0;
     gamestate.wave = 1;
+    // NIGHT 30 P3 (P3-K11): the ending-screen stats are per-run — zeroed here
+    // (the common body of start/startStory/restart). ngPlus is deliberately
+    // NOT touched: main.js owns the flag (P3-K9/P3-K15).
+    moneyEarned = 0;
+    deaths = 0;
+    bossesKilled = 0;
+    runStartAt = performance.now();
     emit();
   }
 
@@ -379,6 +437,31 @@ export function createGamestate(busArg, settings) {
     const active = e && e.detail ? e.detail.active === true : false;
     if (active) addPause("outro");
     else removePause("outro");
+  });
+
+  // NIGHT 30 P3 (P3-K10): the ending sequence (slow-zoom approach → white
+  // fade → stats panel) owns the display exactly like the outro — freeze
+  // under its own reason while it runs. ending.js emits {active:false} in
+  // hide(); Esc/P stays a no-op here (pause-toggle only drives "user").
+  B.addEventListener("ending-active", (e) => {
+    const active = e && e.detail ? e.detail.active === true : false;
+    if (active) addPause("ending");
+    else removePause("ending");
+  });
+
+  // NIGHT 30 P3 (P3-K11): run stats for the ending screen. Independent
+  // listeners — the existing score/kill and gameover listeners stay untouched.
+  B.addEventListener("money-changed", (e) => {
+    const d = e && e.detail ? e.detail : {};
+    const delta = Number(d.delta);
+    if (Number.isFinite(delta) && delta > 0) moneyEarned += delta;
+  });
+  B.addEventListener("player-died", () => {
+    deaths += 1;
+  });
+  B.addEventListener("zombie-killed", (e) => {
+    const d = e && e.detail ? e.detail : {};
+    if (d.type && BOSS_KILL_TYPES[d.type]) bossesKilled += 1;
   });
 
   return gamestate;

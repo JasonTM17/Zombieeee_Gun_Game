@@ -68,6 +68,16 @@
  *   voices and drives the herd murmur from the < 20 m zombie count.
  * @property {() => {ctxState: string, activeVoices: number}} audioState
  *   Debug snapshot (NIGHT 30 P2 §5.4): context state + live voice count.
+ * @property {(mode: "start"|"stop"|"duck") => void} chopperSynth
+ *   NIGHT 30 P3 (§4.6): helicopter rotor bed for the ending approach —
+ *   "start" ramps the bed 0 → 0.22 over 2 s ("tới dần") and holds it; "duck"
+ *   drops the held level to 40 % (the ending white-fade phase — §4.2 builder
+ *   mode, additive over the frozen start/stop pair); "stop" fades to 0 over
+ *   0.8 s and releases the nodes. No AudioContext → safe no-op.
+ * @property {() => void} victorySting
+ *   NIGHT 30 P3 (§4.6): synthesized victory sting — saw chord C4-G4-C5
+ *   (130.8/196/261.6 Hz) through a 900 Hz lowpass, swell 0.15 → 0.28 over
+ *   0.4 s, hold 1.2 s, decay 1.6 s, plus a 65 Hz sub. Self-terminating.
  */
 
 import { bus } from "../systems/gamestate.js"; // shared bus — voice events (NIGHT 30 P2 §5.4)
@@ -90,7 +100,7 @@ const KIND_GAIN = { idle: 0.3, alert: 0.35, chase: 0.22, attack: 0.32, pain: 0.2
 
 /** WaveShaper drive per type (contract §5.3: brute tanh k≈30 "meat grinder";
  * bosses distort too — screamer/spitter only get a light grit). */
-const SHAPER_K = { brute: 30, butcher: 30, golem: 30, screamer: 8, spitter: 8 };
+const SHAPER_K = { brute: 30, butcher: 30, golem: 30, screamer: 8, spitter: 8, origin: 30 };
 
 /** Regular (non-boss) types — a boss ALWAYS wins a voice slot (contract §5.4). */
 const BASE_TYPES = { walker: 1, runner: 1, brute: 1 };
@@ -595,6 +605,48 @@ export function createAudio(settings) {
         return 1.5;
       },
     },
+    // NIGHT 30 P3 §3.8 (Builder A block — P3-K12): the ORIGIN voice. Deepest
+    // register in the game — the brute meat-grinder taken below sub-bass.
+    // 6 kinds (playVoice/rec roll); rise/phase roars ride "attack" through
+    // playBossRoar (audio.js:739 routing — do NOT touch playBossRoar).
+    origin: {
+      // Grinder idle: wobble saw 28–40 Hz + 20 Hz sub, 2.5–3.5 s, cutoff 110,
+      // drive 30 (SHAPER_K.origin).
+      idle(o, m, d) {
+        const dur = 2.5 + Math.random();
+        playWobble({ type: "sawtooth", f0: drift(28 + Math.random() * 12), dur, gain: 0.9, lfoFreq: 1.5, lfoDepth: 9, cutoff: 110, out: o, gainMul: m, drive: d });
+        playTone({ type: "sine", f0: 20, dur, gain: 0.55, out: o, gainMul: m, drive: d });
+        return dur;
+      },
+      // Low groan 35–50 Hz, 0.9–1.2 s.
+      alert(o, m, d) {
+        const dur = 0.9 + Math.random() * 0.3;
+        playWobble({ type: "sawtooth", f0: drift(35 + Math.random() * 15), dur, gain: 0.9, lfoFreq: 3, lfoDepth: 12, cutoff: 130, out: o, gainMul: m, drive: d });
+        return dur;
+      },
+      chase(o, m, d) {
+        playWobble({ type: "sawtooth", f0: drift(32 + Math.random() * 10), dur: 1.0, gain: 1, lfoFreq: 2.5, lfoDepth: 11, cutoff: 120, out: o, gainMul: m, drive: d });
+        return 1.0;
+      },
+      // slam / húc / xung kích: thud noise lowpass 120 Hz + wobble 45→28, 0.8 s.
+      attack(o, m, d) {
+        playNoise({ type: "lowpass", freq: 120, dur: 0.8, gain: 0.9, out: o, gainMul: m, drive: d });
+        playWobble({ type: "sawtooth", f0: drift(45), f1: 28, dur: 0.8, gain: 1, lfoFreq: 2, lfoDepth: 13, cutoff: 130, out: o, gainMul: m, drive: d });
+        return 0.8;
+      },
+      // Pain: wobble 90→45 Hz, 0.35 s.
+      pain(o, m, d) {
+        playWobble({ type: "sawtooth", f0: drift(90), f1: 45, dur: 0.35, gain: 1, lfoFreq: 5, lfoDepth: 16, cutoff: 190, out: o, gainMul: m, drive: d });
+        return 0.35;
+      },
+      // Death: collapsing — noise 300→60 (1.5 s) + wobble 40→22 (1.4 s) + sub.
+      death(o, m, d) {
+        playNoise({ type: "lowpass", freq: 300, freq1: 60, dur: 1.5, gain: 1, out: o, gainMul: m, drive: d });
+        playWobble({ type: "sawtooth", f0: drift(40), f1: 22, dur: 1.4, gain: 0.9, lfoFreq: 1.8, lfoDepth: 11, cutoff: 110, out: o, gainMul: m, drive: d });
+        playTone({ type: "sine", f0: 24, dur: 1.5, gain: 0.5, out: o, gainMul: m, drive: d });
+        return 1.5;
+      },
+    },
   };
 
   /**
@@ -1002,6 +1054,149 @@ export function createAudio(settings) {
     }
   }
 
+  // --- NIGHT 30 P3 §4.6 (docs/EXPANSION-P3.md) — Builder B block (P3-K12) -----
+  // Ending-scene synth beds, pure WebAudio (project rule: no audio files).
+  // One chopper at a time; nodes are created on "start" and torn down on
+  // "stop" — nothing schedules between endings, nothing allocates per frame.
+
+  /** @type {{gain: GainNode, sources: AudioScheduledSourceNode[]}|null} */
+  let chopper = null;
+  const CHOPPER_LEVEL = 0.22; // held bed level after the 2 s approach ramp
+  const CHOPPER_DUCK = 0.4; // FADE phase ducks the bed to 40 % (§4.2)
+
+  /**
+   * Rotor trực thăng cho chuỗi kết (§4.6): looping noise qua lowpass 240 Hz,
+   * AM bởi LFO 13 Hz (độ sâu 0.7) + thump 26 Hz gate theo cùng chu kỳ LFO;
+   * gain 0 → 0.22 trong 2 s ("tới dần") rồi giữ. mode "duck": hạ về 40 %
+   * (phase FADE — nền nhỏ dần). mode "stop": gain → 0 trong 0.8 s rồi gỡ
+   * node. Không ctx → no-op. start khi đang chạy → no-op (idempotent).
+   * @param {"start"|"stop"|"duck"} [mode]
+   * @returns {void}
+   */
+  function chopperSynth(mode) {
+    if (!ctx || !master) return;
+    const now = ctx.currentTime;
+    if (mode === "start") {
+      if (chopper || !noiseBuf) return; // one rotor bed; no buffer → silent
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(CHOPPER_LEVEL, now + 2);
+      const sources = [];
+      // AM'd rotor bed: noise -> lowpass 240 -> amGain (13 Hz LFO) -> gain.
+      const noise = ctx.createBufferSource();
+      noise.buffer = noiseBuf;
+      noise.loop = true;
+      const filt = ctx.createBiquadFilter();
+      filt.type = "lowpass";
+      filt.frequency.value = 240;
+      filt.Q.value = 0.8;
+      const am = ctx.createGain();
+      am.gain.value = 0.65; // center — the LFO swings ±0.455 (depth 0.7)
+      const lfo = ctx.createOscillator();
+      lfo.frequency.value = 13;
+      const lfoDepth = ctx.createGain();
+      lfoDepth.gain.value = 0.455;
+      lfo.connect(lfoDepth);
+      lfoDepth.connect(am.gain);
+      // Thump: 26 Hz sine gated by the SAME 13 Hz cycle (double-pulse feel).
+      const thump = ctx.createOscillator();
+      thump.type = "sine";
+      thump.frequency.value = 26;
+      const thumpGain = ctx.createGain();
+      thumpGain.gain.value = 0.35; // center — the LFO swings it 0 .. 0.7
+      const thumpDepth = ctx.createGain();
+      thumpDepth.gain.value = 0.35;
+      lfo.connect(thumpDepth);
+      thumpDepth.connect(thumpGain.gain);
+      noise.connect(filt);
+      filt.connect(am);
+      am.connect(gain);
+      thump.connect(thumpGain);
+      thumpGain.connect(gain);
+      gain.connect(master);
+      noise.start(now);
+      lfo.start(now);
+      thump.start(now);
+      sources.push(noise, lfo, thump);
+      chopper = { gain, sources };
+      return;
+    }
+    if (mode === "duck") {
+      if (!chopper) return;
+      chopper.gain.gain.cancelScheduledValues(now);
+      chopper.gain.gain.setTargetAtTime(
+        CHOPPER_LEVEL * CHOPPER_DUCK,
+        now,
+        0.4
+      );
+      return;
+    }
+    if (mode === "stop") {
+      if (!chopper) return;
+      const c = chopper;
+      chopper = null;
+      try {
+        c.gain.gain.cancelScheduledValues(now);
+        c.gain.gain.setValueAtTime(Math.max(0.0001, c.gain.gain.value), now);
+        c.gain.gain.linearRampToValueAtTime(0.0001, now + 0.8);
+      } catch (e) {
+        /* node already gone */
+      }
+      for (let i = 0; i < c.sources.length; i++) {
+        try {
+          c.sources[i].stop(now + 0.85);
+        } catch (e) {
+          /* already stopped */
+        }
+      }
+    }
+  }
+
+  /**
+   * Sting chiến thắng (§4.6): chord saw C-G-C (130.8/196/261.6 Hz) qua
+   * lowpass 900 Hz — swell 0.15 → 0.28 trong 0.4 s, hold 1.2 s, decay 1.6 s
+   * (mức CHORD; mỗi note chia 1/3) — cộng sub 65 Hz chạy cùng envelope.
+   * Tự kết thúc sau ~3.2 s; node được GC sau stop (như playTone/playNoise).
+   * @returns {void}
+   */
+  function victorySting() {
+    if (!ready()) return;
+    const t0 = ctx.currentTime;
+    const chord = ctx.createGain();
+    // Attack nhanh lên đáy swell 0.15 → nốt lên 0.28 trong 0.4 s → hold tới
+    // t0+1.6 → decay 1.6 s (§4.6: swell 0.4 / hold 1.2 / decay 1.6).
+    chord.gain.setValueAtTime(0.0001, t0);
+    chord.gain.linearRampToValueAtTime(0.15, t0 + 0.05);
+    chord.gain.linearRampToValueAtTime(0.28, t0 + 0.4);
+    chord.gain.setValueAtTime(0.28, t0 + 1.6);
+    chord.gain.exponentialRampToValueAtTime(0.0001, t0 + 3.2);
+    const filt = ctx.createBiquadFilter();
+    filt.type = "lowpass";
+    filt.frequency.value = 900;
+    chord.connect(filt);
+    filt.connect(master);
+    for (const f of [130.8, 196, 261.6]) {
+      const osc = ctx.createOscillator();
+      osc.type = "sawtooth";
+      osc.frequency.value = f;
+      const g = ctx.createGain();
+      g.gain.value = 0.26; // relative — 3 notes share the chord envelope
+      osc.connect(g);
+      g.connect(chord);
+      osc.start(t0);
+      osc.stop(t0 + 3.3);
+    }
+    const sub = ctx.createOscillator();
+    sub.type = "sine";
+    sub.frequency.value = 65;
+    const subG = ctx.createGain();
+    subG.gain.value = 0.45; // relative — rides the same chord envelope
+    sub.connect(subG);
+    subG.connect(chord);
+    sub.start(t0);
+    sub.stop(t0 + 3.3);
+  }
+
   // --- bus wiring (NIGHT 30 P2 §5.4 / P2-K9) ---------------------------------
   // Voices + the murmur boost arrive as bus events; audio no longer relies on
   // main.js routing boss roars (the integrator removes that old route).
@@ -1044,5 +1239,8 @@ export function createAudio(settings) {
     setVolume,
     update3D,
     audioState,
+    // NIGHT 30 P3 §4.6 (Builder B block — P3-K12): ending-scene synth.
+    chopperSynth,
+    victorySting,
   };
 }
