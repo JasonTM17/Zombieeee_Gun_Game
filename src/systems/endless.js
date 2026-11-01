@@ -75,22 +75,164 @@ export const ENDLESS_HEADSHOT_MULT = 1.5;
 export const MOON_RETRY_S = 1; // thử lại bloodmoon mỗi 1 s trong wave %5
 
 export function createEndless(bus, deps) {
-  void BOSS_CLASSES; // Builder C: random boss type = key đều trong BOSS_CLASSES
-  void deps; // P4-K23: { waves, events, gamestate, profile } — dùng khi implement
+  if (!deps || !deps.waves || !deps.events || !deps.gamestate || !deps.profile) {
+    throw new Error("[endless] missing deps — createEndless(bus, { waves, events, gamestate, profile }) requires all 4 (P4-K23)");
+  }
+  const B = bus || new EventTarget();
+  const waves = deps.waves;
+  const events = deps.events;
+  const profile = deps.profile;
+
+  // Boss score set (P4-K11): mọi type BOSS (BOSS_CLASSES + origin) — không
+  // phải mọi type lạ. Types ngoài bảng common + set này cho 0 điểm.
+  const BOSS_TYPES = Object.keys(BOSS_CLASSES).concat("origin");
+
+  // Trạng thái nội bộ (§5.2, FROZEN danh sách).
+  let active = false;
+  let score = 0;
+  let wave = 0;
+  let killsThisMoon = 0; // đếm kill trong bloodmoon đang chạy (mirror blood_slayer — achievements là bên unlock)
+  let moonRetryT = 0; // đồng hồ retry bloodmoon (giây)
+  let moonWave = -1; // wave đang cần bloodmoon; -1 = không cần / đã thành công
+  let moonActive = false; // "bloodmoon-active" đang chạy (để đếm killsThisMoon)
+
+  /** Scratch zero-alloc cho snapshot() (hudExtras mỗi frame — P4-K12). */
+  const snapScratch = { active: false, wave: 0, score: 0 };
+
+  function emit(name, detail) {
+    B.dispatchEvent(new CustomEvent(name, { detail }));
+  }
+
+  // --- storage "gungame.endless.v1" = {v:1, best:{wave, score}} (P4-K11) -----
+
+  /** @returns {{wave: number, score: number}} best đã sanitize (hỏng → 0/0). */
+  function readBest() {
+    try {
+      const raw = localStorage.getItem(ENDLESS_KEY);
+      if (!raw) return { wave: 0, score: 0 };
+      const parsed = JSON.parse(raw);
+      if (!parsed || parsed.v !== 1 || !parsed.best || typeof parsed.best !== "object") {
+        warnOnce("[endless] corrupted endless best removed");
+        return { wave: 0, score: 0 };
+      }
+      const w = Math.floor(Number(parsed.best.wave));
+      const s = Math.floor(Number(parsed.best.score));
+      return {
+        wave: Number.isFinite(w) && w > 0 ? w : 0,
+        score: Number.isFinite(s) && s > 0 ? s : 0,
+      };
+    } catch {
+      warnOnce("[endless] corrupted endless best removed");
+      return { wave: 0, score: 0 };
+    }
+  }
+
+  /** Ghi best (try/catch — quota/private mode im lặng, §1.6). */
+  function writeBest(b) {
+    try {
+      localStorage.setItem(ENDLESS_KEY, JSON.stringify({ v: 1, best: b }));
+    } catch {
+      warnOnce("[endless] best write failed");
+    }
+  }
+
+  /** P4-K11 tie rule: wave cao nhất; bằng wave → score cao hơn. */
+  function isBetter(a, b) {
+    return a.wave > b.wave || (a.wave === b.wave && a.score > b.score);
+  }
+
+  /** console.warn 1 LẦN mỗi loại lỗi (§1.6 — không spam gameplay). */
+  const warned = {};
+  function warnOnce(msg) {
+    if (warned[msg]) return;
+    warned[msg] = true;
+    console.warn(msg);
+  }
+
+  // --- bus listeners (P4-K10/K11/K13) -----------------------------------------
+
+  B.addEventListener("bloodmoon-active", (e) => {
+    const d = e && e.detail ? e.detail : {};
+    moonActive = d.active === true;
+    if (moonActive) killsThisMoon = 0; // moon mới — đếm lại từ 0
+  });
+
+  B.addEventListener("wave-start", (e) => {
+    if (!active) return; // story waves không đụng endless state
+    const n = Math.round(Number(e && e.detail ? e.detail.n : NaN));
+    if (!Number.isFinite(n) || n <= 0) return;
+    wave = n; // score giữ nguyên (điểm theo kill — P4-K11)
+    if (n % 5 === 0) {
+      moonWave = n; // bật máy retry bloodmoon cho wave này (P4-K10)
+      moonRetryT = 0; // force NGAY ở tick update kế tiếp
+    }
+  });
+
+  // "wave-clear" {n}: KHÔNG điểm ở wave-clear — điểm chỉ theo kill (§5.2),
+  // không cần listener.
+
+  B.addEventListener("zombie-killed", (e) => {
+    if (!active) return; // endless tự nghe "zombie-killed" KHI active (P4-K11)
+    const d = e && e.detail ? e.detail : {};
+    const type = typeof d.type === "string" ? d.type : "";
+    const base = Object.prototype.hasOwnProperty.call(ENDLESS_SCORE, type)
+      ? ENDLESS_SCORE[type]
+      : BOSS_TYPES.indexOf(type) !== -1
+        ? ENDLESS_SCORE.boss
+        : 0;
+    if (moonActive) killsThisMoon += 1;
+    score += Math.round(base * (d.headshot === true ? ENDLESS_HEADSHOT_MULT : 1));
+    emit("endless-score", { wave, score });
+  });
+
+  B.addEventListener("player-died", () => {
+    if (!active) return;
+    // P4-K13: ghi best + profile mirror + "endless-over" + active = false.
+    // KHÔNG đụng waves — ui-quit/freshRun lo (listener main gọi stop() đầu
+    // listener "ui-quit").
+    const cur = { wave, score };
+    const b = readBest();
+    const nextBest = isBetter(cur, b) ? cur : b;
+    writeBest(nextBest);
+    profile.add({ endlessBest: nextBest });
+    active = false;
+    emit("endless-over", {
+      wave: cur.wave,
+      score: cur.score,
+      bestWave: nextBest.wave,
+      bestScore: nextBest.score,
+    });
+  });
+
+  // --- API ------------------------------------------------------------------
 
   /** Bật chế độ vô tận (main gọi trong "ui-endless" — P4-K14). */
   function start() {
-    throw new Error("TODO(P4-builder-C): implement start per docs/EXPANSION-P4.md §5.2");
+    active = true;
+    score = 0;
+    wave = 0;
+    killsThisMoon = 0;
+    moonRetryT = 0;
+    moonWave = -1;
+    moonActive = false;
+    // §5.2 liệt kê setMode→reset; P4-K9 chốt reset() trả mode về "story" nên
+    // setMode("endless") PHẢI chạy lại SAU reset (endless.start() set "endless"
+    // sau reset — P4-K9). Lần set trước là no-op an toàn cho cả 2 chữ đọc.
+    waves.setMode("endless");
+    waves.reset();
+    waves.setMode("endless");
+    emit("endless-start", {});
   }
 
-  /** Rời chế độ (main gọi đầu listener "ui-quit" — P4-K13). */
+  /** Rời chế độ (main gọi đầu listener "ui-quit" — P4-K13). Idempotent, im lặng. */
   function stop() {
-    throw new Error("TODO(P4-builder-C): implement stop per docs/EXPANSION-P4.md §5.2");
+    active = false;
+    waves.setMode("story"); // KHÔNG reset waves — caller freshRun lo (§5.2)
   }
 
   /** @returns {boolean} đang chạy endless. */
   function isActive() {
-    throw new Error("TODO(P4-builder-C): implement isActive per docs/EXPANSION-P4.md §5.2");
+    return active;
   }
 
   /**
@@ -98,7 +240,22 @@ export function createEndless(bus, deps) {
    * @param {number} dt - giây.
    */
   function update(dt) {
-    throw new Error("TODO(P4-builder-C): implement update per docs/EXPANSION-P4.md §5.2 (dt=" + String(dt) + ")");
+    if (!active || !Number.isFinite(dt) || dt <= 0) return;
+    // Wave %5 chưa có bloodmoon (bị event khác chặn) → thử lại mỗi 1 s trong
+    // suốt wave đó; thành công → moonWave = -1 (xong, P4-K10).
+    if (moonWave >= 0 && moonWave === waves.getWave() && moonWave % 5 === 0) {
+      moonRetryT -= dt;
+      if (moonRetryT <= 0) {
+        moonRetryT = MOON_RETRY_S;
+        let ok = false;
+        try {
+          ok = events.forceEvent("bloodmoon") === true;
+        } catch {
+          ok = false; // events hỏng: retry tick kế — KHÔNG throw vào gameplay
+        }
+        if (ok) moonWave = -1;
+      }
+    }
   }
 
   /**
@@ -106,12 +263,16 @@ export function createEndless(bus, deps) {
    * @returns {{active: boolean, wave: number, score: number}}
    */
   function snapshot() {
-    throw new Error("TODO(P4-builder-C): implement snapshot per docs/EXPANSION-P4.md §5.2");
+    snapScratch.active = active;
+    snapScratch.wave = wave;
+    snapScratch.score = score;
+    return snapScratch;
   }
 
   /** Best hiện tại từ "gungame.endless.v1" (P4-K11). */
   function best() {
-    throw new Error("TODO(P4-builder-C): implement best per docs/EXPANSION-P4.md §5.2");
+    const b = readBest();
+    return { wave: b.wave, score: b.score };
   }
 
   return { start, stop, isActive, update, snapshot, best };

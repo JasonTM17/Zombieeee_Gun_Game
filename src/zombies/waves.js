@@ -111,6 +111,32 @@
  * main.js re-emits the current flag value on every fresh run so a death-
  * restart inside an NG+ run re-arms it (P3-K9).
  *
+ * GUN GAME 2.0 P4 (docs/EXPANSION-P4.md §5.1 / P4-K8..K10 / K15 — ADDITIVE):
+ * - MODE (P4-K9): `setMode("story"|"endless")` / `getMode()` / `getWave()`.
+ *   Default "story" — byte-identical behavior. reset() returns the mode to
+ *   "story" (fresh-run state); endless.start() sets "endless" AFTER reset.
+ *   Endless composition (P4-K8, wave n — the "halve minions on wave %5" rule
+ *   does NOT apply): total = 8 + n×4; runners = max(2, round(total×0.3));
+ *   brutes from wave 3 = 1 + floor((n−3)/5); walkers = the rest.
+ * - Endless boss waves (P4-K10): the wave-%5 flag still flips (burst cadence
+ *   and full-size composition), but NO story-cycle boss spawns there — the
+ *   bloodmoon variant for wave %5 lives in systems/endless.js
+ *   (events.forceEvent retry). From wave ≥ 8 EVERY wave spawns EXACTLY ONE
+ *   boss with a RANDOM type drawn uniformly from Object.keys(BOSS_CLASSES)
+ *   (bossTypeForWave's deterministic cycle is story-only), through the SAME
+ *   spawnBoss mechanism (zone anchor + fallbacks, "boss-spawned", tracked —
+ *   wave-clear waits for it).
+ * - DIFFICULTY (P4-K15): "settings-changed" {patch.difficulty} caches
+ *   {hpMul, dmgMul, densityMul} — easy 0.75/0.7/0.8, normal 1/1/1,
+ *   hard 1.35/1.3/1.2. applyDifficulty() runs in spawnOne + spawnBoss
+ *   BEFORE applyNgPlus (regular hp ×hpMul; boss maxHp ×hpMul then hp = maxHp;
+ *   dmg ×dmgMul when numeric; speed untouched). nextGap divides by
+ *   densityMul on top of the P1 winner × P2 bloodmoon factors (final gap =
+ *   winner × (bloodmoon ? 0.5 : 1) × (1 / densityMul); the 0.05 s boss-burst
+ *   floor still holds after the product). reset() returns the cache to
+ *   normal (main's boot-seed re-arms it — P4-K19); NG+ hp stacking happens
+ *   in applyNgPlus which multiplies on top of the difficulty-shaped hp.
+ *
  * Internal bookkeeping: once a zombie is dead ("zombie-killed") it no longer
  * counts toward wave-clear; drop it from the internal list when its corpse
  * finishes despawning ("zombie-despawned") or on reset().
@@ -139,6 +165,13 @@
  *   Advance spawn timers / intermission (dt seconds; playerPos = player feet).
  * @property {() => void} reset
  *   Clear all zombies + timers so a fresh run starts at wave 1 on next update.
+ * @property {(m: "story"|"endless") => void} setMode
+ *   P4-K9: select the composition/spawn rule set. Unknown values are ignored.
+ *   "story" (default) is byte-identical to the pre-P4 director.
+ * @property {() => "story"|"endless"} getMode
+ *   Current mode ("story" after construction and after reset()).
+ * @property {() => number} getWave
+ *   Current wave number (0 = none started yet).
  */
 
 import * as THREE from "three";
@@ -163,6 +196,18 @@ const BOSS_FALLBACK_ZONE = "main"; // zoneId reported when zones is absent
 const MAX_CONCURRENT = 60; // live-zombie cap (tracked) — defer, never drop
 const QUOTA_DENSITY = 2 / 3; // ×2/3 gap ≈ +50% spawn density
 const MIN_ELIGIBLE_POOL = 2; // < 2 eligible points → expand to adjacent opens
+
+// --- P4 "GUN GAME 2.0" (docs/EXPANSION-P4.md §5.1 / P4-K10 / K15) --------------
+// Difficulty multipliers (P4-K15, FROZEN): hp ×, dmg ×, spawn density ×
+// (density rides the gap as 1 / densityMul — see nextGap).
+const DIFFICULTY_MULTS = {
+  easy: { hpMul: 0.75, dmgMul: 0.7, densityMul: 0.8 },
+  normal: { hpMul: 1, dmgMul: 1, densityMul: 1 },
+  hard: { hpMul: 1.35, dmgMul: 1.3, densityMul: 1.2 },
+};
+// Uniform random-pool keys for the endless boss (P4-K10 — "chọn đều trong 4
+// key BOSS_CLASSES"; bossTypeForWave's deterministic cycle stays story-only).
+const BOSS_KEYS = Object.keys(BOSS_CLASSES);
 
 export function createWaves(scene, level, bus, zones, city) {
   const B = bus || new EventTarget();
@@ -190,6 +235,12 @@ export function createWaves(scene, level, bus, zones, city) {
   let ngPlus = false;
   const NG_HP_MUL = 1.25;
   const NG_SPEED_MUL = 1.1;
+  // P4-K9: "story" (default) keeps every pre-P4 path byte-identical; "endless"
+  // switches composition (P4-K8) + random-boss waves ≥ 8 (P4-K10).
+  let mode = "story";
+  // P4-K15: cached difficulty multipliers — "settings-changed" {patch.difficulty}
+  // updates; reset() returns to normal (main's boot-seed re-arms, P4-K19).
+  let diff = DIFFICULTY_MULTS.normal;
   /** Reused spawn-pool buffer (§4.2.2) — zero allocation per spawn attempt. */
   const poolScratch = [];
 
@@ -203,6 +254,12 @@ export function createWaves(scene, level, bus, zones, city) {
     ngPlus = d.active === true;
   });
 
+  B.addEventListener("settings-changed", (e) => {
+    const d = e && e.detail ? e.detail : {};
+    const next = d.patch ? d.patch.difficulty : undefined;
+    if (next === "easy" || next === "normal" || next === "hard") diff = DIFFICULTY_MULTS[next];
+  });
+
   /** §4.7: apply the NG+ rule to one freshly created unit (no-op otherwise). */
   function applyNgPlus(z, isBoss) {
     if (!ngPlus || !z) return;
@@ -214,6 +271,24 @@ export function createWaves(scene, level, bus, zones, city) {
       z.hp = Math.round(z.hp * NG_HP_MUL);
       z.speed = z.speed * NG_SPEED_MUL;
     }
+  }
+
+  /**
+   * P4-K15: apply the difficulty rule to one freshly created unit — regular
+   * hp ×hpMul, boss maxHp ×hpMul (hp reset to it), dmg ×dmgMul when numeric,
+   * speed untouched. Normal difficulty is an exact no-op so the pre-P4
+   * spawn path stays byte-identical. Runs BEFORE applyNgPlus (NG+ hp stacks
+   * on top of the difficulty-shaped hp — P4-K15 "nhân nhau").
+   */
+  function applyDifficulty(z, isBoss) {
+    if (!z || diff === DIFFICULTY_MULTS.normal) return;
+    if (isBoss) {
+      z.maxHp = Math.round(z.maxHp * diff.hpMul);
+      z.hp = z.maxHp;
+    } else {
+      z.hp = Math.round(z.hp * diff.hpMul);
+    }
+    if (typeof z.dmg === "number") z.dmg = z.dmg * diff.dmgMul;
   }
 
   B.addEventListener("quota-done", (e) => {
@@ -250,14 +325,27 @@ export function createWaves(scene, level, bus, zones, city) {
     B.dispatchEvent(new CustomEvent(name, { detail }));
   }
 
-  /** Wave n composition per spec, shuffled so types interleave. Boss waves
-   *  halve the minion count (spec C5) and keep the brute/runner rules. */
+  /** Wave n composition per spec, shuffled so types interleave. Story boss
+   *  waves halve the minion count (spec C5) and keep the brute/runner rules.
+   *  Endless (P4-K8, FROZEN) uses its own full-size formula — the "halve on
+   *  wave %5" law does NOT apply in endless mode. */
   function composition(n) {
-    const total = bossWave
-      ? Math.ceil((5 + n * 3) / 2) // giảm NỬA minion (ceil keeps ≥ half)
-      : 5 + n * 3;
-    const brutes = n >= 4 ? 1 + Math.floor(n / 5) : 0;
-    const runners = n >= 2 ? Math.round(total * 0.25) : 0;
+    let total;
+    let brutes;
+    let runners;
+    if (mode === "endless") {
+      // P4-K8: total = 8 + n×4; runner LUÔN ≥ 2 (30%); brute từ wave 3,
+      // tỉ lệ tăng (wave 3→1, 8→2, 13→3); không chia đôi ở wave %5.
+      total = 8 + n * 4;
+      runners = Math.max(2, Math.round(total * 0.3));
+      brutes = n >= 3 ? 1 + Math.floor((n - 3) / 5) : 0;
+    } else {
+      total = bossWave
+        ? Math.ceil((5 + n * 3) / 2) // giảm NỬA minion (ceil keeps ≥ half)
+        : 5 + n * 3;
+      brutes = n >= 4 ? 1 + Math.floor(n / 5) : 0;
+      runners = n >= 2 ? Math.round(total * 0.25) : 0;
+    }
     const walkers = Math.max(0, total - brutes - runners);
     const list = [];
     for (let i = 0; i < brutes; i++) list.push("brute");
@@ -276,10 +364,16 @@ export function createWaves(scene, level, bus, zones, city) {
     return a;
   }
 
+  /** P4-K10: uniform random boss type from Object.keys(BOSS_CLASSES)
+   *  (endless waves ≥ 8 only — the story cycle stays deterministic). */
+  function randomBossType() {
+    return BOSS_KEYS[(Math.random() * BOSS_KEYS.length) | 0];
+  }
+
   function startWave(n, playerPos) {
     wave = n;
     waveTime = 0;
-    bossWave = n % 5 === 0; // spec: every 5th wave is a boss wave
+    bossWave = n % 5 === 0; // spec: every 5th wave is a boss wave (flag kept in endless — P4-K10)
     queue = composition(n);
     spawnedThisWave = 0;
     spawnTimer = bossWave
@@ -287,7 +381,15 @@ export function createWaves(scene, level, bus, zones, city) {
       : FIRST_SPAWN_MIN + Math.random() * (FIRST_SPAWN_MAX - FIRST_SPAWN_MIN);
     phase = "spawning";
     emit("wave-start", { n });
-    if (bossWave) spawnBoss(n, playerPos);
+    if (mode === "endless") {
+      // P4-K10: endless KHÔNG spawn boss story-cycle tại wave %5 — biến thể
+      // wave %5 là bloodmoon (systems/endless.js forceEvent retry). Từ wave
+      // ≥ 8 MỖI wave có ĐÚNG 1 boss NGẪU NHIÊN qua đúng cơ chế spawnBoss
+      // (zone anchor + fallback, "boss-spawned", nằm trong tracked).
+      if (n >= 8) spawnBoss(n, playerPos, randomBossType());
+    } else if (bossWave) {
+      spawnBoss(n, playerPos);
+    }
   }
 
   /**
@@ -314,9 +416,15 @@ export function createWaves(scene, level, bus, zones, city) {
     return far;
   }
 
-  /** One boss (C5) at the zone anchor — or the farthest spawn point. */
-  function spawnBoss(n, playerPos) {
-    const type = bossTypeForWave(n); // butcher → spitter → screamer → golem
+  /** One boss (C5) at the zone anchor — or the farthest spawn point.
+   *  P4-K10: `typeOverride` (endless waves ≥ 8) picks a RANDOM type instead
+   *  of the deterministic story cycle; story callers pass nothing and stay
+   *  byte-identical. An invalid override falls back to the story cycle. */
+  function spawnBoss(n, playerPos, typeOverride) {
+    const type =
+      typeof typeOverride === "string" && typeof BOSS_CLASSES[typeOverride] === "function"
+        ? typeOverride
+        : bossTypeForWave(n); // butcher → spitter → screamer → golem
     const Ctor = BOSS_CLASSES[type];
     if (typeof Ctor !== "function") return; // bosses.js malformed: minions carry the wave
 
@@ -374,6 +482,7 @@ export function createWaves(scene, level, bus, zones, city) {
     if (x === null) return; // no spawn points either: boss-less boss wave (degenerate)
 
     const boss = new Ctor(scene, n, new THREE.Vector3(x, 0, z), B);
+    applyDifficulty(boss, true); // P4-K15: difficulty shape — TRƯỚC applyNgPlus
     applyNgPlus(boss, true); // §4.7: NG+ hp ×1.25 / speed ×1.1 (boss shape)
     spawnedThisWave++;
     tracked.push(boss); // the clear check covers the boss via its alive flag
@@ -547,8 +656,10 @@ export function createWaves(scene, level, bus, zones, city) {
   /** Next recurring spawn gap (boss burst included), density applied. */
   function nextGap(playerPos) {
     // P1 §4.2.3 picks ONE winner (never stacked); the P2 bloodmoon factor
-    // multiplies the FINAL gap on top of it (contract §3.6.3 / P2-K8).
-    const mult = densityMultiplier(playerPos) * (bloodmoonActive ? 0.5 : 1);
+    // multiplies the FINAL gap on top of it (contract §3.6.3 / P2-K8); P4-K15
+    // difficulty density divides on top of both (final gap = winner ×
+    // (bloodmoon ? 0.5 : 1) × (1 / densityMul)). Normal difficulty → ×1.
+    const mult = densityMultiplier(playerPos) * (bloodmoonActive ? 0.5 : 1) * (1 / diff.densityMul);
     if (bossWave) {
       // The 0.05 s floor must hold AFTER the multiplier, not before.
       return Math.max(0.05, ((BOSS_BURST_WINDOW - waveTime) / Math.max(1, queue.length)) * mult);
@@ -615,6 +726,7 @@ export function createWaves(scene, level, bus, zones, city) {
       }
     }
     const zombie = new Zombie(scene, type, new THREE.Vector3(x, 0, z), B);
+    applyDifficulty(zombie, false); // P4-K15: difficulty shape — TRƯỚC applyNgPlus
     applyNgPlus(zombie, false); // §4.7: NG+ hp ×1.25 / speed ×1.1 (regular)
     spawnedThisWave++;
     tracked.push(zombie);
@@ -696,8 +808,24 @@ export function createWaves(scene, level, bus, zones, city) {
     hordeActive = false;
     bloodmoonActive = false; // P2 §3.6.3: fresh run, no bloodmoon gap bonus
     ngPlus = false; // P3 §4.7: main re-emits "ng-plus" per run (NG+ re-arms it)
+    mode = "story"; // P4-K9: fresh-run state (endless.start() sets it back AFTER reset)
+    diff = DIFFICULTY_MULTS.normal; // P4-K15: main's boot-seed re-arms it (P4-K19)
     phase = "idle"; // next update() starts wave 1 again
   }
 
-  return { update, reset };
+  // P4-K9 (additive): mode switch + wave read. setMode only affects FUTURE
+  // composition/spawn decisions — live waves finish under the old rules.
+  function setMode(m) {
+    if (m === "story" || m === "endless") mode = m;
+  }
+
+  function getMode() {
+    return mode;
+  }
+
+  function getWave() {
+    return wave;
+  }
+
+  return { update, reset, setMode, getMode, getWave };
 }

@@ -66,14 +66,123 @@ export const PROFILE_BOSS_TYPES = { butcher: 1, spitter: 1, screamer: 1, golem: 
 
 export function createProfile(bus) {
   const B = bus || sharedBus;
-  void B; // Builder C: 3 listener "zombie-killed"/"player-died"/"money-changed"
+
+  /** Bản ghi mặc định (schema FROZEN §5.3 / P4-K21). */
+  function defaults() {
+    return {
+      kills: 0,
+      headshots: 0,
+      deaths: 0,
+      playtimeSec: 0,
+      bossesKilled: 0,
+      moneyEarned: 0,
+      endlessBest: { wave: 0, score: 0 },
+    };
+  }
+
+  /** console.warn 1 LẦN mỗi loại lỗi (§1.6 — không spam). */
+  const warned = {};
+  function warnOnce(msg) {
+    if (warned[msg]) return;
+    warned[msg] = true;
+    console.warn(msg);
+  }
+
+  /** Số nguyên ≥ 0 từ một giá trị bất kỳ (NaN/chuỗi/âm → fallback). */
+  function intOr(v, fallback) {
+    const n = Math.floor(Number(v));
+    return Number.isFinite(n) && n > 0 ? n : fallback;
+  }
+
+  /**
+   * Load + sanitize TỪNG field từ localStorage (try/catch). Hỏng → giá trị
+   * mặc định CHO FIELD ĐÓ — KHÔNG xoá key khi chỉ 1 field sai (P4-K21).
+   * @returns {ProfileData}
+   */
+  function load() {
+    const d = defaults();
+    try {
+      const raw = localStorage.getItem(PROFILE_KEY);
+      if (!raw) return d;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object") {
+        warnOnce("[profile] corrupted profile — defaults applied");
+        return d;
+      }
+      d.kills = intOr(parsed.kills, 0);
+      d.headshots = intOr(parsed.headshots, 0);
+      d.deaths = intOr(parsed.deaths, 0);
+      d.playtimeSec = intOr(parsed.playtimeSec, 0);
+      d.bossesKilled = intOr(parsed.bossesKilled, 0);
+      d.moneyEarned = intOr(parsed.moneyEarned, 0);
+      if (parsed.endlessBest && typeof parsed.endlessBest === "object") {
+        d.endlessBest = {
+          wave: intOr(parsed.endlessBest.wave, 0),
+          score: intOr(parsed.endlessBest.score, 0),
+        };
+      }
+      return d;
+    } catch {
+      warnOnce("[profile] corrupted profile — defaults applied");
+      return d;
+    }
+  }
+
+  /** Persist (try/catch — quota/private mode im lặng, §1.6). */
+  function persist() {
+    try {
+      localStorage.setItem(PROFILE_KEY, JSON.stringify(data));
+    } catch {
+      warnOnce("[profile] persist failed");
+    }
+  }
+
+  let data = load();
+  // Playtime persist gate (P4-K21 FROZEN): chỉ ghi localStorage khi
+  // Math.floor(playtimeSec) ĐỔI — không ghi mỗi frame.
+  let lastFloorSec = Math.floor(data.playtimeSec);
+
+  // --- bus listeners (P4-K21) — CỘNG DỒN, persist mỗi lần biến đổi ------------
+
+  B.addEventListener("zombie-killed", (e) => {
+    const d = e && e.detail ? e.detail : {};
+    data.kills += 1;
+    if (d.headshot === true) data.headshots += 1;
+    if (typeof d.type === "string" && PROFILE_BOSS_TYPES[d.type]) data.bossesKilled += 1;
+    persist();
+  });
+
+  B.addEventListener("player-died", () => {
+    data.deaths += 1;
+    persist();
+  });
+
+  B.addEventListener("money-changed", (e) => {
+    const d = e && e.detail ? e.detail : {};
+    const delta = Number(d.delta);
+    if (Number.isFinite(delta) && delta > 0) {
+      data.moneyEarned += Math.round(delta);
+      persist();
+    }
+  });
+
+  // KHÔNG listener reset nào — thống kê TRỌN ĐỜI, mọi reset/NG+/ui-quit giữ
+  // nguyên profile (spec: "reset KHÔNG xoá profile").
 
   /**
    * Bản copy nông mới của thống kê (người gọi không được mutate nội bộ).
    * @returns {ProfileData}
    */
   function get() {
-    throw new Error("TODO(P4-builder-C): implement get per docs/EXPANSION-P4.md §5.3");
+    return {
+      kills: data.kills,
+      headshots: data.headshots,
+      deaths: data.deaths,
+      playtimeSec: data.playtimeSec,
+      bossesKilled: data.bossesKilled,
+      moneyEarned: data.moneyEarned,
+      endlessBest: { wave: data.endlessBest.wave, score: data.endlessBest.score },
+    };
   }
 
   /**
@@ -83,7 +192,24 @@ export function createProfile(bus) {
    *   endlessBest?: {wave: number, score: number}}} patch
    */
   function add(patch) {
-    throw new Error("TODO(P4-builder-C): implement add per docs/EXPANSION-P4.md §5.3 (patch=" + String(patch && Object.keys(patch)) + ")");
+    if (!patch || typeof patch !== "object") return;
+    const KEYS = ["kills", "headshots", "deaths", "playtimeSec", "bossesKilled", "moneyEarned"];
+    for (let i = 0; i < KEYS.length; i++) {
+      const k = KEYS[i];
+      const v = Number(patch[k]);
+      if (Number.isFinite(v)) data[k] += Math.max(0, Math.round(v));
+    }
+    const eb = patch.endlessBest;
+    if (eb && typeof eb === "object" && Number.isFinite(Number(eb.wave)) && Number.isFinite(Number(eb.score))) {
+      const cand = { wave: Math.max(0, Math.round(Number(eb.wave))), score: Math.max(0, Math.round(Number(eb.score))) };
+      // Cùng quy tắc best của endless (P4-K11): wave cao hơn, hoặc bằng wave
+      // && score cao hơn → THAY.
+      const b = data.endlessBest;
+      if (cand.wave > b.wave || (cand.wave === b.wave && cand.score > b.score)) {
+        data.endlessBest = cand;
+      }
+    }
+    persist();
   }
 
   /**
@@ -91,7 +217,13 @@ export function createProfile(bus) {
    * @param {number} dt - giây.
    */
   function update(dt) {
-    throw new Error("TODO(P4-builder-C): implement update per docs/EXPANSION-P4.md §5.3 (dt=" + String(dt) + ")");
+    if (!Number.isFinite(dt) || dt <= 0) return;
+    data.playtimeSec += dt;
+    const f = Math.floor(data.playtimeSec);
+    if (f !== lastFloorSec) {
+      lastFloorSec = f;
+      persist();
+    }
   }
 
   return { get, add, update };
