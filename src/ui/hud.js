@@ -141,7 +141,12 @@
  * "mission-start", "objective-progress", "mission-complete", "mission-reset",
  * "quota-done", "gate-open", "interact-near". P2 event widgets (§4.3):
  * "event-start" {type,...}, "event-end" {type, reason, money?},
- * "bloodmoon-active" {active, duration}, "map-visibility" {open}.
+ * "bloodmoon-active" {active, duration}, "map-visibility" {open}. GUN GAME
+ * 2.0 P4 (§6.4/§8): "damage-dealt" {pos, amount, headshot} (floating numbers),
+ * "fps-toggle" {} (F3 counter), "achievement-unlocked" {id} (gold toast —
+ * the achv_* name keys come from achievements.js's module-level bundle).
+ * extras.endless ({active, wave, score} — P4-K12) takes over the WAVE + SCORE
+ * chips while Endless is active (integrator gap fill).
  *
  * Implementation notes:
  * - No object allocation in the per-frame path: DOM writes are gated on value
@@ -190,6 +195,9 @@
  *   mission marker (main derives per P2-K13); null/absent → no gold marker.
  * @property {{type: string, x: number, z: number}|null} [event] - P2 (§4.3):
  *   the running event marker; x/z are null for bloodmoon → no strip marker.
+ * @property {import("three").Camera} [cam] - GUN GAME 2.0 P4 (P4-K12/K16):
+ *   the live camera — floating damage numbers project through it each frame
+ *   (Vector3.project). Missing → numbers stay invisible and age out.
  */
 
 /**
@@ -205,11 +213,24 @@
  *   real frustum test); when given it replaces this module's half-angle guess.
  */
 
+// GUN GAME 2.0 P4 (§6.4): floating damage numbers project world positions to
+// the screen through the camera main.js passes as extras.cam (P4-K12) — one
+// scratch Vector3, reused every frame (zero allocation, §1.4).
+import { Vector3 } from "three";
+
 // Crosshair geometry (px): gap = BASE + spread(rad) * PER_RAD + shot kick.
 const BASE_GAP = 8;
 const GAP_PER_RAD = 620;
 const KICK_PER_RAD = 900;
 const MAX_GAP = 54;
+
+// GUN GAME 2.0 P4 (§6.4 / P4-K16): floating damage numbers — FROZEN caps.
+const DMG_POOL_MAX = 30; // concurrent numbers; excess "damage-dealt" → dropped
+const DMG_LIFE = 0.8; // seconds
+const DMG_RISE = 40; // px risen over the lifetime
+// FPS counter (P4-K17): top edge, right of the compass strip, ABOVE the
+// killfeed (which owns top: 18px) — sits at the very top right corner.
+const FPS_SMOOTH = 0.1; // lerp(fps, 1/dt, 0.1) — the contract's EMA factor
 
 // Boss arrow: orbit radius around the crosshair and the half-angle of the
 // view cone outside which the arrow shows (cheap frustum stand-in — XZ only).
@@ -289,6 +310,10 @@ const HUD_BUNDLE = {
     wSniper: "Sniper",
     wMinigun: "Minigun",
     wGrenade: "Grenade Launcher",
+    // GUN GAME 2.0 P4 (§8.4 — verbatim): gold toast on "achievement-unlocked".
+    // The achievement names themselves come from the achv_* keys that
+    // achievements.js registers at module level.
+    achvToast: "🏆 ACHIEVEMENT — {name}",
   },
   vi: {
     hudReloading: "ĐANG NẠP ĐẠN…",
@@ -319,6 +344,8 @@ const HUD_BUNDLE = {
     wSniper: "Súng bắn tỉa",
     wMinigun: "Minigun",
     wGrenade: "Súng phóng lựu",
+    // GUN GAME 2.0 P4 (§8.4 — verbatim): gold toast on "achievement-unlocked".
+    achvToast: "🏆 THÀNH TỰU — {name}",
   },
 };
 
@@ -807,6 +834,77 @@ export function createHud(container, bus, audio, i18n) {
     letterSpacing: "0.06em",
   });
 
+  // --- GUN GAME 2.0 P4 widgets (§6.4 — additive, inline-styled) -----------------
+
+  // FPS counter: ONE text node updated per frame from the measured update()
+  // dt; F3 ("fps-toggle") flips it. Top: 6px clears the killfeed (top: 18px).
+  const fpsChip = make("div", "fps-chip", root);
+  css(fpsChip, {
+    position: "absolute",
+    top: "6px",
+    right: "18px",
+    display: "none", // hidden by default (P4-K17)
+    padding: "3px 10px",
+    background: "rgba(6, 10, 16, 0.6)",
+    border: "1px solid var(--gg-line)",
+    borderRadius: "4px",
+    fontSize: "11px",
+    fontWeight: "700",
+    letterSpacing: "0.1em",
+    color: "var(--gg-text-dim)",
+    fontVariantNumeric: "tabular-nums",
+    textShadow: "0 1px 3px rgba(0, 0, 0, 0.8)",
+    pointerEvents: "none",
+    zIndex: "7",
+  });
+  const fpsText = document.createTextNode("FPS --");
+  fpsChip.appendChild(fpsText);
+
+  // Floating damage numbers: a FIXED pool of 30 divs created once (no
+  // allocation in the per-frame/event path, §1.4). combat.js emits
+  // "damage-dealt" {pos, amount, headshot} per pellet hit (P4-K16); update()
+  // projects each live number through extras.cam. Layer sits on top of the
+  // other widgets (created last) but never captures input.
+  const dmgLayer = make("div", "dmg-layer", root);
+  css(dmgLayer, {
+    position: "absolute",
+    inset: "0",
+    overflow: "hidden",
+    pointerEvents: "none",
+    zIndex: "7",
+  });
+  /** @type {{el: HTMLElement, active: boolean, age: number, x: number,
+   *  y: number, z: number, head: boolean, txt: string, px: number, py: number,
+   *  shown: boolean, lastOp: number}[]} */
+  const dmgPool = [];
+  for (let i = 0; i < DMG_POOL_MAX; i++) {
+    const el = make("div", "dmg-num", dmgLayer);
+    css(el, {
+      position: "absolute",
+      left: "0",
+      top: "0",
+      display: "none",
+      fontWeight: "700",
+      whiteSpace: "nowrap",
+      textShadow: "0 1px 3px rgba(0, 0, 0, 0.85)",
+      willChange: "transform, opacity",
+    });
+    dmgPool.push({
+      el,
+      active: false,
+      age: 0,
+      x: 0,
+      y: 0,
+      z: 0,
+      head: false,
+      txt: "",
+      px: -1,
+      py: -1,
+      shown: false,
+      lastOp: 1,
+    });
+  }
+
   // --- transient caches (declared first: applyLang() reads prevWeapon) ---------
   let prevHp = -1;
   let prevMag = -1;
@@ -843,8 +941,7 @@ export function createHud(container, bus, audio, i18n) {
   let lastCompassPaint = 0; // strip redraw throttle (~10 Hz, per contract)
 
   // P1 story caches (docs/EXPANSION-P1.md §5.4).
-  let trkIndex = 0; // mission index shown in the tracker (0 = hidden)
-  let trkTitleKey = "";
+  let trkIndex = 0; // mission index shown in the tracker (0 = hidden)  let trkTitleKey = "";
   /** @type {Array<Object>} live objective descriptors (mutated in place) */
   let trkObjs = [];
   /** @type {{row: HTMLElement, glyph: HTMLElement, txt: HTMLElement, obj: Object}[]} */
@@ -852,6 +949,13 @@ export function createHud(container, bus, audio, i18n) {
   let quota = null; // {done, need, district, complete} | null
   let quotaVisible = false; // event-driven default; extras.district refines it
   let eHintShown = false;
+
+  // GUN GAME 2.0 P4 caches (§6.4).
+  let fpsShown = false; // F3 state — hidden until the first toggle
+  let fpsVal = 60; // EMA of 1/dt (lerp factor FPS_SMOOTH)
+  let prevFpsOut = ""; // last painted "FPS {n}" (DOM writes gated on change)
+  /** Scratch Vector3 for number projection — one instance, reused (§1.4). */
+  const dmgV = new Vector3();
 
   // Per-frame scratch for the optional extras argument (zero allocation).
   const bossScratch = {
@@ -1175,10 +1279,16 @@ export function createHud(container, bus, audio, i18n) {
   }
 
   // --- zone toast -------------------------------------------------------------------
-  function showToast(text) {
+  /** Show the shared toast. `gold` (GUN GAME 2.0 P4 §6.4) renders the
+   * achievement variant — color var(--gg-gold), FROZEN style; every call
+   * writes the full style set so normal toasts always reset cleanly. */
+  function showToast(text, gold) {
     toastToken++;
     const my = toastToken;
     toast.textContent = text;
+    toast.style.color = gold ? "var(--gg-gold)" : "#ffe9b0";
+    toast.style.borderColor = gold ? "#ffe9b0" : "var(--gg-gold)";
+    toast.style.fontWeight = gold ? "800" : "";
     toast.style.display = "block";
     toast.style.opacity = "0";
     toast.style.transform = "translateY(-8px)";
@@ -1294,6 +1404,7 @@ export function createHud(container, bus, audio, i18n) {
       evBannerAnim = null;
     }
     hideCompass();
+    hideDmgNumbers(); // GUN GAME 2.0 P4: no floating numbers survive a run end
     mapOpen = false; // the map closes itself on the same states — stay in sync
   }
 
@@ -1362,6 +1473,119 @@ export function createHud(container, bus, audio, i18n) {
         s.yaw,
         EVENT_STRIP_COLORS[s.etype] || "#e8eefc"
       );
+    }
+  }
+
+  // --- GUN GAME 2.0 P4: floating damage numbers + FPS (§6.4) --------------------
+
+  /** "damage-dealt" {pos, amount, headshot} → acquire a free pool slot.
+   * Cap 30 is FROZEN: when every slot is live the new number is DROPPED
+   * (P4-K16 "thừa → bỏ"). The div stays display:none until the next update()
+   * positions it through extras.cam. */
+  function spawnDamageNumber(d) {
+    if (!d || typeof d !== "object") return;
+    const p = d.pos;
+    const amount = Number(d.amount);
+    if (!p || typeof p !== "object") return;
+    if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) {
+      return;
+    }
+    if (!Number.isFinite(amount) || amount <= 0) return;
+    let slot = null;
+    for (let i = 0; i < dmgPool.length; i++) {
+      if (!dmgPool[i].active) {
+        slot = dmgPool[i];
+        break;
+      }
+    }
+    if (!slot) return; // pool exhausted → drop
+    slot.active = true;
+    slot.age = 0;
+    slot.x = Number(p.x);
+    slot.y = Number(p.y);
+    slot.z = Number(p.z);
+    slot.head = d.headshot === true;
+    slot.txt = fmtInt(amount);
+    slot.px = -1;
+    slot.py = -1;
+    slot.shown = false;
+    slot.lastOp = 1;
+    slot.el.textContent = slot.txt;
+    // Headshot: bigger, red, heavier — normal: white (P4-K16).
+    slot.el.style.fontSize = slot.head ? "18px" : "14px";
+    slot.el.style.fontWeight = slot.head ? "800" : "700";
+    slot.el.style.color = slot.head ? "#ff5a4d" : "#f2f7ff";
+    slot.el.style.display = "none";
+  }
+
+  /** Tick the pool from update()'s measured dt. Only update() calls this, so
+   * numbers freeze while paused and die on the next playing frame — the same
+   * principle as the bloodmoon chip. `cam` (extras.cam) missing → numbers
+   * stay invisible but keep aging (P4-K16 "cam thiếu → bỏ số"). */
+  function tickDamageNumbers(dt, cam) {
+    const usableCam = !!cam && typeof cam.project === "function";
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    for (let i = 0; i < dmgPool.length; i++) {
+      const s = dmgPool[i];
+      if (!s.active) continue;
+      s.age += dt;
+      if (s.age >= DMG_LIFE) {
+        s.active = false;
+        if (s.shown) {
+          s.el.style.display = "none";
+          s.shown = false;
+        }
+        continue;
+      }
+      if (!usableCam) {
+        if (s.shown) {
+          s.el.style.display = "none";
+          s.shown = false;
+        }
+        continue;
+      }
+      dmgV.set(s.x, s.y, s.z).project(cam);
+      // NDC out of [-1, 1] = behind the camera or beyond the far plane —
+      // hide this frame (project() has no separate w test to lean on).
+      if (dmgV.z > 1 || dmgV.z < -1) {
+        if (s.shown) {
+          s.el.style.display = "none";
+          s.shown = false;
+        }
+        continue;
+      }
+      const t = s.age / DMG_LIFE;
+      const ipx = Math.round((dmgV.x * 0.5 + 0.5) * w);
+      const ipy = Math.round((-dmgV.y * 0.5 + 0.5) * h - t * DMG_RISE);
+      if (!s.shown) {
+        s.el.style.display = "block";
+        s.shown = true;
+      }
+      if (ipx !== s.px || ipy !== s.py) {
+        s.px = ipx;
+        s.py = ipy;
+        s.el.style.transform =
+          "translate(" + ipx + "px," + ipy + "px) translate(-50%,-50%)";
+      }
+      // Opacity fades over the lifetime; write gated on a 1/50 step.
+      const op = Math.round(clamp(1 - t, 0, 1) * 50) / 50;
+      if (op !== s.lastOp) {
+        s.lastOp = op;
+        s.el.style.opacity = String(op);
+      }
+    }
+  }
+
+  /** Run-scoped wipe (gameover/menu + show(false)) — no leftover numbers. */
+  function hideDmgNumbers() {
+    for (let i = 0; i < dmgPool.length; i++) {
+      const s = dmgPool[i];
+      s.active = false;
+      if (s.shown) {
+        s.el.style.display = "none";
+        s.shown = false;
+      }
     }
   }
 
@@ -1593,6 +1817,30 @@ export function createHud(container, bus, audio, i18n) {
     mapOpen = !!d.open;
   });
 
+  // --- GUN GAME 2.0 P4 widgets (§6.4) ---------------------------------------------
+
+  // F3 (input.js) flips the FPS counter — default hidden, state persists
+  // across runs (HUD visibility itself is owned by root's .hidden class).
+  bus.addEventListener("fps-toggle", () => {
+    fpsShown = !fpsShown;
+    fpsChip.style.display = fpsShown ? "block" : "none";
+  });
+
+  // One floating number per pellet hit (P4-K16 — combat.js emits; until the
+  // integrator wires that emit this listener simply never fires).
+  bus.addEventListener("damage-dealt", (e) => {
+    spawnDamageNumber(e && e.detail ? e.detail : null);
+  });
+
+  // Gold achievement toast (P4-K16/§8.4): name resolves through the achv_*
+  // keys achievements.js registers at module level — an unknown id shows the
+  // raw key rather than crashing (i18n.t never throws).
+  bus.addEventListener("achievement-unlocked", (e) => {
+    const d = e && e.detail ? e.detail : {};
+    const id = String(d.id || "");
+    showToast(tr("achvToast", { name: tr("achv_" + id) }), true);
+  });
+
   // --- extras parsing (per-frame, zero allocation) -----------------------------
 
   /** Fill bossScratch from the optional 4th update() argument. */
@@ -1683,6 +1931,22 @@ export function createHud(container, bus, audio, i18n) {
 
     applyLang();
 
+    // GUN GAME 2.0 P4 (§6.4): FPS EMA from the measured dt (only painted
+    // while shown; update() runs only while playing — pause freezes it, the
+    // same principle as the bloodmoon chip).
+    if (fpsShown) {
+      fpsVal += (1 / dt - fpsVal) * FPS_SMOOTH;
+      const out = "FPS " + Math.round(fpsVal);
+      if (out !== prevFpsOut) {
+        prevFpsOut = out;
+        fpsText.nodeValue = out;
+      }
+    }
+    // Floating damage numbers — projected through extras.cam (P4-K12/K16).
+    // Placed before the player/weapons early return: these widgets tick on
+    // every update() call, independent of the gameplay arguments.
+    tickDamageNumbers(dt, extras ? extras.cam : null);
+
     // Crosshair: ease toward base + weapon spread, plus decaying shot kick.
     kick *= Math.exp(-dt * 9);
     const spread =
@@ -1740,8 +2004,24 @@ export function createHud(container, bus, audio, i18n) {
       prevReloading = reloading;
     }
 
-    // Top-center wave + score.
-    if (gamestate) {
+    // Top-center wave + score. GUN GAME 2.0 P4 (P4-K12/§6.4): while Endless
+    // is active, extras.endless ({wave, score} from endless.snapshot()) takes
+    // over BOTH chips — gamestate.score keeps drifting with the STORY score
+    // in this mode and must not show (gamestate.wave happens to track, but
+    // the contract routes the endless values through extras).
+    const endless = extras && typeof extras === "object" ? extras.endless : null;
+    if (endless && typeof endless === "object" && endless.active === true) {
+      const eScore = Math.round(Number(endless.score) || 0);
+      if (eScore !== prevScore) {
+        scoreVal.textContent = fmtInt(eScore);
+        prevScore = eScore;
+      }
+      const eWave = Math.round(Number(endless.wave) || 0);
+      if (eWave !== prevWave) {
+        waveVal.textContent = fmtInt(eWave);
+        prevWave = eWave;
+      }
+    } else if (gamestate) {
       const score = Math.round(Number(gamestate.score) || 0);
       if (score !== prevScore) {
         scoreVal.textContent = fmtInt(score);

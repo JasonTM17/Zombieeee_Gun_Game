@@ -3,7 +3,7 @@
  *
  * Key identifiers are `KeyboardEvent.code` strings: "KeyW", "KeyA", "KeyS",
  * "KeyD", "ShiftLeft"/"ShiftRight", "Space", "KeyR", "KeyP", "Escape",
- * "KeyB", "KeyE", "KeyM", "Digit1"…"Digit7". Mouse buttons are addressable as
+ * "KeyB", "KeyE", "KeyM", "F3", "Digit1"…"Digit7". Mouse buttons are addressable as
  * "Mouse0" (left / fire), "Mouse1" (middle), "Mouse2" (right) for isDown().
  * Digit4…Digit7 need NO extra plumbing (EXPANSION C7): wasPressed() already
  * forwards EVERY KeyboardEvent.code one-shot, so weapons.js polls Digit4..7
@@ -28,6 +28,11 @@
  *   (state "playing") and the shop is NOT already open. The map overlay
  *   (src/ui/map.js) listens for this itself and flips its canvas + emits
  *   "map-visibility" {open} (the HUD hides the compass strip while open).
+ * - "fps-toggle" — per keydown of F3 (auto-repeat ignored), GUN GAME 2.0 P4
+ *   (docs/EXPANSION-P4.md §6.4/P4-K17). Gated ONLY by !shopOpen (like E, not
+ *   B/M's extra "playing" check) and emitted in EVERY state: the HUD that
+ *   listens is hidden in menus, so a stray toggle is harmless and the chosen
+ *   state persists into the next run. Default is hidden (hud.js).
  *
  * Shop coordination (EXPANSION C7 + integration note 1 in docs/EXPANSION.md):
  * - This module tracks the overlay via bus "shop-open" / "shop-closed"
@@ -187,6 +192,18 @@ export function createInput(canvas, settings) {
       // (src/ui/map.js) listens for this event itself.
       if (!shopOpen && lastKnownState === "playing") {
         bus.dispatchEvent(new CustomEvent("map-toggle"));
+      }
+    } else if (e.code === "F3") {
+      // F3 = FPS counter toggle (GUN GAME 2.0 P4, docs/EXPANSION-P4.md
+      // §6.4/P4-K17). Gate is ONLY !shopOpen (like E — not B/M's extra
+      // "playing" check): emitted in EVERY state, because the HUD that
+      // listens is hidden in the menus anyway, so a toggle there is harmless
+      // and the state simply survives into the next run. Auto-repeat never
+      // reaches this branch (the early e.repeat return above). preventDefault
+      // keeps the browser's own "Find next" binding from swallowing the key.
+      if (!shopOpen) {
+        e.preventDefault();
+        bus.dispatchEvent(new CustomEvent("fps-toggle"));
       }
     }
   });
