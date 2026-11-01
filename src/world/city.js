@@ -1588,10 +1588,14 @@ export function createCity(scene, level) {
     if (!level || !level.colliders) return null;
     for (let i = 0; i < level.colliders.length; i++) {
       const c = level.colliders[i];
-      // level.js §3.2: the vault box is 4×4 CENTERED on (0,0) — maxZ is −2,
-      // not +2 (integrator fix: the +2 typo made this scan never match, so
-      // the open splice and the close re-push both silently no-op'd).
-      if (c && c.minX === -2 && c.maxX === 2 && c.minZ === -2 && c.maxZ === -2) {
+      // level.js:599 builds the vault box as {−2..2 × −2..2} — a real 4×4
+      // CENTERED on (0,0), so maxZ is +2 (the contract's "maxZ: −2" is a
+      // typo; a zero-depth box would also stop blocking the closed door).
+      // This scan must match THAT record — a maxZ === −2 test never matched,
+      // so the open splice and the close re-push both silently no-op'd and
+      // the invisible box stayed solid over the opened vault (Origin stuck,
+      // player held 2.4 m out of melee reach).
+      if (c && c.minX === -2 && c.maxX === 2 && c.minZ === -2 && c.maxZ === 2) {
         vaultCollider = c;
         break;
       }

@@ -59,6 +59,18 @@
  * - getState(): the legacy snapshot PLUS {event: {type, timeLeft}|null,
  *   bloodmoon: boolean}.
  *
+ * NIGHT 30 P3 api (docs/EXPANSION-P3.md §6.4) — same pattern:
+ * - spawnOrigin(): jump to mission 10 (opens gates, fires "mission-start"
+ *   {index:10} → main opens the vault + spawns), then spawn directly if the
+ *   Origin is still missing; {ok, hp, maxHp, phase}.
+ * - damageOrigin(n): takeDamage to the live Origin; {hp, maxHp, phase,
+ *   killed} or {error:"no-origin-alive"}.
+ * - originState(): {alive, phase, hp, maxHp, state} or {alive:false}.
+ * - skipToEnding(): kill the living Origin through the REAL death road
+ *   (takeDamage(hp+1)) or fire the synthetic "origin-defeated" {debug:true};
+ *   {state, ending}.
+ * - getState(): the legacy snapshot PLUS {origin, ngPlus}.
+ *
  * register(api) replaces the no-op methods with the api's own methods (same
  * names); unknown api keys are ignored. window.__game must exist as soon as
  * createDebugHook() is called (before registration), so console calls never
@@ -79,7 +91,9 @@
  *   startStory?: Function, skipToMission?: Function,
  *   completeObjective?: Function, fillQuota?: Function,
  *   teleportDistrict?: Function,
- *   forceEvent?: Function, audioState?: Function
+ *   forceEvent?: Function, audioState?: Function,
+ *   spawnOrigin?: Function, damageOrigin?: Function,
+ *   originState?: Function, skipToEnding?: Function
  * }) => void} register - install the real api onto window.__game.
  */
 
@@ -112,6 +126,14 @@ const DEBUG_KEYS = [
   // register() time.
   "forceEvent",
   "audioState",
+  // NIGHT 30 P3 (docs/EXPANSION-P3.md §6.4) — wired by main.js at
+  // register() time; keys absent from this list are still ignored, so every
+  // debug-api function main.js installs must be listed here or window.__game
+  // keeps the not-registered stub forever.
+  "spawnOrigin",
+  "damageOrigin",
+  "originState",
+  "skipToEnding",
 ];
 
 export function createDebugHook() {

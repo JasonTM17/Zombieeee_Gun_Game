@@ -271,7 +271,14 @@ let storyRun = false; // the last run was started as STORY (PLAY), not free-roam
 let keepStory = false; // decision for the ui-play currently being dispatched
 bus.addEventListener("ui-play", () => {
   keepStory =
-    gamestate.state === "gameover" && storyRun && missions.current >= 2;
+    gamestate.state === "gameover" && storyRun &&
+    (missions.current >= 2 ||
+      // NIGHT 30 P3 (P3-K15): an NG+ run STARTS at mission 1 — a death there
+      // must still take the keep road, or PLAY AGAIN falls into
+      // beginFreshStory() (ngPlus=false + economy/weapons/shop reset) and
+      // wipes the money + guns the player carried into NG+. The plain-story
+      // rule (§5.6.3) is untouched: without ngPlus, m1 still resets clean.
+      gamestate.ngPlus === true);
   bus.dispatchEvent(
     new CustomEvent("story-keep", { detail: { hold: keepStory } })
   );
@@ -728,8 +735,22 @@ bus.addEventListener("ui-play", () => {
     // PLAY AGAIN after a death at mission ≥ 2 of a story run (§5.6.3):
     // world reset, story + money kept, straight back into the fight — the
     // intro is a story-START experience, not a respawn experience.
+    // NIGHT 30 P3 (P3-K15): an NG+ death-restart keeps the carried GUNS too —
+    // freshRun(true) below un-owns them (weapons.reset()) and forgets the
+    // shop Set, so capture the ids BEFORE the reset and re-own AFTER (the
+    // same road beginNGPlus() uses; the plain story keep — P1 §5.6.3 — keeps
+    // only money + missions and is left untouched).
+    const owned = gamestate.ngPlus === true ? shop.owned() : null;
     freshRun(true);
     storyMode(true); // re-assert (idempotent) after the zones.reset above
+    if (owned) {
+      for (let i = 0; i < owned.length; i++) {
+        // Ownership flag lives on the weapon defs (weapons.js:23); the shop
+        // Set stays cleared — buy()/owned() also read w.owned (shop.js).
+        const w = weapons.list.find((x) => x.name === owned[i]);
+        if (w) w.owned = true;
+      }
+    }
     gamestate.start(); // → playing directly
     reAnnounceMission();
   } else if (gamestate.state === "gameover" && !storyRun) {

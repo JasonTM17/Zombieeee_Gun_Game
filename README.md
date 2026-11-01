@@ -110,7 +110,7 @@ Boss gục **rơi CHẮC 1 medkit + 1 ammo** tại chỗ gục; thưởng tiền
 
 ## ĐÊM THỨ 30 — Phần 1: Thế giới mở
 
-Bản mở rộng cốt truyện: thành phố **~260×260 m gồm 7 khu** bao quanh đấu trường cũ (nay là Vùng Cách Ly), chuỗi **9 nhiệm vụ** và hệ thống cổng phong toả mở dần theo tiến trình.
+Bản mở rộng cốt truyện: thành phố **~260×260 m gồm 7 khu** bao quanh đấu trường cũ (nay là Vùng Cách Ly), chuỗi **9 nhiệm vụ** *(Phần 3: kéo dài thành **10** — kết ở boss cuối "Nguồn Gốc" + màn kết)* và hệ thống cổng phong toả mở dần theo tiến trình.
 
 ### Bản đồ 7 khu
 
@@ -136,9 +136,9 @@ Bản mở rộng cốt truyện: thành phố **~260×260 m gồm 7 khu** bao q
 | Hospital · Bệnh Viện | 30 | **M4 — Thuốc Cho Bệnh Nhân / Medicine Run**: quota 30 + 3 hộp thuốc |
 | Park · Công Viên | 25 | **M5 — Lửa Trại Cầu Cứu / Signal Fire**: quota 25 + bật đống lửa |
 | Docks · Bến Cảng | 30 | **M6 — Nhiên Liệu / Fuel Run**: quota 30 + 4 can xăng |
-| Quarantine · Vùng Cách Ly | — (vào bằng nhiệm vụ) | **M7 — Vào Tâm Dịch / Into the Swarm** (trụ 60 s) · **M8 — Vệ Binh Cách Ly / The Warden** (hạ boss) · **M9 — Cánh Cửa Cuối / The Last Door** (tới cửa thép trung tâm) |
+| Quarantine · Vùng Cách Ly | — (vào bằng nhiệm vụ) | **M7 — Vào Tâm Dịch / Into the Swarm** (trụ 60 s) · **M8 — Vệ Binh Cách Ly / The Warden** (hạ boss) · **M9 — Cánh Cửa Cuối / The Last Door** (tới cửa thép trung tâm) · **M10 — Nguồn Gốc / The Origin** *(Phần 3: hạ boss cuối — cửa vault mở, Origin trồi dậy)* |
 
-Thưởng nhiệm vụ: $300 → $600 tăng dần (m1 $300, m2 $325, m3 $350, m4 $400, m5 $425, m6 $450, m7 $500, m8 $550, m9 $600).
+Thưởng nhiệm vụ: $300 → $600 tăng dần (m1 $300, m2 $325, m3 $350, m4 $400, m5 $425, m6 $450, m7 $500, m8 $550, m9 $600, m10 $600 — *Phần 3*).
 
 ### Cổng phong toả + quota
 
@@ -151,11 +151,11 @@ Thưởng nhiệm vụ: $300 → $600 tăng dần (m1 $300, m2 $325, m3 $350, m4
 
 Đứng gần điểm nhiệm vụ phát sáng (máy phát điện, gói tiếp tế, hộp thuốc, can xăng, đống lửa trại…) trong **3 m** → chip **"E — TƯƠNG TÁC"** hiện cạnh tâm màn hình kèm tên mục tiêu. Bấm `E` trong **2 m** để kích hoạt / nhặt: máy phát và lửa trại bật sáng vĩnh viễn, vật phẩm nhặt biến mất khỏi thế giới.
 
-### Cốt truyện — 9 nhiệm vụ
+### Cốt truyện — 9 nhiệm vụ *(Phần 3: 10)*
 
 - **PLAY** khởi động cốt truyện: 4 slide intro chữ trắng nền đen mờ dần → nhiệm vụ 1. **CHƠI TỰ DO** bỏ qua intro, nhiệm vụ 1 active ngay.
-- Thoại hiện **từng ký tự** trong hộp dưới màn hình với 3 giọng: GIỌNG RADIO · BẠN · KHÔNG RÕ (click chuột hoặc `E` để bỏ qua nhanh). Kết thúc M9 là outro 3 dòng — dòng giữa hiện dạng **banner chữ hoa** ("HẾT PHẦN 1 — …") — rồi vào chế độ chơi tự do.
-- Chết từ **nhiệm vụ 2 trở lên**: "PLAY AGAIN" **giữ nguyên tiền + tiến trình nhiệm vụ**, hồi sinh tại An Toàn Nhà. Chết ở nhiệm vụ 1 hoặc chơi CHƠI TỰ DO: reset sạch như cũ.
+- Thoại hiện **từng ký tự** trong hộp dưới màn hình với 3 giọng: GIỌNG RADIO · BẠN · KHÔNG RÕ (click chuột hoặc `E` để bỏ qua nhanh). *(Phần 3: outro sau M9 đã bỏ — xong M9 cascade thẳng vào nhiệm vụ 10, cửa vault mở và Nguồn Gốc trỗi dậy; kết truyện là màn kết thật sau khi hạ Origin — xem mục Phần 3.)*
+- Chết từ **nhiệm vụ 2 trở lên**: "PLAY AGAIN" **giữ nguyên tiền + tiến trình nhiệm vụ**, hồi sinh tại An Toàn Nhà. Chết ở nhiệm vụ 1 hoặc chơi CHƠI TỰ DO: reset sạch như cũ. *(Phần 3: riêng run NEW GAME+ thì chết kể cả ở nhiệm vụ 1 vẫn giữ tiền + súng + cờ NG+ — mục Phần 3.)*
 
 <details>
 <summary><b>SPOILER — tóm tắt cốt truyện (bấm để mở)</b></summary>
@@ -181,7 +181,7 @@ Bổ sung cho bảng debug sẵn có trên console (các phím cũ như `spawnZo
 | `spawnOrigin()` | *(Phần 3)* Nhảy tới nhiệm vụ 10 (mở đủ cổng) và trỗi dậy **Nguồn Gốc** từ vault — `{ok, hp, maxHp, phase}`; Origin sống sẵn thì không spawn trùng |
 | `damageOrigin(n)` | *(Phần 3)* Gây `n` (mặc định 100) lên Origin đang sống — `{hp, maxHp, phase, killed}`; đang rise/chuyển phase là bất tử (trả về trạng thái, không trừ) |
 | `originState()` | *(Phần 3)* Trạng thái Origin — `{alive, phase, hp, maxHp, state}` hoặc `{alive:false}` |
-| `skipToEnding()` | *(Phần 3)* Nhảy thẳng màn kết để kiểm thử: Origin sống → chết qua đường thật (`takeDamage(hp+1)` — đủ mọi event); không có → phát `"origin-defeated" {debug:true}` — `{state, ending}` |
+| `skipToEnding()` | *(Phần 3)* Nhảy thẳng màn kết để kiểm thử: Origin sống → chết qua đường thật (`takeDamage(hp+1)` — đủ mọi event; đang trồi/chuyển phase thì ép sang state fight trước vì state đó bất tử); không có → phát `"origin-defeated" {debug:true}` — `{state, ending}` |
 
 ## ĐÊM THỨ 30 — Phần 2: Sự kiện & Bản đồ & Giọng Zombie
 
@@ -246,10 +246,10 @@ Giết Origin → chuỗi kết tự động: **2 s slow-zoom** camera + tiếng
 | Nút | Làm gì |
 |---|---|
 | **CHƠI TIẾP — THẾ GIỚI MỞ** | Roam tiếp thế giới hiện tại: mọi nhiệm vụ done (free-roam), sự kiện vẫn tự nổ, kill vẫn ra tiền |
-| **NEW GAME+** | **Giữ**: tiền + mọi súng đã sở hữu + settings. **Reset**: thế giới, cổng, vault, chuỗi nhiệm vụ về m1. **Khó hơn**: zombie hp **×1.25**, tốc độ **×1.1** (Origin 3000 → 3750, speed 1.6 → 1.76) — chết-restart trong run NG+ vẫn giữ tiền + cờ NG+ |
+| **NEW GAME+** | **Giữ**: tiền + mọi súng đã sở hữu + settings. **Reset**: thế giới, cổng, vault, chuỗi nhiệm vụ về m1. **Khó hơn**: zombie hp **×1.25**, tốc độ **×1.1** (chỉ áp cho đơn MỚI sinh; Origin 3000 → 3750, speed 1.6 → 1.76) — chết-restart trong run NG+ (mọi nhiệm vụ, kể cả m1) vẫn giữ tiền + súng + cờ NG+ |
 | **VỀ MENU** | Về menu chính (chạy lại từ đầu như cũ) |
 
-> Chết ở **NG+ nhiệm vụ 1** mà bấm PLAY AGAIN thì vào lại story mới (intro slides) — tiền/súng NG+ không giữ qua đường reset sạch đó; từ nhiệm vụ ≥ 2 trở đi là giữ (luật story-keep P1).
+> Chết **ở bất kỳ nhiệm vụ nào của run NG+** (kể cả nhiệm vụ 1) mà bấm PLAY AGAIN: đi đường story-keep — **tiền + súng đã mua + cờ NG+ đều giữ**, hồi sinh tại An Toàn Nhà, nhiệm vụ đang làm chạy lại (không intro slides). Cờ NG+ chỉ tắt khi bạn bắt đầu **story mới** hoặc **CHƠI TỰ DO** (reset sạch như luật P1).
 
 ### Bảng cân bằng tóm tắt (chi tiết + lý do đầy đủ: `docs/BALANCE.md`)
 
