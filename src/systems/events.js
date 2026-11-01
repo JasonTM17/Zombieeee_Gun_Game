@@ -926,6 +926,25 @@ export function createEvents(bus, city, audio, hooks, scene) {
     legRGeo.translate(0.12, 0.275, 0);
     const armStaticGeo = new THREE.BoxGeometry(0.12, 0.5, 0.14);
     armStaticGeo.translate(0.31, 0.95, 0);
+    // Vertex colors fold the skin head into the merged body — one draw for
+    // body+head+legs+static arm (§3.5.2 ≤ 2 draws with the waving arm; the
+    // old third mesh was a redundant skin cap).
+    const tintVerts = (geo, hex) => {
+      const c = new THREE.Color(hex);
+      const n = geo.attributes.position.count;
+      const arr = new Float32Array(n * 3);
+      for (let i = 0; i < n; i++) {
+        arr[i * 3] = c.r;
+        arr[i * 3 + 1] = c.g;
+        arr[i * 3 + 2] = c.b;
+      }
+      geo.setAttribute("color", new THREE.BufferAttribute(arr, 3));
+    };
+    tintVerts(bodyGeo, SURVIVOR_COLOR);
+    tintVerts(headGeo, SURVIVOR_SKIN);
+    tintVerts(legLGeo, SURVIVOR_COLOR);
+    tintVerts(legRGeo, SURVIVOR_COLOR);
+    tintVerts(armStaticGeo, SURVIVOR_COLOR);
     const merged = mergeGeometries([bodyGeo, headGeo, legLGeo, legRGeo, armStaticGeo], false);
     bodyGeo.dispose();
     headGeo.dispose();
@@ -933,22 +952,15 @@ export function createEvents(bus, city, audio, hooks, scene) {
     legRGeo.dispose();
     armStaticGeo.dispose();
     if (!merged) return null; // BufferGeometryUtils malformed: skip, no crash
-    const bodyMat = new THREE.MeshLambertMaterial({ color: SURVIVOR_COLOR, transparent: true });
+    const bodyMat = new THREE.MeshLambertMaterial({ color: 0xffffff, vertexColors: true, transparent: true });
     geos.push(merged);
     mats.push(bodyMat);
     const body = new THREE.Mesh(merged, bodyMat);
     body.castShadow = true;
-    // Skin-tone head painted as a tiny separate mesh (2 draws total with arm).
-    const headMat = new THREE.MeshLambertMaterial({ color: SURVIVOR_SKIN, transparent: true });
-    const headGeo2 = new THREE.BoxGeometry(0.26, 0.26, 0.26);
-    geos.push(headGeo2);
-    mats.push(headMat);
-    const head = new THREE.Mesh(headGeo2, headMat);
-    head.position.set(0, 1.31, 0);
-    head.castShadow = true;
     // Waving arm: pivot at the shoulder, geometry extends +Y from it.
     const armGeo = new THREE.BoxGeometry(0.12, 0.5, 0.14);
     armGeo.translate(0, 0.25, 0);
+    tintVerts(armGeo, SURVIVOR_COLOR);
     geos.push(armGeo);
     const arm = new THREE.Mesh(armGeo, bodyMat);
     arm.position.set(-0.31, 1.18, 0);
@@ -956,7 +968,6 @@ export function createEvents(bus, city, audio, hooks, scene) {
 
     const group = new THREE.Group();
     group.add(body);
-    group.add(head);
     group.add(arm);
     group.position.set(p.x, 0, p.z);
     if (sceneRef) sceneRef.add(group);
@@ -1146,7 +1157,7 @@ export function createEvents(bus, city, audio, hooks, scene) {
     for (let i = 0; i < list.length; i++) {
       const ev = list[i];
       if (ev.type !== "bloodmoon") continue;
-      emit("bloodmoon-active", { active: false, duration: DURATIONS.bloodmoon });
+      emit("bloodmoon-active", { active: false, duration: DURATIONS.bloodmoon, reason: "reset" });
       emit("event-end", { type: "bloodmoon", reason: "reset" });
     }
     for (let i = 0; i < list.length; i++) {

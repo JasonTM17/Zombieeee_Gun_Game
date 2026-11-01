@@ -1576,7 +1576,9 @@ export function createHud(container, bus, audio, i18n) {
       showBloodChip(Number(d.duration) > 0 ? Number(d.duration) : 90);
     } else {
       hideBloodChip();
-      showToast(tr("event_bloodmoon_end"));
+      // A "reset"-reason off (fresh run while the moon was up) must not leak
+      // the "moon wanes" toast into the new run's first seconds.
+      if (d.reason !== "reset") showToast(tr("event_bloodmoon_end"));
     }
   });
 

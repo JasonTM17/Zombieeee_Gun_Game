@@ -322,12 +322,14 @@ export function createMap(container, bus, city) {
 
     // Union with extras.event — self-heals a cache entry lost to a missed
     // "event-end" of an earlier same-type event (crates may overlap, §3.4.5).
+    // A finite extras timeLeft (live snapshot, 10 Hz) overwrites the cache and
+    // kills drift after the overlay sat closed past the 30 s decay clamp.
     if (extras && extras.event && extras.event.type) {
       upsertEvent(
         String(extras.event.type),
         Number(extras.event.x),
         Number(extras.event.z),
-        NaN
+        Number.isFinite(extras.event.timeLeft) ? Number(extras.event.timeLeft) : NaN
       );
     }
 

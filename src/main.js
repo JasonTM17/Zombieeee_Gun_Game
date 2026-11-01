@@ -410,8 +410,14 @@ bus.addEventListener("event-start", (e) => {
 bus.addEventListener("event-end", (e) => {
   const d = e && e.detail ? e.detail : {};
   const type = String(d.type || "");
+  // One "event-end" removes ONE marker: every ended instance emits its own
+  // (reset included), so a blanket splice would strip the surviving twin's
+  // marker when same-type events overlap (§3.4.5).
   for (let i = eventMarkers.length - 1; i >= 0; i--) {
-    if (eventMarkers[i].type === type) eventMarkers.splice(i, 1);
+    if (eventMarkers[i].type === type) {
+      eventMarkers.splice(i, 1);
+      break;
+    }
   }
 });
 /** Newest still-active event marker (matches events.active()) or null. */
@@ -825,6 +831,7 @@ const hudEventScratch = { type: "", x: 0, z: 0 };
 // mapExtras (§8.4): the map's 10 Hz argument — boss + yaw + mission/event.
 const mapExtrasScratch = { boss: null, yaw: 0, mission: null, event: null };
 const mapBossScratch = { x: 0, z: 0, type: "" };
+const mapEventScratch = { type: "", x: null, z: null, timeLeft: NaN };
 let mapTimer = 0; // 10 Hz map repaint accumulator (§4.0/§8.2)
 
 /**
@@ -875,7 +882,16 @@ function missionMarker() {
   } else {
     return null; // "boss": no fixed point
   }
-  const d = city.districts.find((x) => x.id === districtId);
+  // Plain loop, not .find(lambda): missionMarker() runs every frame and the
+  // callback would be a fresh allocation each call (no per-frame allocs).
+  let d = null;
+  for (let i = 0; i < city.districts.length; i++) {
+    const cand = city.districts[i];
+    if (cand && cand.id === districtId) {
+      d = cand;
+      break;
+    }
+  }
   if (d && d.center && Number.isFinite(d.center.x) && Number.isFinite(d.center.z)) {
     hudMissionScratch.x = d.center.x;
     hudMissionScratch.z = d.center.z;
@@ -934,7 +950,20 @@ function mapExtras() {
   }
   mapExtrasScratch.yaw = camera.rotation.y;
   mapExtrasScratch.mission = missionMarker();
-  mapExtrasScratch.event = activeEventMarker();
+  const em = activeEventMarker();
+  if (em) {
+    // The live snapshot is the authoritative countdown — the map's own cache
+    // only interpolates between draws, so a resync every 10 Hz kills drift
+    // after the overlay was closed for a while (map decay clamps catch-up).
+    const live = events.active(); // {type, timeLeft}|null (§8.7)
+    mapEventScratch.type = em.type;
+    mapEventScratch.x = em.x;
+    mapEventScratch.z = em.z;
+    mapEventScratch.timeLeft = live && live.type === em.type ? live.timeLeft : NaN;
+    mapExtrasScratch.event = mapEventScratch;
+  } else {
+    mapExtrasScratch.event = null;
+  }
   return mapExtrasScratch;
 }
 
