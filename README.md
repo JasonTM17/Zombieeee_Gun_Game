@@ -39,6 +39,7 @@ npm run preview   # phục vụ dist/ tại http://localhost:4173
 | `1` `2` `3` hoặc con lăn chuột | Đổi súng |
 | `4` `5` `6` `7` | Đổi sang súng mua trong cửa hàng: `4` SMG · `5` Sniper · `6` Minigun · `7` Grenade Launcher (đổi súng chỉ luân chuyển trong các súng **đã sở hữu**) |
 | `B` | Mở / đóng **CỬA HÀNG** (game tạm dừng khi cửa hàng mở; `Esc`/`B` để đóng) |
+| `M` | Mở / đóng **BẢN ĐỒ** — overlay 7 khu toàn thành phố (chỉ khi đang chơi; cửa hàng mở thì phím im lặng) |
 | `Esc` (hoặc `P`) | Tạm dừng / tiếp tục |
 
 ## Tính năng
@@ -174,7 +175,44 @@ Bổ sung cho bảng debug sẵn có trên console (các phím cũ như `spawnZo
 | `completeObjective()` | Force-complete mục tiêu đầu tiên chưa xong của nhiệm vụ hiện tại |
 | `fillQuota()` | Lấp đầy quota của nhiệm vụ hiện tại |
 | `teleportDistrict(id)` | Mở mọi cổng trên đường BFS ngắn nhất rồi dịch chuyển tới tâm khu (`safehouse`/`residential`/`commercial`/`hospital`/`park`/`docks`/`quarantine`) |
-| `getState()` | Snapshot mở rộng: thêm `story` (nhiệm vụ + objectives), `currentDistrict`, `unlockedDistricts` |
+| `getState()` | Snapshot mở rộng: thêm `story` (nhiệm vụ + objectives), `currentDistrict`, `unlockedDistricts`, `event` (`{type, timeLeft}|null`), `bloodmoon` (`true` khi Trăng Máu đang chạy) |
+| `forceEvent(type)` | *(Phần 2)* Bắt ngay sự kiện `"horde"|"supply"|"survivor"|"bloodmoon"` — bỏ qua cooldown nhưng vẫn tôn trọng luật loại trừ bloodmoon; type sai → `{ok:false, valid:[…]}` |
+| `audioState()` | *(Phần 2)* Snapshot giọng zombie 3D — `{ctxState, activeVoices}` |
+
+## ĐÊM THỨ 30 — Phần 2: Sự kiện & Bản đồ & Giọng Zombie
+
+Mở rộng gameplay khi đang chơi: hệ thống **sự kiện ngẫu nhiên** tự nổ, **bản đồ toàn thành phố** và **compass strip** chỉ hướng, cùng hệ thống **giọng zombie 3D**.
+
+### Sự kiện ngẫu nhiên
+
+Sự kiện đầu nổ sau **40–80 s** chơi; giữa hai sự kiện nghỉ **45–120 s** (chỉ tính thời gian playing — pause/menu tự đóng băng). Pool có trọng số horde 30 / supply 25 / survivor 25 / bloodmoon 20, **không lặp cùng loại 2 lần liền**, chỉ chọn khu **đã mở**. Nhiều sự kiện thường có thể chạy chồng nhau — riêng **bloodmoon loại trừ mọi sự kiện khác** khi đang chạy. Marker sự kiện hiện trên bản đồ `M` và compass strip.
+
+| Sự kiện | Điều kiện xuất hiện | Cách xử lý | Phần thưởng |
+|---|---|---|---|
+| 🚨 HORDE (40 s) | còi hụ 2 s + banner 🚨 "HORDE ĐANG TỚI" | 8 + ⌊nhiệm vụ đang làm / 2⌋ runner dồn dập trong 6 s từ khu đã mở khác — đặt lưng vào tường, súng auto, sống sót qua 40 s | tiền hạ zombie như thường |
+| 📦 TIẾP TẾ (90 s) | thùng rơi từ 20 m xuống trong 4 s tại điểm cách bạn ≥ 15 m, kèm cột khói đỏ + beacon sáng | tới thùng, bấm `E` trong 2 m (chip "E — TƯƠNG TÁC" hiện từ 3 m); bỏ 90 s thùng tự biến mất | 200–400$ + +40 HP + full đạn súng hiện tại |
+| 🆘 NGƯỜI SỐNG SÓT (90 s) | banner 🆘 + marker; survivor bị 5 zombie vây tại khu đã mở | hạ hết 5 zombie vây rồi tới < 2 m; trễ 90 s survivor bị giết | +300$ + medkit (+40 HP) + lời cảm ơn |
+| 🌕 TRĂNG MÁU (90 s) | chỉ nổ khi không sự kiện nào khác đang chạy; trời + sương đỏ lerp ~2.5 s, banner 🌕 đếm ngược | dữ sẵn đạn, dựng thế thủ — mọi cơ chế cũ giữ nguyên | tiền hạ zombie **×2** suốt 90 s |
+
+> **Trăng Máu ×2:** trong 90 s bloodmoon, **tiền ×2** (mọi thưởng hạ zombie) và **spawn dày ×2** (gap sinh ×0.5) — hết sự kiện trả về bình thường.
+
+> **Deviation (P2-K5):** "+1 medkit" của tiếp tế / người sống sót là **hiệu ứng tức thời +40 HP** (cap 100) thay vì medkit vật lý rơi xuống — `pickups.spawn` clamp vào arena/north/east, medkit rơi ở khu khác sẽ bị dịch chuyển ~100 m khỏi điểm rơi.
+
+### Bản đồ M (phím `M`)
+
+Bấm `M` khi chơi để bật/tắt overlay bản đồ toàn thành phố (bản đồ chỉ xem — không chặn chuột):
+
+- **7 khu** vẽ theo toạ độ thật, 3 trạng thái: khoá **đỏ sẫm** / đã mở **xanh xám** / khu hiện tại sáng hơn kèm **viền vàng**; tên khu EN/VI theo ngôn ngữ đang chọn; lưới toạ độ mờ mỗi 20 m.
+- **Mũi tên trắng** = player, xoay theo hướng nhìn.
+- **Marker**: nhiệm vụ hiện tại (hình thoi vàng nhấp nháy), sự kiện đang chạy (horde đỏ / tiếp tế hổ phách / người sống sót xanh lục; bloodmoon phủ đỏ cả map + đếm ngược), boss còn sống (chấm đỏ to + tên).
+- **Cổng**: xanh khi mở, đỏ khi khoá — đọc live từng lần vẽ.
+- Chữ dưới đáy: `[M] — ĐÓNG BẢN ĐỒ`; nội dung cập nhật 10 Hz khi mở.
+
+Khi **đóng** bản đồ, một **compass strip** mỏng trên cùng HUD tiếp tục chỉ hướng nhiệm vụ + sự kiện đang chạy (vượt ngoài tầm nhìn thì kẹp mép; ẩn khi không có marker, HUD ẩn hoặc bản đồ đang mở).
+
+### Giọng zombie 3D
+
+Mỗi zombie phát **6 loại tiếng theo trạng thái** — idle (lầu bầu) · alert (gầm gừ dồn dập) · chase (rít) · attack (gằn răng) · pain (rên ngắn, throttle 0.4 s) · death (quẫy tắt dần) — synth WebAudio thuần, không file, cho **7 loại**: walker trầm chậm, runner khàn cao nhanh, brute "cối xay thịt" (thêm distortion), butcher gầm kim loại, spitter khạc ướt, screamer gào men cao, golem rền đá trầm. Trộn 3D: **volume theo khoảng cách** (cắt ở 35 m) và **stereo pan trái–phải** theo hướng so với camera; tối đa **8 giọng đồng thời** ưu tiên con gần nhất (boss luôn thắng chỗ). **Rì rầm bầy** nền dày lên theo số zombie < 20 m, ×1.6 khi horde hoặc bloodmoon.
 
 ## Cấu trúc source
 
