@@ -28,6 +28,30 @@
  * exactly the three starter weapons — money resets to 0 on a fresh run, so
  * bought guns reset with it (the shop economy stays meaningful).
  *
+ * WEAPON UPGRADES (GUN GAME 2.0 feature B — docs/EXPANSION-P4.md §4.1/P4-K6):
+ * every weapon instance carries `upgrades {dmg: 0..3, mag: 0..3, rl: 0..3}`
+ * (0 = stock). The WEAPONS[] def table above stays IMMUTABLE — the effective
+ * values are written onto the RUNTIME entry by the internal applyUpgrades()
+ * helper, so combat.js and the HUD keep reading the same fields:
+ *   damage  = base × (1 + 0.2 × dmg)          → ×1.0 / 1.2 / 1.4 / 1.6
+ *   magSize = floor(base × (1 + 0.25 × mag))  → ×1.0 / 1.25 / 1.5 / 1.75
+ *   reload  = base × (1 − 0.12 × rl)          → ×1.0 / 0.88 / 0.76 / 0.64
+ * (reload is resolved on demand via effectiveReloadTime() — reload() and the
+ * viewmodel reload animation both use it; nothing is stored over the def).
+ * Public surfaces added for this feature (all additive, beyond the frozen
+ * factory signature, like reset()/unlock()):
+ *   getStats(name?) → {name, damage, magSize, reloadTime, upgrades} — ACTIVE
+ *     weapon when name is omitted, null for an unknown name (shop UI + the
+ *     save snapshot read through this).
+ *   setUpgrades(name, patch) → set track levels from the shop / restore path;
+ *     every provided track is clamped to an integer 0..3, then effects apply.
+ *   applySaveState(entries) → restore {name, owned, reserve, upgrades} from a
+ *     save after reset() (save/continue, feature P4-A). Never un-owns a
+ *     weapon; reserve null → Infinity (pistol); unknown names are ignored;
+ *     restored guns come back mag-full.
+ * reset() zeroes the upgrades (fresh run); main.js re-applies the captured
+ * levels on NG+/save-restore through setUpgrades()/applySaveState().
+ *
  * AUTO-RELOAD (feature A — three cases, exactly per contract):
  * 1. The shot that empties the mag with reserve > 0 arms a ONE-SHOT pending
  *    auto-reload that fires 0.35 s later. It is never re-armed while pending,
@@ -138,6 +162,10 @@
  *   applies (default 2; sniper 3 — read from the weapon def, feature B6).
  * @property {boolean} explosive - grenade only: route "fire" to
  *   explosives.fire(origin, dir), never to combat.shoot.
+ * @property {{dmg: number, mag: number, rl: number}} upgrades - GUN GAME 2.0
+ *   (feature B): per-gun upgrade levels, one integer 0..3 per track
+ *   ("dmg" = damage, "mag" = magazine size, "rl" = reload speed); 0 = stock.
+ *   Effective damage/magSize are mirrored onto this entry by applyUpgrades().
  */
 
 /**
@@ -167,6 +195,24 @@
  * @property {() => WeaponState} getState
  *   The ACTIVE weapon's state; HUD/debug use at least
  *   {name, mag, magSize, reserve, reloading, spread}.
+ * @property {(name?: string) => ({name: string, damage: number, magSize: number, reloadTime: number, upgrades: {dmg: number, mag: number, rl: number}} | null)} getStats
+ *   GUN GAME 2.0 (feature B): EFFECTIVE stats of one weapon — the ACTIVE one
+ *   when `name` is omitted; null for an unknown name. damage/magSize are the
+ *   upgraded runtime values, reloadTime the upgraded duration. The shop UI
+ *   and the save snapshot read through this (upgrade levels live in
+ *   `upgrades`, integers 0..3).
+ * @property {(name: string, patch: {dmg?: number, mag?: number, rl?: number}) => boolean} setUpgrades
+ *   GUN GAME 2.0 (feature B): set upgrade levels for weapon `name` (partial
+ *   patch — only the provided tracks change); every value is clamped to an
+ *   integer 0..3 and the effective damage/magSize are recomputed in place.
+ *   False for an unknown name. The shop's "upg:{weapon}:{track}" purchases
+ *   and main.js's NG+/save-restore paths call this.
+ * @property {(entries: Array<{name: string, owned?: boolean, reserve: number | null, upgrades?: {dmg?: number, mag?: number, rl?: number}}>) => void} applySaveState
+ *   GUN GAME 2.0 (feature B / save-restore §3.4): apply a save's weapon
+ *   entries AFTER reset() — owned === true owns (never un-owns), reserve
+ *   null → Infinity (pistol) / number → clamped to ≥ 0, upgrade levels
+ *   clamped to 0..3, and every restored gun comes back mag-full. Entries
+ *   with unknown names are ignored.
  */
 
 import * as THREE from "three";
@@ -290,6 +336,14 @@ const WEAPONS = [
 const STARTER_COUNT = 3;  // pistol/shotgun/rifle — owned from the start
 const AUTO_RELOAD_DELAY = 0.35; // spec: auto-reload 0.35 s after the mag empties
 const BARREL_SPIN_MAX = 22;     // rad/s at full minigun spin (viewmodel only)
+
+// GUN GAME 2.0 feature B — upgrade formulas (docs/EXPANSION-P4.md P4-K6,
+// FROZEN): per-level factors applied to the immutable def values. Levels are
+// integers 0..3; 0 = stock (×1.0 on every track).
+const UPG_MAX_LEVEL = 3;
+const UPG_DMG_PER_LEVEL = 0.2;  // damage   × (1 + 0.2 × lvl)
+const UPG_MAG_PER_LEVEL = 0.25; // magSize  × (1 + 0.25 × lvl), floored
+const UPG_RL_PER_LEVEL = 0.12;  // reload   × (1 − 0.12 × lvl)
 
 const DRAW_TIME = 0.3;    // s — switch/draw animation; firing blocked while drawing
 const RECOIL_TAU = 0.07;  // s — exponential recovery (~94% back at 0.2 s, per header)
@@ -484,6 +538,10 @@ export function createWeapons(camera, input, audio, bus) {
     startReserve: w.startReserve,
     headshotMult: w.headshotMult || 2,
     explosive: w.explosive === true,
+    // GUN GAME 2.0 (feature B): every gun starts stock; the shop's
+    // "upg:{weapon}:{track}" purchases raise these (0..3 per track) and
+    // applyUpgrades() mirrors the effect onto damage/magSize above.
+    upgrades: { dmg: 0, mag: 0, rl: 0 },
   }));
 
   let current = 0;
@@ -663,6 +721,33 @@ export function createWeapons(camera, input, audio, bus) {
     if (w.mag === 0 && w.reserve > 0) autoReloadT = AUTO_RELOAD_DELAY;
   }
 
+  // --- weapon upgrades (GUN GAME 2.0 feature B) --------------------------------
+  // The WEAPONS[] def table is immutable; effective values are written onto
+  // the runtime entry (combat.js / HUD keep reading the same fields). The
+  // reload duration is resolved on demand — nothing is stored over the def.
+
+  /** Clamp one upgrade level to an integer 0..3 (bad patch / corrupt save). */
+  function clampLevel(v) {
+    const n = typeof v === "number" && Number.isFinite(v) ? Math.round(v) : 0;
+    return Math.min(UPG_MAX_LEVEL, Math.max(0, n));
+  }
+
+  /**
+   * Mirror entry i's upgrade levels onto its runtime damage/magSize. Called
+   * after every upgrade change (init, reset, unlock, setUpgrades,
+   * applySaveState) so combat/HUD read upgraded values with no other changes.
+   */
+  function applyUpgrades(w, i) {
+    const def = WEAPONS[i];
+    w.damage = def.damage * (1 + UPG_DMG_PER_LEVEL * w.upgrades.dmg);
+    w.magSize = Math.floor(def.magSize * (1 + UPG_MAG_PER_LEVEL * w.upgrades.mag));
+  }
+
+  /** Effective reload duration (s) of weapon index i — def × rl discount. */
+  function effectiveReloadTime(i) {
+    return WEAPONS[i].reloadTime * (1 - UPG_RL_PER_LEVEL * list[i].upgrades.rl);
+  }
+
   function fire() {
     const w = list[current];
     const cfg = WEAPONS[current];
@@ -709,7 +794,7 @@ export function createWeapons(camera, input, audio, bus) {
     autoReloadT = -1; // any real reload supersedes the pending auto-reload
     if (w.reloading || w.mag >= w.magSize || !(w.reserve > 0)) return;
     w.reloading = true;
-    reloadTimer = WEAPONS[current].reloadTime;
+    reloadTimer = effectiveReloadTime(current); // upgraded reload speed (B)
     audio.reloadStart();
   }
 
@@ -846,8 +931,9 @@ export function createWeapons(camera, input, audio, bus) {
       rotX -= (1 - e) * 0.6;
     }
     if (list[current].reloading) {
-      // Reload: dip + tilt inward and back over the whole reload duration.
-      const p = 1 - Math.max(0, reloadTimer) / WEAPONS[current].reloadTime;
+      // Reload: dip + tilt inward and back over the whole reload duration
+      // (the EFFECTIVE duration — upgraded reload speed, feature B).
+      const p = 1 - Math.max(0, reloadTimer) / effectiveReloadTime(current);
       const s = Math.sin(Math.min(1, Math.max(0, p)) * Math.PI);
       dipY -= s * 0.17;
       rotX += s * 0.55;
@@ -869,6 +955,8 @@ export function createWeapons(camera, input, audio, bus) {
   function reset() {
     for (let i = 0; i < list.length; i++) {
       const w = list[i];
+      w.upgrades = { dmg: 0, mag: 0, rl: 0 }; // GUN GAME 2.0: back to stock
+      applyUpgrades(w, i);                    // effective damage/magSize = base
       w.mag = w.magSize;
       w.reserve = WEAPONS[i].startReserve;
       w.reloading = false;
@@ -888,7 +976,8 @@ export function createWeapons(camera, input, audio, bus) {
   }
 
   // EXPANSION — shop integration surface: unlock a weapon by name (idempotent;
-  // false for unknown names). The fresh gun arrives full: mag + startReserve.
+  // false for unknown names). The fresh gun arrives full: mag + startReserve,
+  // and stock (upgrade levels 0 — GUN GAME 2.0 feature B).
   function unlock(name) {
     for (let i = 0; i < list.length; i++) {
       if (list[i].name !== name) continue;
@@ -896,10 +985,104 @@ export function createWeapons(camera, input, audio, bus) {
         list[i].owned = true;
         list[i].mag = list[i].magSize;
         list[i].reserve = WEAPONS[i].startReserve;
+        // Fresh gun = stock (idempotent for an already-owned gun, which keeps
+        // its upgrades — only the ownership transition resets these).
+        list[i].upgrades = { dmg: 0, mag: 0, rl: 0 };
+        applyUpgrades(list[i], i);
       }
       return true;
     }
     return false;
+  }
+
+  // GUN GAME 2.0 (feature B) — effective-stats accessor for the shop UI and
+  // the save snapshot. No name (or empty) → the ACTIVE weapon; an unknown
+  // name → null (never throws). `upgrades` is a copy — callers cannot mutate
+  // the runtime levels through it (writes go through setUpgrades()).
+  function getStats(name) {
+    let idx = -1;
+    if (typeof name !== "string" || name === "") {
+      idx = current;
+    } else {
+      for (let i = 0; i < list.length; i++) {
+        if (list[i].name === name) {
+          idx = i;
+          break;
+        }
+      }
+      if (idx < 0) return null;
+    }
+    const w = list[idx];
+    return {
+      name: w.name,
+      damage: w.damage, // effective (upgraded) value
+      magSize: w.magSize, // effective (upgraded) value
+      reloadTime: effectiveReloadTime(idx),
+      upgrades: { dmg: w.upgrades.dmg, mag: w.upgrades.mag, rl: w.upgrades.rl },
+    };
+  }
+
+  // GUN GAME 2.0 (feature B) — set upgrade levels from the shop's
+  // "upg:{weapon}:{track}" purchase or main.js's NG+/restore paths. Partial
+  // patch: only the tracks present on `patch` change; every value is clamped
+  // to an integer 0..3; effects are applied immediately (damage/magSize in
+  // place, reload resolved on demand). Returns false for an unknown name.
+  function setUpgrades(name, patch) {
+    if (typeof name !== "string") return false;
+    for (let i = 0; i < list.length; i++) {
+      if (list[i].name !== name) continue;
+      if (patch && typeof patch === "object") {
+        if ("dmg" in patch) list[i].upgrades.dmg = clampLevel(patch.dmg);
+        if ("mag" in patch) list[i].upgrades.mag = clampLevel(patch.mag);
+        if ("rl" in patch) list[i].upgrades.rl = clampLevel(patch.rl);
+      }
+      applyUpgrades(list[i], i);
+      return true;
+    }
+    return false;
+  }
+
+  // GUN GAME 2.0 (feature B, save-restore §3.4) — apply a save's weapon
+  // entries, in order, AFTER reset() has brought everything to stock:
+  //   owned === true  → owned = true (a save can never UN-own a gun);
+  //   reserve         → null maps back to Infinity (pistol, P4-K3), a finite
+  //                     number to max(0, round) — anything else is ignored;
+  //   upgrades        → clamped to integers 0..3, then effects re-applied;
+  //   mag             → magSize (restored guns come back mag-full).
+  // Unknown weapon names are skipped. Ownership-only entries (no
+  // upgrades/reserve) are also fine.
+  function applySaveState(entries) {
+    if (!Array.isArray(entries)) return;
+    for (let e = 0; e < entries.length; e++) {
+      const entry = entries[e];
+      if (!entry || typeof entry !== "object" || typeof entry.name !== "string") {
+        continue;
+      }
+      let idx = -1;
+      for (let i = 0; i < list.length; i++) {
+        if (list[i].name === entry.name) {
+          idx = i;
+          break;
+        }
+      }
+      if (idx < 0) continue; // unknown weapon name — ignore the entry
+      const w = list[idx];
+      if (entry.owned === true) w.owned = true; // never un-own
+      const r = entry.reserve;
+      if (r === null) w.reserve = Infinity;
+      else if (typeof r === "number" && Number.isFinite(r)) {
+        w.reserve = Math.max(0, Math.round(r));
+      }
+      if (entry.upgrades && typeof entry.upgrades === "object") {
+        w.upgrades = {
+          dmg: clampLevel(entry.upgrades.dmg),
+          mag: clampLevel(entry.upgrades.mag),
+          rl: clampLevel(entry.upgrades.rl),
+        };
+        applyUpgrades(w, idx);
+      }
+      w.mag = w.magSize; // restored guns come back mag-full (P4-K6)
+    }
   }
 
   // Ammo pickup: active weapon gets a full mag, the others half a mag each.
@@ -926,5 +1109,9 @@ export function createWeapons(camera, input, audio, bus) {
     unlock,  // extra, beyond the contract — shop integration (see header)
     armAutoReloadAfterShot, // extra — debug fire path (see note above fire())
     getState: () => list[current],
+    // GUN GAME 2.0 (feature B) — upgrade surfaces (see header WEAPON UPGRADES):
+    getStats,
+    setUpgrades,
+    applySaveState,
   };
 }

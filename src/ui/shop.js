@@ -12,6 +12,16 @@
  *   - Button dimmed + unclickable when the player cannot afford the item or
  *     already owns it (weapons).
  *   - Owned weapon cards show "ĐÃ SỞ HỮU" (i18n) instead of an active button.
+ * - WEAPON UPGRADES panel (GUN GAME 2.0 feature B — docs/EXPANSION-P4.md
+ *   §4.3): below the catalog grid, one ROW per OWNED weapon (name via the
+ *   shopItem{Cap} keys) with 3 track buttons — "dmg"/"mag"/"rl", label
+ *   `{track name} ●●○` (filled per current level) over the next level's
+ *   price, or upgMax (MAX) when the track is at level 3. Disabled when
+ *   maxed, unaffordable, or (defensive) the weapon is not owned. Click →
+ *   shop.buy("upg:{weapon}:{track}") — the panel rebuilds immediately (the
+ *   resulting money-changed, the shop's "upgrade-bought", open() and the
+ *   live language switch all route through the same rebuildUpgrades()).
+ *   The panel renders dynamically from shop.upgradeInfo() — no static rows.
  * - Open/close: bus "shop-toggle" toggles the overlay. On OPEN this module
  *   emits "shop-open" on the bus; on CLOSE it emits "shop-closed"
  *   (gamestate pauses by reason "shop" — see gamestate expansion).
@@ -84,6 +94,18 @@ const SHOP_BUNDLE = {
     shopStatAmmo: "Full reserve for every owned weapon",
     shopItemMedkit: "Medkit",
     shopStatMedkit: "Restore full 100 HP",
+    // GUN GAME 2.0 (§8.3): upgrade-panel keys. shopItemPistol/Shotgun/Rifle
+    // fill the shopItem{Cap} shape for the three STARTER weapons (the shop
+    // catalog never sold them, so the keys did not exist until P4).
+    shopItemPistol: "Pistol",
+    shopItemShotgun: "Shotgun",
+    shopItemRifle: "Rifle",
+    upgTitle: "WEAPON UPGRADES",
+    upgHint: "3 levels per track · applies instantly",
+    upgTrackDmg: "Damage",
+    upgTrackMag: "Magazine",
+    upgTrackRl: "Reload Speed",
+    upgMax: "MAX",
   },
   vi: {
     shopTitle: "CỬA HÀNG",
@@ -103,6 +125,16 @@ const SHOP_BUNDLE = {
     shopStatAmmo: "Nạp đầy dự trữ mọi súng đang sở hữu",
     shopItemMedkit: "Túi cứu thương",
     shopStatMedkit: "Hồi đầy 100 máu",
+    // GUN GAME 2.0 (§8.3) — cùng bộ key bản EN (tên súng khởi đầu theo hud.js).
+    shopItemPistol: "Súng ngắn",
+    shopItemShotgun: "Shotgun",
+    shopItemRifle: "Súng trường",
+    upgTitle: "NÂNG CẤP SÚNG",
+    upgHint: "3 cấp mỗi nhánh · áp dụng ngay",
+    upgTrackDmg: "Sát thương",
+    upgTrackMag: "Băng đạn",
+    upgTrackRl: "Tốc độ nạp",
+    upgMax: "TỐI ĐA",
   },
 };
 
@@ -307,6 +339,141 @@ const SHOP_CSS = `
   font-size: 12px;
   color: var(--gg-text-dim, #8fa1b8);
 }
+
+/* --- GUN GAME 2.0: weapon-upgrade panel (§4.3) ------------------------------ */
+
+.gg-shop-upg {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--gg-line, #24334d);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.gg-shop-upg-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--gg-text, #dbe6f5);
+}
+
+.gg-shop-upg-hint {
+  font-size: 12px;
+  color: var(--gg-text-dim, #8fa1b8);
+}
+
+.gg-shop-upg-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.gg-shop-upg-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--gg-line, #24334d);
+  border-radius: 8px;
+}
+
+.gg-shop-upg-gun {
+  min-width: 132px;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--gg-text, #dbe6f5);
+}
+
+.gg-shop-upg-tracks {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: 1;
+}
+
+.gg-shop-upg-btn {
+  appearance: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 10px;
+  min-width: 128px;
+  font: inherit;
+  color: #fff;
+  background: linear-gradient(180deg, #3d69b8, #2a4a86);
+  border: 1px solid #5f8ede;
+  border-radius: 7px;
+  cursor: pointer;
+  transition:
+    background 0.12s,
+    box-shadow 0.12s,
+    opacity 0.12s,
+    transform 0.06s;
+}
+
+.gg-shop-upg-btn .t {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: #fff;
+}
+
+.gg-shop-upg-btn .p {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--gg-gold, #ffd35e);
+  font-variant-numeric: tabular-nums;
+}
+
+.gg-shop-upg-btn:hover:enabled {
+  background: linear-gradient(180deg, #4a7ad0, #31569b);
+  box-shadow: 0 0 12px rgba(127, 178, 255, 0.3);
+}
+
+.gg-shop-upg-btn:active:enabled {
+  transform: translateY(1px);
+}
+
+.gg-shop-upg-btn:focus-visible {
+  outline: 2px solid var(--gg-accent, #7fb2ff);
+  outline-offset: 2px;
+}
+
+.gg-shop-upg-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+  background: #101a2b;
+  border-color: #2b3d5c;
+  box-shadow: none;
+}
+
+.gg-shop-upg-btn:disabled .p {
+  color: var(--gg-text-dim, #8fa1b8);
+}
+
+.gg-shop-upg-btn.maxed {
+  opacity: 1;
+  background: rgba(255, 211, 94, 0.12);
+  border-color: rgba(255, 211, 94, 0.55);
+}
+
+.gg-shop-upg-btn.maxed .t {
+  color: var(--gg-gold, #ffd35e);
+}
+
+.gg-shop-upg-btn.maxed .p {
+  color: var(--gg-gold, #ffd35e);
+}
 `;
 
 // --- helpers -------------------------------------------------------------------
@@ -381,6 +548,15 @@ export function createShopUI(container, bus, economy, shop, i18n) {
     cards.push({ entry, root, price, btn });
   }
 
+  // --- upgrade panel (GUN GAME 2.0 feature B, §4.3) ---------------------------
+  // Static shell: title + hint once; the ROWS are rebuilt from
+  // shop.upgradeInfo() whenever ownership / levels / money / language change
+  // (event-driven only — never per frame).
+  const upg = make("div", "gg-shop-upg", panel);
+  const upgTitle = make("h3", "gg-shop-upg-title", upg);
+  const upgHint = make("div", "gg-shop-upg-hint", upg);
+  const upgRows = make("div", "gg-shop-upg-rows", upg);
+
   const hint = make("p", "gg-shop-hint", panel);
 
   // Static i18n bindings (initial render + live language switch).
@@ -388,6 +564,8 @@ export function createShopUI(container, bus, economy, shop, i18n) {
   const bindings = [
     { node: title, key: "shopTitle" },
     { node: balanceLbl, key: "shopMoney" },
+    { node: upgTitle, key: "upgTitle" },
+    { node: upgHint, key: "upgHint" },
     { node: hint, key: "shopCloseHint" },
   ];
   for (const card of cards) {
@@ -415,9 +593,57 @@ export function createShopUI(container, bus, economy, shop, i18n) {
     return economy && typeof economy.get === "function" ? economy.get() : 0;
   }
 
+  /**
+   * Rebuild the upgrade rows from shop.upgradeInfo() (GUN GAME 2.0 §4.3):
+   * one row per OWNED weapon — name + one button per track, label
+   * `{track} ●●○` (filled per level) over `$nextPrice` / MAX. Disabled when
+   * maxed, unaffordable, or (defensive) the weapon is not owned. Event-driven
+   * only: called from refresh() (open, money-changed, upgrade-bought, lang).
+   */
+  function rebuildUpgrades() {
+    while (upgRows.firstChild) upgRows.removeChild(upgRows.firstChild);
+    const info =
+      shop && typeof shop.upgradeInfo === "function" ? shop.upgradeInfo() : [];
+    const cash = money();
+    for (const row of info) {
+      if (!row || typeof row.weapon !== "string" || !Array.isArray(row.tracks)) {
+        continue;
+      }
+      const rowEl = make("div", "gg-shop-upg-row", upgRows);
+      const gun = make("div", "gg-shop-upg-gun", rowEl);
+      gun.textContent = tr("shopItem" + cap(row.weapon));
+      const tracks = make("div", "gg-shop-upg-tracks", rowEl);
+      for (const tk of row.tracks) {
+        if (!tk || typeof tk.track !== "string") continue;
+        const level = Math.max(0, Math.min(3, Math.floor(Number(tk.level) || 0)));
+        const maxed = tk.nextPrice === null || level >= 3;
+        const btn = /** @type {HTMLButtonElement} */ (
+          make("button", "gg-shop-upg-btn", tracks)
+        );
+        btn.type = "button";
+        const label = make("span", "t", btn);
+        const price = make("span", "p", btn);
+        label.textContent =
+          tr("upgTrack" + cap(tk.track)) +
+          " " +
+          "●".repeat(level) +
+          "○".repeat(3 - level);
+        price.textContent = maxed ? tr("upgMax") : "$" + fmtInt(tk.nextPrice);
+        btn.disabled = maxed || cash < Number(tk.nextPrice);
+        btn.classList.toggle("maxed", maxed);
+        btn.addEventListener("click", () => {
+          shop.buy("upg:" + row.weapon + ":" + tk.track);
+          refresh(); // ownership / levels / affordability may have changed
+          if (typeof btn.blur === "function") btn.blur(); // Space must not re-buy
+        });
+      }
+    }
+  }
+
   /** Balance text + per-card affordability/ownership. Event-driven only. */
   function refresh() {
     balanceVal.textContent = "$" + fmtInt(money());
+    rebuildUpgrades(); // upgrade panel follows money / ownership / language
     const ownedSet = new Set(
       shop && typeof shop.owned === "function" ? shop.owned() : []
     );
@@ -509,6 +735,12 @@ export function createShopUI(container, bus, economy, shop, i18n) {
 
   // Balance + affordability live-update while the overlay is visible.
   bus.addEventListener("money-changed", () => {
+    if (openFlag) refresh();
+  });
+
+  // GUN GAME 2.0: a successful "upg:{weapon}:{track}" buy (or a debug one)
+  // rebuilds the panel at once — levels/dots/prices follow immediately.
+  bus.addEventListener("upgrade-bought", () => {
     if (openFlag) refresh();
   });
 
