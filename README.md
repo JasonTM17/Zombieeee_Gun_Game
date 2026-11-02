@@ -1,8 +1,14 @@
 # Gun Game
 
-Game bắn súng góc nhìn thứ nhất (FPS) sinh tồn zombie trong một đấu trường đêm 60×60 m — nay mở rộng thành **thế giới 7 khu**, **12 khẩu súng**, **thương lái**, **bom ném**, **XP + 12 kỹ năng**, **hợp đồng phụ**, **thời tiết động có ảnh hưởng gameplay**, **động vật hoang dã**, **trại người sống sót** và **barel nổ dây chuyền** — cộng thêm **Boss Rush 5 boss**, **phụ tùng súng**, **hai đồng đội Mai & Eli**, **sét bão**, **chế độ ảnh**, **sao lưu JSON**, **vòng vũ khí 12 ô**, **bảng xếp hạng local**, **thử thách hằng ngày** và **lưu đám mây** — viết bằng **Three.js + Vite** (ES modules thuần, không framework), đã tối ưu cho GPU tích hợp. Sống sót qua từng đợt wave ngày càng đông, săn headshot để ghi điểm và phá kỷ lục của chính mình.
+> *Thành phố đã tắt đèn từ lâu. Chỉ còn bạn, một khẩu súng lục và những con quái vật biết đường về khu cách ly. Qua từng quận phong tỏa — từ sân trường bỏ hoang đến bệnh viện tối đen — bạn lần theo dấu vết của Nguồn, thứ đã biến cả thành phố thành nghĩa địa. Mở từng cánh cổng, cứu từng người sống sót, và kết liễu con quái vật cuối cùng trước khi bình minh kịp lên.*
 
-![Ảnh chụp màn hình](docs/screenshots/smoke.png)
+**Gun Game** là game bắn súng góc nhìn thứ nhất (FPS) sinh tồn zombie chạy ngay trên trình duyệt — **thế giới 7 khu quận**, **12 khẩu súng**, **thương lái**, **bom ném**, **XP + 12 kỹ năng**, **hợp đồng phụ**, **thời tiết động ảnh hưởng gameplay**, **động vật hoang dã**, **trại người sống sót**, **barel nổ dây chuyền** — cộng thêm **Boss Rush 5 boss**, **phụ tùng súng**, **hai đồng đội Mai & Eli**, **sét bão**, **chế độ ảnh**, **sao lưu JSON**, **vòng vũ khí 12 ô**, **bảng xếp hạng**, **thử thách hằng ngày** và **lưu đám mây theo tài khoản** (Neon Postgres) — viết bằng **Three.js + Vite** (ES modules thuần, không framework), tối ưu cho cả GPU tích hợp. Sống sót qua từng đợt wave ngày càng đông, săn headshot để ghi điểm và phá kỷ lục của chính mình.
+
+![Đêm đầu tiên trong khu cách ly](docs/screenshots/smoke.png)
+
+| 7 quận phong tỏa | Sự kiện đêm & bão | Trận cuối với Nguồn |
+|---|---|---|
+| ![Khu chuyện cốt truyện](docs/screenshots/p1-story.png) | ![Bão và sự kiện đêm](docs/screenshots/p2-events.png) | ![Trận Origin cuối cùng](docs/screenshots/p3-finale.png) |
 
 **Mới chơi?** Đọc [hướng dẫn người chơi đầy đủ](docs/GUIDE.md) — hoặc bấm `H` ngay trong game để mở sổ tay ba tab ĐIỀU KHIỂN · ZOMBIE · HỒ SƠ.
 
@@ -150,7 +156,7 @@ Chi tiết từng mục, bảng vũ khí, toàn bộ cốt truyện và kỹ thu
 - **Boss Rush**: nút **ĐẤU BOSS** ở menu — 5 boss liên tiếp trong Vùng Cách Ly (**Đồ Tể → Phun Acid → Gào Thét → Người Đá → Nguồn Gốc**), mỗi lúc 1 boss, nghỉ 2.5 s, thưởng **$1000 → $3000**; panel kết quả có **BEST / RANK** và nút **XẾP HẠNG**.
 - **Vòng vũ khí (giữ `Q`)**: 12 ô quanh vòng tròn đúng thứ tự `1`…`9`/`0`/`-`/`=`; xoay bằng hướng chuột, con lăn hoặc phím số, **thả `Q`** để xác nhận, **`Esc`** hủy và trả lại súng cũ. Game tạm dừng khi vòng mở; ô chưa mua bị khóa và hiện toast **ĐÃ KHÓA**.
 - **Bảng xếp hạng + Thử thách ngày**: top 10 Boss Rush lưu local, sắp **điểm giảm dần / thời gian tăng dần**, hai tab **TẤT CẢ / HẰNG NGÀY**; mỗi ngày một modifier cố định (hardcore / storm / fog) kèm thời tiết ép buộc và **START** riêng.
-- **Lưu đám mây**: nút **LƯU ĐÁM MÂY** ở menu (và nút **CLOUD** trong **DỮ LIỆU LƯU**) — sao lưu 7 key tiến trình lên Vercel Blob bằng **mã 10 ký tự**; không tài khoản, ai có mã cũng đọc/ghi được.
+- **Lưu đám mây**: nút **LƯU ĐÁM MÂY** ở menu (và nút **CLOUD** trong **DỮ LIỆU LƯU**) — sao lưu 7 key tiến trình. **Đăng nhập tài khoản** (email + mật khẩu, Neon Postgres) để bản lưu gắn riêng với tài khoản của bạn; chưa đăng nhập vẫn dùng được **mã 10 ký tự** kiểu cũ (ai có mã cũng đọc/ghi được — đừng lưu dữ liệu cá nhân).
 - **Phụ tùng súng**: tab **PHỤ TÙNG** của Thương Lái — **kính ngắm $450 · băng mở rộng $400 · giảm thanh $500 · laser $350**, gắn vào **súng đang cầm**, tối đa 1 món mỗi súng, kho 2 món/lượt.
 - **Mai & Eli — hai đồng đội**: cứu người sống sót lần 1 → **Mai** (pistol **25 dmg / 1.1 s / 20 m**); lần 2 → **Eli** (rifle **30 dmg / 1.4 s / 24 m**); lần 3 → cả hai lên tier 2 (**35 / 42 dmg**). Mỗi người **120 HP**, quỵ **12 s** rồi hồi sinh **50%**, không collider, chọn mục tiêu riêng.
 - **Sét bão**: chỉ trong bão, sét đánh gần cách người chơi **8–30 m**, bán kính **3.2 m**, **160 dmg** sau 0.1 s — chỉ trúng zombie.
@@ -818,9 +824,12 @@ Lần cứu **thứ hai** trong lượt thêm **Eli** (rifle **30 dmg / 1.4 s / 
 - **Best** so theo **điểm cao hơn**, bằng điểm thì **thời gian nhanh hơn**; panel hiện **ĐIỂM CAO NHẤT**, **THỜI GIAN TỐT NHẤT**, chip **ĐÃ HOÀN THÀNH HÔM NAY** (một lượt thua cũng tính đã chạy) và nút **BẮT ĐẦU**.
 - **Không khóa cứng số lần thử**: chạy lại trong ngày chỉ cập nhật best; mỗi ngày vẫn chỉ có **một modifier** và một bảng daily riêng. Kết quả daily cũng vào tab **HẰNG NGÀY** của bảng xếp hạng.
 
-### Lưu đám mây — `/api/cloud-save`
+### Lưu đám mây — `/api/auth` + `/api/cloud-save`
 
-Bản deploy Vercel dùng **Vercel Blob** thật (không phải mock): một serverless function xử lý `POST` / `GET` / `DELETE` / `OPTIONS`, blob công khai tại `saves/<code>.json`. Không có tài khoản — **mã là chìa khóa**.
+Có **hai chế độ**, chọn theo trạng thái đăng nhập:
+
+- **Tài khoản (khuyến nghị)**: đăng ký/đăng nhập bằng email + mật khẩu trong panel **LƯU ĐÁM MÂY**. Server (`api/auth.js` + `api/_db.js`, Neon Postgres qua `@neondatabase/serverless`) băm mật khẩu bằng **scrypt**, cấp **session token 256-bit** (lưu băm, hết hạn 30 ngày kiểu sliding). Bản lưu nằm trong bảng `saves` khóa theo `user_id` — chỉ chủ tài khoản đọc/ghi/xóa được. Schema tự tạo (`CREATE TABLE IF NOT EXISTS` users/sessions/saves); cần env `POSTGRES_URL` **hoặc** `DATABASE_URL` (link Neon → Vercel là có sẵn). Không có biến môi trường → API trả `503 accounts-unavailable` và UI vẫn dùng được chế độ mã.
+- **Mã cũ (anonymous + migration)**: bản deploy cũng chạy Vercel Blob tại `saves/<code>.json` — **mã là chìa khóa**. Người đã đăng nhập vẫn tải được bản lưu theo mã (đường di chuyển save cũ vào tài khoản: nhập mã → **TẢI** → **LƯU LÊN ĐÁM MÂY** không mã).
 
 | Mục | Chi tiết |
 |---|---|
@@ -831,7 +840,7 @@ Bản deploy Vercel dùng **Vercel Blob** thật (không phải mock): một ser
 | **Giới hạn** | Body/blob **200 KB** (vượt → 413 / lỗi `too-large`) |
 | **Nội dung** | Đúng **7 key** của bundle local: `gungame.save.v1`, `profile.v1`, `achv.v1`, `codex.v1`, `codex.progress.v1`, `endless.v1`, `settings`; key lạ bị bỏ qua |
 | **Kiểm tra** | `{app:"gun-game", version:1, data:object}`; sai app/version/data → lỗi rõ ràng, **không ghi gì** |
-| **Không có** | Tài khoản, đăng nhập, tự động sao lưu, đồng bộ nhiều bản; xóa blob là mất bản đó |
+| **Không có** | Tự động sao lưu, đồng bộ nhiều bản; xóa bản lưu là mất hẳn |
 
 - **Cảnh báo**: ai biết mã đều có thể **đọc, ghi đè hoặc xóa** bản lưu. Không lưu dữ liệu cá nhân; mã lộ = mất quyền riêng tư của bản lưu đó.
 - **Local dev**: Vite không chạy function, nên `GET` trả HTML/404 và `POST` 404 → UI hiện **“Lưu đám mây cần bản đã triển khai.”** (EN: *Cloud save needs the deployed build.*). Trên bản deploy, lỗi mạng/413/404/500 có thông báo riêng.
@@ -984,7 +993,7 @@ Mở **CÀI ĐẶT** ở menu chính hoặc menu tạm dừng. Mọi thay đổi
 
 - **71 module JS** trong `src/` (ES modules thuần): 7 `core`, 2 `player`, **25** `systems`, **22** `ui`, 10 `world`, 4 `zombies` + `main.js`; thêm **`api/cloud-save.js`** cho Vercel.
 - **Build**: `npm run build` xuất `dist/index.html` + **1 file CSS** + **1 file JS** đã gộp. Bản mới nhất: HTML **2.16 kB**, CSS **10.98 kB**, JS **1.316,36 kB (~1.32 MB chưa nén / ~367.57 kB gzip)** — hash/tên file đổi theo nội dung. Vite cảnh báo chunk **> 500 kB**; đây là cảnh báo kích thước, không phải lỗi build.
-- **Trình duyệt**: desktop có bàn phím + chuột; cần **WebGL 2** (Three.js r187), **Pointer Lock**, **WebAudio**, **localStorage**. Khuyến nghị Chrome / Edge / Firefox bản mới. Không có điều khiển cảm ứng, **không cần tài khoản**; chơi local không cần backend, riêng **Lưu đám mây** cần bản deploy Vercel có `/api/cloud-save`.
+- **Trình duyệt**: desktop có bàn phím + chuột; cần **WebGL 2** (Three.js r187), **Pointer Lock**, **WebAudio**, **localStorage**. Khuyến nghị Chrome / Edge / Firefox bản mới. Không có điều khiển cảm ứng; chơi local không cần backend và **không bắt buộc tài khoản** — **Lưu đám mây** cần bản deploy Vercel (mã ẩn danh luôn sẵn có; tài khoản Neon bật thêm khi có `POSTGRES_URL`).
 - **Hiệu năng**: trần **40 zombie sống đồng thời**; pixel ratio cap 1.25/1.0, shadow map 1024 refresh ~2 Hz hoặc mỗi 4 m, zombie/boss/wildlife/NPC không đổ bóng, zombie LOD 32 m/18 m, adaptive quality 3 bước. Số đo đầy đủ ở mục **Tối ưu hiệu năng (Phase 5)**. Tracer/vỏ đạn/impact/đạn nổ dùng pool cố định; mưa 1 draw call; cây gộp 2 mesh; vật nổ gộp theo cụm. `F3` bật FPS counter (EMA ×0.1, mặc định ẩn).
 
 ### Toàn bộ key `localStorage`
