@@ -2776,6 +2776,22 @@ const debugApi = {
         : 0;
     return { lit: n, stats: hazards.stats() };
   },
+
+  /** Atmosphere/renderer color snapshot for visual tuning. */
+  atmosphereInfo() {
+    const bg = scene.background;
+    const fog = scene.fog;
+    return {
+      background: bg && typeof bg.getHexString === "function" ? "#" + bg.getHexString() : null,
+      fog: fog && fog.color ? "#" + fog.color.getHexString() : null,
+      fogDensity: fog ? Number(fog.density) : null,
+      exposure: Number(engine.renderer.toneMappingExposure),
+      bloodmoon: (() => {
+        const ev = events.active();
+        return !!(ev && ev.type === "bloodmoon");
+      })(),
+    };
+  },
 };
 
 const debug = createDebugHook();
