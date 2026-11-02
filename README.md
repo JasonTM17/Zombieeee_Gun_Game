@@ -957,6 +957,7 @@ Lớp không chiến đấu — không gây sát thương, không collider, khô
 **13 barel đỏ + 5 bình gas** đặt cố định ở An Toàn Nhà, Khu Dân Cư, Phố Thương Mại, Bến Cảng và Vùng Cách Ly:
 
 - Một vụ nổ (lựu đạn, mìn, đạn phóng lựu) trong **3.5 m** châm ngòi barel: ngòi **0.08–0.2 s**, càng xa càng trễ để chuỗi nổ trông tự nhiên.
+- **Bắn trực tiếp** một viên vào barel/bình gas cũng kích nổ: ngòi **0.12 s**; hoặc đứng trong **2.8 m** rồi bấm `E` để **đá thùng** (ngòi 0.55 s) — chip `E — ĐÁ THÙNG · hoặc BẮN để nổ` hiện khi lại gần.
 - Barel nổ: bán kính **4.5 m**, **110 dmg** tại tâm giảm tuyến tính về 0 ở mép, **chỉ zombie**.
 - Mỗi vụ nổ lan sang barel khác trong **4.5 m**, tối đa **8 tầng** dây chuyền; cờ `intact/pending` chặn vòng lặp.
 - **Molotov không kích nổ** (lửa không làm nổ bình kín); frag / mìn / grenade launcher thì có.

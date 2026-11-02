@@ -386,8 +386,10 @@ function insideDistricts(districts, x, z) {
  * @param {import("./city.js").City=} city
  * @param {import("../zombies/zombie.js").Zombie[]=} zombies
  * @param {import("../systems/particles.js").Particles=} particles
+ * @param {import("../player/controller.js").Player=} player - optional: enables
+ *   the E-to-kick proximity prompt ("hazard-near").
  */
-export function createHazards(scene, bus, level, city, zombies, particles) {
+export function createHazards(scene, bus, level, city, zombies, particles, player) {
   const rng = makeRng(SEED);
   const districts = city && Array.isArray(city.districts) ? city.districts : [];
   const spawns = collectSpawns(city, level);
@@ -400,9 +402,10 @@ export function createHazards(scene, bus, level, city, zombies, particles) {
   // --- shared geometry / material bank (page lifetime) ----------------------
   const root = new THREE.Group();
   root.name = "hazards";
-  // Bullets are hitscan against level/scene props; these barrels are blast-only
-  // props by design (combat.js skips a combatFx subtree).
-  root.userData.combatFx = true;
+  // Shootable props: bullets may hit the barrel/canister meshes (combat.js
+  // classifies userData.hazard as verdict 3 and emits "hazard-shot"). The
+  // group is therefore NOT tagged combatFx — that flag would exclude it from
+  // the bullet raycast roots.
   if (scene && typeof scene.add === "function") scene.add(root);
 
   // Barrel: body 0.9 m tall, two dark rim rings + cap, emissive hazard band.
@@ -552,6 +555,63 @@ export function createHazards(scene, bus, level, city, zombies, particles) {
   let detonatedCount = 0;
   let pendingCount = 0;
   let time = 0;
+  let nearRec = null;
+  let nearEmitted = false;
+
+  function emit(type, detail) {
+    if (bus && typeof bus.dispatchEvent === "function") {
+      bus.dispatchEvent(new CustomEvent(type, { detail }));
+    }
+  }
+
+  /** Emit the proximity prompt only when the near-hazard state changes. */
+  function updateNear() {
+    const p = player && player.position ? player.position : null;
+    if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.z)) {
+      if (nearEmitted) {
+        nearEmitted = false;
+        nearRec = null;
+        emit("hazard-near", { near: false, kind: null });
+      }
+      return;
+    }
+    let best = null;
+    let bestD2 = 2.8 * 2.8;
+    for (let i = 0; i < hazards.length; i++) {
+      const h = hazards[i];
+      if (!h.intact || h.pending) continue;
+      const dx = h.x - p.x;
+      const dz = h.z - p.z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 < bestD2) {
+        bestD2 = d2;
+        best = h;
+      }
+    }
+    if (best !== nearRec || !!best !== nearEmitted) {
+      nearRec = best;
+      nearEmitted = !!best;
+      emit("hazard-near", { near: !!best, kind: best ? best.kind : null });
+    }
+  }
+
+  // E near a barrel kicks it: a 0.55 s fuse gives the player time to back off.
+  // Missions also listens to E, but only consumes its own active POI; a barrel
+  // far from a mission objective therefore reacts here without conflict.
+  if (bus && typeof bus.addEventListener === "function") {
+    bus.addEventListener("interact-press", () => {
+      if (!nearRec || !nearRec.intact || nearRec.pending) return;
+      if (scheduleDetonation(nearRec, 0.55, 0)) {
+        emit("hazard-kicked", {
+          kind: nearRec.kind,
+          x: nearRec.x,
+          z: nearRec.z,
+        });
+        nearRec = null;
+        nearEmitted = false;
+      }
+    });
+  }
 
   // Scratch objects — the per-frame path allocates nothing.
   const blastPos = new THREE.Vector3();
@@ -895,6 +955,7 @@ export function createHazards(scene, bus, level, city, zombies, particles) {
     if (!Number.isFinite(dt) || dt <= 0) return;
     time += dt;
     if (time > 10000) time = 0;
+    updateNear();
 
     // Intact barrels breathe; a live fuse makes the whole rack pulse faster.
     const pulseSpeed = pendingCount > 0 ? 9 : 2.4;
@@ -976,5 +1037,38 @@ export function createHazards(scene, bus, level, city, zombies, particles) {
     return triggerAt(x, z, TRIGGER_RADIUS, 0);
   }
 
-  return { update, stats, reset, detonateAt };
+  /**
+   * A bullet hit at (x, z): find the closest intact hazard and light a short
+   * fuse. This is the direct-shooting interaction (combat.js -> "hazard-shot").
+   * @param {number} x
+   * @param {number} z
+   * @returns {number} fuses lit (0/1)
+   */
+  function shotAt(x, z) {
+    if (!Number.isFinite(x) || !Number.isFinite(z)) return 0;
+    let best = null;
+    let bestD2 = 1.6 * 1.6;
+    for (let i = 0; i < hazards.length; i++) {
+      const h = hazards[i];
+      if (!h.intact || h.pending) continue;
+      const dx = h.x - x;
+      const dz = h.z - z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 < bestD2) {
+        bestD2 = d2;
+        best = h;
+      }
+    }
+    if (!best) return 0;
+    return scheduleDetonation(best, 0.12, 0) ? 1 : 0;
+  }
+
+  if (bus && typeof bus.addEventListener === "function") {
+    bus.addEventListener("hazard-shot", (e) => {
+      const d = e && e.detail ? e.detail : {};
+      shotAt(Number(d.x), Number(d.z));
+    });
+  }
+
+  return { update, stats, reset, detonateAt, shotAt };
 }

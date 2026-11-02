@@ -180,6 +180,8 @@ const DEBUG_KEYS = [
   "startDailyChallenge",
   "weaponWheelState",
   "renderInfo",
+  "teleportTo",
+  "shootHazard",
 ];
 
 export function createDebugHook() {

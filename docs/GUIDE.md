@@ -576,6 +576,7 @@ Không chiến đấu, không collider, không rơi đồ, không liên quan nhi
 **13 barel đỏ + 5 bình gas** ở An Toàn Nhà, Khu Dân Cư, Phố Thương Mại, Bến Cảng và Vùng Cách Ly:
 
 - Vụ nổ (frag / mìn / grenade launcher) trong **3.5 m** châm ngòi; ngòi **0.08–0.2 s**, càng xa càng trễ.
+- **Bắn thẳng** vào barel/bình gas → ngòi **0.12 s**. Đứng trong **2.8 m** bấm `E` để **đá thùng** (ngòi 0.55 s); chip `E — ĐÁ THÙNG · hoặc BẮN để nổ` hiện khi lại gần.
 - Barel nổ: **4.5 m**, **110 dmg** tại tâm giảm tuyến tính về 0 ở mép, **chỉ zombie**.
 - Mỗi vụ nổ lan sang barel khác trong **4.5 m**, tối đa **8 tầng**; cờ `intact/pending` chặn vòng lặp.
 - **Molotov không kích nổ**; frag / mìn / đạn phóng lựu thì có.

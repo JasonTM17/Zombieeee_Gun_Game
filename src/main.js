@@ -255,6 +255,7 @@ import { Zombie } from "./zombies/zombie.js";
 import { BOSS_CLASSES, bossTypeForWave } from "./zombies/bosses.js";
 import { createZones } from "./world/zones.js";
 import { createHud } from "./ui/hud.js";
+import { createHazardHint } from "./ui/hazard-hint.js";
 import { createShopUI } from "./ui/shop.js";
 import { createMerchantUI } from "./ui/merchant.js";
 import { createPerksUI } from "./ui/perks.js";
@@ -351,7 +352,7 @@ const explosives = createExplosives(scene, camera, zombies, particles, audio, bu
 // Throwable inventory: frag / molotov / proximity mine (F throw, V cycle).
 const throwables = createThrowables(scene, camera, zombies, particles, bus);
 // Chain-reacting red barrels / gas canisters across the districts.
-const hazards = createHazards(scene, bus, level, city, zombies, particles);
+const hazards = createHazards(scene, bus, level, city, zombies, particles, player);
 // Rescued-survivor ally: follows the player and provides covering fire.
 const companion = createCompanion(scene, bus, level, zombies, particles, player, camera);
 // Storm lightning strikes (weather.js emits "lightning-strike").
@@ -421,6 +422,7 @@ bus.dispatchEvent(
 
 // --- 14-16. hud + menus + gamestate ---------------------------------------------
 const hud = createHud(uiRoot, bus, audio, i18n);
+const hazardHint = createHazardHint(uiRoot, bus, i18n);
 const weatherHud = createWeatherHud(uiRoot, bus, i18n);
 // EXPANSION B3: the shop overlay (DOM inside #ui, event-driven). After hud so
 // its overlay node sits after the HUD root in the DOM; it owns its z-index.
@@ -1750,6 +1752,7 @@ function frame() {
     combat.update(dt); // tracers fade + brass casings fly
     throwables.update(dt); // bombs in flight / fire pools / armed mines
     hazards.update(dt); // barrel fuses + chain reactions + scorch FX
+    hazardHint.update(dt); // E-to-kick proximity prompt
     perks.update(dt); // regen + queued perk-choice pump
     perksUI.update(dt); // perk choice overlay timers
     atmosphere.update(dt, player.position); // P1 §5.7: moon shadow follows
@@ -2751,6 +2754,27 @@ const debugApi = {
       drawWidth: r.domElement.width,
       drawHeight: r.domElement.height,
     };
+  },
+
+  /** Debug teleport with a yaw (radians); player.reset keeps the run state. */
+  teleportTo(x, z, yaw) {
+    const px = Number(x);
+    const pz = Number(z);
+    const y = Number(yaw);
+    if (!Number.isFinite(px) || !Number.isFinite(pz)) {
+      return { error: "bad-position" };
+    }
+    player.reset(Number.isFinite(y) ? y : 0, px, pz);
+    return { x: player.position.x, z: player.position.z };
+  },
+
+  /** Debug: light a hazard fuse at a bullet-hit point. */
+  shootHazard(x, z) {
+    const n =
+      typeof hazards.shotAt === "function"
+        ? hazards.shotAt(Number(x) || 0, Number(z) || 0)
+        : 0;
+    return { lit: n, stats: hazards.stats() };
   },
 };
 

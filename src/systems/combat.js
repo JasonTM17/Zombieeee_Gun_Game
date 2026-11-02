@@ -368,11 +368,15 @@ export function createCombat(camera, scene, zombies, particles, audio, bus) {
   //       fallback for an untagged group.
   //   2 — solid level geometry (userData.solid, tagged by level.js on
   //       floor/walls/obstacles): the pellet stops, nothing else happens.
+  //   3 — shootable hazard prop (userData.hazard on the barrel/canister
+  //       group): the pellet stops and "hazard-shot" lights its fuse.
   let foundZombie = null;
   let foundPart = null;
+  let foundHazard = null;
   function classify(obj) {
     foundZombie = null;
     foundPart = null;
+    foundHazard = null;
     let o = obj;
     while (o) {
       if (o === camera) return 0; // never shoot the viewmodel off your own gun
@@ -384,6 +388,10 @@ export function createCombat(camera, scene, zombies, particles, audio, bus) {
         if (ud.zombie) {
           foundZombie = ud.zombie;
           return ud.zombie.alive ? 1 : 0; // corpse: fade on, pellet through
+        }
+        if (ud.hazard) {
+          foundHazard = ud.hazard;
+          return 3;
         }
         if (ud.solid) return 2;
       }
@@ -517,6 +525,28 @@ export function createCombat(camera, scene, zombies, particles, audio, bus) {
             // Older/stub particle implementations still get visible sparks.
             particles.spawnSpark(hit.point);
           }
+          break;
+        }
+        if (verdict === 3) {
+          // Shootable barrel / gas canister: sparks, tracer end, then the
+          // hazards module lights a short fuse (one barrel per bullet).
+          tracerEnd.copy(hit.point);
+          resolvedEnd = true;
+          if (particles && particles.spawnImpact) {
+            impactNormal.copy(pelletDir).multiplyScalar(-1);
+            particles.spawnImpact(hit.point, impactNormal);
+          } else if (particles && particles.spawnSpark) {
+            particles.spawnSpark(hit.point);
+          }
+          bus.dispatchEvent(
+            new CustomEvent("hazard-shot", {
+              detail: {
+                kind: foundHazard,
+                x: hit.point.x,
+                z: hit.point.z,
+              },
+            })
+          );
           break;
         }
         if (!foundZombie.alive) continue; // died from an earlier pellet this shot
