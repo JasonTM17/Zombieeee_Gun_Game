@@ -124,7 +124,7 @@ export function createGroundDetail(scene, level, city) {
   tufts.count = placed;
   tufts.castShadow = false;
   tufts.receiveShadow = true;
-  tufts.frustumCulled = true;
+  tufts.frustumCulled = false; // base-geo bounds would cull the whole spread
   scene.add(tufts);
   meshes.push(tufts);
 
@@ -162,7 +162,7 @@ export function createGroundDetail(scene, level, city) {
   flowers.count = placed;
   flowers.castShadow = false;
   flowers.receiveShadow = false;
-  flowers.frustumCulled = true;
+  flowers.frustumCulled = false;
   scene.add(flowers);
   meshes.push(flowers);
 
@@ -195,9 +195,110 @@ export function createGroundDetail(scene, level, city) {
   rubble.count = placed;
   rubble.castShadow = false;
   rubble.receiveShadow = true;
-  rubble.frustumCulled = true;
+  rubble.frustumCulled = false;
   scene.add(rubble);
   meshes.push(rubble);
+
+  // --- bushes ----------------------------------------------------------------
+  // Flattened icosahedra hug walls and tree feet — mid-scale greenery the
+  // grass layer cannot carry. One instanced Lambert mesh, night-moss hues.
+  const bushGeo = new THREE.IcosahedronGeometry(0.5, 1);
+  const bushMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
+  const bushes = new THREE.InstancedMesh(bushGeo, bushMat, 140);
+  bushes.name = "ground-detail-bushes";
+  placed = 0;
+  for (let i = 0; i < 140; i++) {
+    const p = sample();
+    if (!p) break;
+    dummy.position.set(p.x, 0.12 + rng() * 0.08, p.z);
+    dummy.rotation.set(0, rng() * Math.PI, 0);
+    dummy.scale.set(0.9 + rng() * 1.6, 0.45 + rng() * 0.5, 0.9 + rng() * 1.6);
+    dummy.updateMatrix();
+    bushes.setMatrixAt(i, dummy.matrix);
+    color.setHSL(0.24 + rng() * 0.07, 0.3 + rng() * 0.2, 0.14 + rng() * 0.1);
+    bushes.setColorAt(i, color);
+    placed++;
+  }
+  bushes.count = placed;
+  bushes.castShadow = false;
+  bushes.receiveShadow = true;
+  bushes.frustumCulled = false;
+  scene.add(bushes);
+  meshes.push(bushes);
+
+  // --- puddles ---------------------------------------------------------------
+  // Rain-fed ground mirrors: flat discs with a dark, glossy standard
+  // material (high metalness, near-zero roughness) — the lamp glow and
+  // lightning grade them naturally. Slightly larger radii read as sheets.
+  const puddleGeo = new THREE.CircleGeometry(1, 14);
+  puddleGeo.rotateX(-Math.PI / 2);
+  const puddleMat = new THREE.MeshStandardMaterial({
+    color: 0x0b1220,
+    roughness: 0.08,
+    metalness: 0.85,
+    transparent: true,
+    opacity: 0.82,
+    depthWrite: false,
+  });
+  const puddles = new THREE.InstancedMesh(puddleGeo, puddleMat, 90);
+  puddles.name = "ground-detail-puddles";
+  placed = 0;
+  for (let i = 0; i < 90; i++) {
+    const p = sample();
+    if (!p) break;
+    dummy.position.set(p.x, 0.012, p.z);
+    dummy.rotation.set(0, rng() * Math.PI, 0);
+    dummy.scale.set(0.5 + rng() * 1.4, 1, 0.35 + rng() * 0.9);
+    dummy.updateMatrix();
+    puddles.setMatrixAt(i, dummy.matrix);
+    placed++;
+  }
+  puddles.count = placed;
+  puddles.castShadow = false;
+  puddles.receiveShadow = false;
+  puddles.frustumCulled = false;
+  puddles.renderOrder = 1;
+  scene.add(puddles);
+  meshes.push(puddles);
+
+  // --- drifting motes --------------------------------------------------------
+  // Ash/leaf motes adrift on the wind — constant slow motion everywhere, so
+  // the air itself feels alive. Wrap-around fall keeps the set permanent.
+  const MOTE_COUNT = 120;
+  const motePositions = new Float32Array(MOTE_COUNT * 3);
+  const moteBase = new Float32Array(MOTE_COUNT * 3);
+  const motePhase = new Float32Array(MOTE_COUNT * 2);
+  let motePlaced = 0;
+  for (let i = 0; i < MOTE_COUNT; i++) {
+    const p = sample();
+    if (!p) break;
+    const y = 0.6 + rng() * 4.5;
+    moteBase[i * 3] = p.x;
+    moteBase[i * 3 + 1] = y;
+    moteBase[i * 3 + 2] = p.z;
+    motePositions[i * 3] = p.x;
+    motePositions[i * 3 + 1] = y;
+    motePositions[i * 3 + 2] = p.z;
+    motePhase[i * 2] = rng() * Math.PI * 2;
+    motePhase[i * 2 + 1] = 0.25 + rng() * 0.6; // fall rate multiplier
+    motePlaced++;
+  }
+  const moteGeo = new THREE.BufferGeometry();
+  moteGeo.setAttribute("position", new THREE.BufferAttribute(motePositions, 3));
+  const moteMat = new THREE.PointsMaterial({
+    color: 0x9aa7b8,
+    size: 0.05,
+    transparent: true,
+    opacity: 0.5,
+    depthWrite: false,
+    sizeAttenuation: true,
+  });
+  const motes = new THREE.Points(moteGeo, moteMat);
+  motes.name = "ground-detail-motes";
+  motes.frustumCulled = false;
+  scene.add(motes);
+  meshes.push(motes);
+  const moteAttr = moteGeo.getAttribute("position");
 
   // --- fireflies -------------------------------------------------------------
   const ffPositions = new Float32Array(FIREFLY_COUNT * 3);
@@ -239,27 +340,46 @@ export function createGroundDetail(scene, level, city) {
   const posAttr = ffGeo.getAttribute("position");
 
   /**
-   * Drift the fireflies on per-point sine paths; everything else is static.
+   * Drift the fireflies + falling motes; everything else is static.
    * @param {number} dt
    */
   function update(dt) {
-    if (!dt || ffPlaced === 0) return;
+    if (!dt) return;
     t += dt;
-    for (let i = 0; i < ffPlaced; i++) {
-      const ph = ffPhase[i * 2];
-      const speed = ffPhase[i * 2 + 1];
-      const a = t * speed + ph;
-      posAttr.array[i * 3] = ffBase[i * 3] + Math.sin(a) * 0.9;
-      posAttr.array[i * 3 + 1] = ffBase[i * 3 + 1] + Math.sin(a * 1.7 + 1.3) * 0.35;
-      posAttr.array[i * 3 + 2] = ffBase[i * 3 + 2] + Math.cos(a * 0.8) * 0.9;
+    if (ffPlaced > 0) {
+      for (let i = 0; i < ffPlaced; i++) {
+        const ph = ffPhase[i * 2];
+        const speed = ffPhase[i * 2 + 1];
+        const a = t * speed + ph;
+        posAttr.array[i * 3] = ffBase[i * 3] + Math.sin(a) * 0.9;
+        posAttr.array[i * 3 + 1] = ffBase[i * 3 + 1] + Math.sin(a * 1.7 + 1.3) * 0.35;
+        posAttr.array[i * 3 + 2] = ffBase[i * 3 + 2] + Math.cos(a * 0.8) * 0.9;
+      }
+      posAttr.needsUpdate = true;
+      ffMat.opacity = 0.65 + Math.sin(t * 1.3) * 0.2;
     }
-    posAttr.needsUpdate = true;
-    // slow global pulse keeps them alive-looking between frames
-    ffMat.opacity = 0.65 + Math.sin(t * 1.3) * 0.2;
+    for (let i = 0; i < motePlaced; i++) {
+      const ph = motePhase[i * 2];
+      const fall = motePhase[i * 2 + 1];
+      const a = t * 0.7 + ph;
+      let y = moteBase[i * 3 + 1] - ((t * fall) % 5);
+      if (y < 0.1) y += 5;
+      moteAttr.array[i * 3] = moteBase[i * 3] + Math.sin(a) * 1.4;
+      moteAttr.array[i * 3 + 1] = y;
+      moteAttr.array[i * 3 + 2] = moteBase[i * 3 + 2] + Math.cos(a * 0.6) * 1.1;
+    }
+    if (motePlaced > 0) moteAttr.needsUpdate = true;
   }
 
   return {
-    count: tufts.count + flowers.count + rubble.count + ffPlaced,
+    count:
+      tufts.count +
+      flowers.count +
+      rubble.count +
+      bushes.count +
+      puddles.count +
+      ffPlaced +
+      motePlaced,
     meshes,
     update,
   };
