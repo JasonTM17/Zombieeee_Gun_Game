@@ -1722,10 +1722,156 @@ function mapExtras() {
   return mapExtrasScratch;
 }
 
+// --- frame profiler --------------------------------------------------------------
+// Opt-in per-segment CPU timing exposed as __game.frameProfile(). Steps are
+// static closures built ONCE below (zero per-frame allocation whether profiling
+// is on or off); while profiling, each segment costs one Map lookup plus two
+// performance.now() calls. Ordering contracts from the old inline loop are kept
+// verbatim in the table comments — main still owns the exact call order.
+
+const profStats = new Map(); // name -> {t, max, n}
+let profOn = false;
+
+function profAdd(name, ms) {
+  let s = profStats.get(name);
+  if (!s) profStats.set(name, (s = { t: 0, max: 0, n: 0 }));
+  s.t += ms;
+  s.n++;
+  if (ms > s.max) s.max = ms;
+}
+
+function runSteps(steps, dt) {
+  if (profOn) {
+    for (let i = 0; i < steps.length; i++) {
+      const s = steps[i];
+      const t0 = performance.now();
+      s[1](dt);
+      profAdd(s[0], performance.now() - t0);
+    }
+  } else {
+    for (let i = 0; i < steps.length; i++) steps[i][1](dt);
+  }
+}
+
+// Read once per frame; the mutually-exclusive boss-rush vs story steps read it.
+let bossRushFrameNow = false;
+
+const PLAYING_STEPS = [
+  ["player", (dt) => player.update(dt)], // writes camera yaw/pitch/bob absolutely
+  ["merchantUI", (dt) => merchantUI.update(dt, player.position)], // trader prompt / stall proximity
+  ["contractsUI", (dt) => contractsUI.update(dt, player.position)], // contract-board prompt / proximity
+  ["weapons", (dt) => {
+    if (player.alive) weapons.update(dt); // layers recoil DELTA on top; fires
+  }],
+  ["zombies", (dt) => updateZombies(dt)], // chase/attack (attacks call player.damage → death can flip state here)
+  ["bossrush", (dt) => {
+    if (bossRushFrameNow) bossrush.update(dt); // next boss / timer / victory check
+  }],
+  // NIGHT 30 P2 §8.2: 3D voice mix + murmur (1×/frame, after the zombie pass)
+  ["audio3D", () => audio.update3D(camera, zombies)],
+  ["waves", (dt) => {
+    if (!bossRushFrameNow) waves.update(dt, player.position);
+  }],
+  // NIGHT 30 P1 §5.6.2.4: after waves.update
+  ["missions", (dt) => {
+    if (!bossRushFrameNow) missions.update(dt, player.position);
+  }],
+  // NIGHT 30 P2 §8.2: after missions.update (playing-only → pause freezes the scheduler)
+  ["events", (dt) => {
+    if (!bossRushFrameNow) events.update(dt, player.position);
+  }],
+  ["pickups", (dt) => pickups.update(dt, player.position)],
+  ["explosives", (dt) => explosives.update(dt)], // EXPANSION B5: grenade flight/detonation + shake decay
+  ["particles", (dt) => particles.update(dt)],
+  ["combat", (dt) => combat.update(dt)], // tracers fade + brass casings fly
+  ["throwables", (dt) => throwables.update(dt)], // bombs in flight / fire pools / armed mines
+  ["hazards", (dt) => hazards.update(dt)], // barrel fuses + chain reactions + scorch FX
+  ["hazardHint", (dt) => hazardHint.update(dt)], // E-to-kick proximity prompt
+  ["perks", (dt) => perks.update(dt)], // regen + queued perk-choice pump
+  ["perksUI", (dt) => perksUI.update(dt)], // perk choice overlay timers
+  ["atmosphere", (dt) => atmosphere.update(dt, player.position)], // P1 §5.7: moon shadow follows
+  ["scenery", (dt) => scenery.update(dt, player.position)], // flames + fireflies drift
+  ["weather", (dt) => weather.update(dt, player.position)], // rain / storm / fog cycle
+  ["weatherEffects", (dt) => weatherEffects.update(dt)], // live zombie speed multipliers
+  ["forcedWeather", () => {
+    if (forcedWeather && weather.state().mode !== forcedWeather) {
+      weather.setMode(forcedWeather); // daily modifier stays for the whole run
+    }
+  }],
+  ["lightning", (dt) => lightning.update(dt)], // storm strike damage queue
+  ["wildlife", (dt) => wildlife.update(dt, player.position)], // crows, rats, stray dogs
+  ["survivors", (dt) => survivors.update(dt, player.position)], // friendly camps + speech bubbles
+  ["companion", (dt) => companion.update(dt, player.position)], // rescued ally follows + covers fire
+  ["gamestate", (dt) => gamestate.update(dt)],
+  // GUN GAME 2.0 P4 (§5.4): bloodmoon retry machine (playing only → pause freezes it)
+  ["endless", (dt) => endless.update(dt)],
+  // P4-K21: playtimeSec tick (playing only — pause/menu excluded)
+  ["profile", (dt) => profile.update(dt)],
+  ["hud", () => hud.update(player, weapons.getState(), gamestate, hudExtras())],
+  ["weaponWheel", (dt) => weaponWheel.update(dt)], // radial selector timers (only while open)
+  ["bossrushUI", (dt) => bossrushUI.update(dt)], // Boss Rush banner/pips (result overlay is event-driven)
+  // NIGHT 30 P2 §8.2: the M overlay repaints at 10 Hz (map.js also paints
+  // itself immediately on every open/toggle).
+  ["map", (dt) => {
+    mapTimer += dt;
+    if (mapTimer >= 0.1) {
+      mapTimer = 0;
+      map.update(player, mapExtras());
+    }
+  }],
+  ["growls", (dt) => updateGrowls(dt)],
+];
+
+const GAMEOVER_STEPS = [
+  // The world keeps breathing behind the panel: corpses finish their fade,
+  // blood drains, lamps flicker. Live zombies stand idle (they never chase a
+  // dead player) and no wave logic runs.
+  ["zombies", (dt) => updateZombies(dt)],
+  ["particles", (dt) => particles.update(dt)],
+  ["combat", (dt) => combat.update(dt)], // let casings finish falling behind the death panel
+  ["atmosphere", (dt) => atmosphere.update(dt, player.position)],
+  ["scenery", (dt) => scenery.update(dt, player.position)],
+  ["weather", (dt) => weather.update(dt, player.position)],
+  ["wildlife", (dt) => wildlife.update(dt, player.position)],
+];
+
+const MENU_STEPS = [
+  // NIGHT 30 P1 §5.6.2.6: "intro" updates the world exactly like "menu" —
+  // atmosphere only (the story slides render over the parked spawn view).
+  ["atmosphere", (dt) => atmosphere.update(dt, player.position)], // zombies deliberately do NOT update
+  ["scenery", (dt) => scenery.update(dt, player.position)],
+  ["weather", (dt) => weather.update(dt, player.position)],
+  ["wildlife", (dt) => wildlife.update(dt, player.position)],
+];
+
+const SHARED_STEPS = [
+  // Adaptive soundtrack + low-health heartbeat. Runs outside the state
+  // branches so menu/pause ducking and the gameover fade keep animating.
+  ["music", (dt) => {
+    const musicBoss = liveBoss();
+    musicState.state = gamestate.state;
+    musicState.hp = Number(player.hp) || 0;
+    musicState.wave = Math.max(0, Math.round(Number(gamestate.wave) || 0));
+    musicState.boss = musicBoss && musicBoss.alive ? musicBoss.type : null;
+    music.update(dt, musicState);
+  }],
+  // NIGHT 30 P3 (§6.1): the ending sequence is driven OUTSIDE the state
+  // branches — it runs UNDER pause reason "ending" (slow-zoom approach and
+  // white fade must animate while the world is frozen) and is a cheap no-op
+  // while idle. It may also flip state (the panel buttons' "ending-active"
+  // false resumes the run) — that dispatch happens inside the button click,
+  // never here; update() only moves the camera FOV and the phase timers.
+  ["ending", (dt) => ending.update(dt)],
+  ["photo", (dt) => photo.update(dt)], // freecam while photo mode is open
+  ["render", () => engine.render()],
+];
+
 // --- main loop ---------------------------------------------------------------------
 
 function frame() {
   requestAnimationFrame(frame);
+
+  const f0 = profOn ? performance.now() : 0;
 
   let dt = engine.update(); // seconds, already clamped ≤ 0.05 by the engine
   if (!Number.isFinite(dt) || dt < 0) dt = 0;
@@ -1733,93 +1879,17 @@ function frame() {
 
   const st = gamestate.state;
   if (st === "playing") {
-    const bossRushFrame = bossrush.isActive();
-    player.update(dt); // writes camera yaw/pitch/bob absolutely
-    merchantUI.update(dt, player.position); // trader prompt / stall proximity
-    contractsUI.update(dt, player.position); // contract-board prompt / proximity
-    if (player.alive) weapons.update(dt); // layers recoil DELTA on top; fires
-    updateZombies(dt); // chase/attack (attacks call player.damage → death can flip state here)
-    if (bossRushFrame) bossrush.update(dt); // next boss / timer / victory check
-    audio.update3D(camera, zombies); // NIGHT 30 P2 §8.2: 3D voice mix + murmur (1×/frame, after the zombie pass)
-    if (!bossRushFrame) {
-      waves.update(dt, player.position);
-      missions.update(dt, player.position); // NIGHT 30 P1 §5.6.2.4: after waves.update
-      events.update(dt, player.position); // NIGHT 30 P2 §8.2: after missions.update (playing-only → pause freezes the scheduler)
-    }
-    pickups.update(dt, player.position);
-    explosives.update(dt); // EXPANSION B5: grenade flight/detonation + shake decay
-    particles.update(dt);
-    combat.update(dt); // tracers fade + brass casings fly
-    throwables.update(dt); // bombs in flight / fire pools / armed mines
-    hazards.update(dt); // barrel fuses + chain reactions + scorch FX
-    hazardHint.update(dt); // E-to-kick proximity prompt
-    perks.update(dt); // regen + queued perk-choice pump
-    perksUI.update(dt); // perk choice overlay timers
-    atmosphere.update(dt, player.position); // P1 §5.7: moon shadow follows
-    scenery.update(dt, player.position); // flames + fireflies drift
-    weather.update(dt, player.position); // rain / storm / fog cycle
-    weatherEffects.update(dt); // live zombie speed multipliers
-    if (forcedWeather && weather.state().mode !== forcedWeather) {
-      weather.setMode(forcedWeather); // daily modifier stays for the whole run
-    }
-    lightning.update(dt); // storm strike damage queue
-    wildlife.update(dt, player.position); // crows, rats, stray dogs
-    survivors.update(dt, player.position); // friendly camps + speech bubbles
-    companion.update(dt, player.position); // rescued ally follows + covers fire
-    gamestate.update(dt);
-    endless.update(dt); // GUN GAME 2.0 P4 (§5.4): bloodmoon retry machine (playing only → pause freezes it)
-    profile.update(dt); // P4-K21: playtimeSec tick (playing only — pause/menu excluded)
-    hud.update(player, weapons.getState(), gamestate, hudExtras());
-    weaponWheel.update(dt); // radial selector timers (only while open)
-    bossrushUI.update(dt); // Boss Rush banner/pips (result overlay is event-driven)
-    // NIGHT 30 P2 §8.2: the M overlay repaints at 10 Hz (map.js also paints
-    // itself immediately on every open/toggle).
-    mapTimer += dt;
-    if (mapTimer >= 0.1) {
-      mapTimer = 0;
-      map.update(player, mapExtras());
-    }
-    updateGrowls(dt);
+    bossRushFrameNow = bossrush.isActive();
+    runSteps(PLAYING_STEPS, dt);
   } else if (st === "gameover") {
-    // The world keeps breathing behind the panel: corpses finish their fade,
-    // blood drains, lamps flicker. Live zombies stand idle (they never chase a
-    // dead player) and no wave logic runs.
-    updateZombies(dt);
-    particles.update(dt);
-    combat.update(dt); // let casings finish falling behind the death panel
-    atmosphere.update(dt, player.position);
-    scenery.update(dt, player.position);
-    weather.update(dt, player.position);
-    wildlife.update(dt, player.position);
+    runSteps(GAMEOVER_STEPS, dt);
   } else if (st === "menu" || st === "intro") {
-    // NIGHT 30 P1 §5.6.2.6: "intro" updates the world exactly like "menu" —
-    // atmosphere only (the story slides render over the parked spawn view).
-    atmosphere.update(dt, player.position); // zombies deliberately do NOT update
-    scenery.update(dt, player.position);
-    weather.update(dt, player.position);
-    wildlife.update(dt, player.position);
+    runSteps(MENU_STEPS, dt);
   }
   // paused: render only.
 
-  // Adaptive soundtrack + low-health heartbeat. Runs outside the state
-  // branches so menu/pause ducking and the gameover fade keep animating.
-  const musicBoss = liveBoss();
-  musicState.state = gamestate.state;
-  musicState.hp = Number(player.hp) || 0;
-  musicState.wave = Math.max(0, Math.round(Number(gamestate.wave) || 0));
-  musicState.boss = musicBoss && musicBoss.alive ? musicBoss.type : null;
-  music.update(dt, musicState);
-
-  // NIGHT 30 P3 (§6.1): the ending sequence is driven OUTSIDE the state
-  // branches — it runs UNDER pause reason "ending" (slow-zoom approach and
-  // white fade must animate while the world is frozen) and is a cheap no-op
-  // while idle. It may also flip state (the panel buttons' "ending-active"
-  // false resumes the run) — that dispatch happens inside the button click,
-  // never here; update() only moves the camera FOV and the phase timers.
-  ending.update(dt);
-  photo.update(dt); // freecam while photo mode is open
-
-  engine.render();
+  runSteps(SHARED_STEPS, dt);
+  if (profOn) profAdd("__frame", performance.now() - f0);
 }
 requestAnimationFrame(frame);
 
@@ -2739,20 +2809,55 @@ const debugApi = {
   renderInfo() {
     const r = engine.renderer;
     let lights = 0;
+    let meshes = 0;
+    let visible = 0;
+    let skinned = 0;
+    let instanced = 0;
+    // Mesh count per top-level scene child — names the module that owns the
+    // object population so hot spots can be attributed without a profiler.
+    const roots = [];
+    for (const child of scene.children) {
+      let n = 0;
+      let lightsIn = 0;
+      let pts = 0;
+      child.traverse((o) => {
+        if (!o) return;
+        if (o.isLight) lightsIn++;
+        if (o.isMesh) n++;
+        else if (o.isPoints || o.isLine) pts++;
+      });
+      if (n > 0 || pts > 0 || lightsIn > 0) {
+        roots.push({ i: scene.children.indexOf(child), type: child.type, name: child.name || "", meshes: n, points: pts, lights: lightsIn });
+      }
+    }
+    roots.sort((a, b) => b.meshes - a.meshes);
     scene.traverse((o) => {
-      if (o && o.isLight) lights++;
+      if (!o) return;
+      if (o.isLight) lights++;
+      if (o.visible) {
+        visible++;
+        if (o.isMesh || o.isPoints || o.isLine) meshes++;
+        if (o.isSkinnedMesh) skinned++;
+        if (o.isInstancedMesh) instanced++;
+      }
     });
     return {
       calls: r.info.render.calls,
       triangles: r.info.render.triangles,
       points: r.info.render.points,
       lines: r.info.render.lines,
+      programs: r.info.programs ? r.info.programs.length : 0,
       pixelRatio: r.getPixelRatio(),
       shadows: r.shadowMap.enabled,
       lights,
+      meshes,
+      visible,
+      skinned,
+      instanced,
       zombies: zombies.length,
       drawWidth: r.domElement.width,
       drawHeight: r.domElement.height,
+      roots,
     };
   },
 
@@ -2775,6 +2880,37 @@ const debugApi = {
         ? hazards.shotAt(Number(x) || 0, Number(z) || 0)
         : 0;
     return { lit: n, stats: hazards.stats() };
+  },
+
+  /**
+   * Per-segment CPU timing of the frame loop (opt-in — zero cost while off).
+   * `frameProfile({on:true})` starts sampling; each call returns avg/max ms
+   * per segment plus the whole-frame total since the previous call and resets
+   * the counters (pass `{reset:false}` to peek without clearing).
+   */
+  frameProfile(opts) {
+    const o = opts && typeof opts === "object" ? opts : {};
+    if (o.on === true) profOn = true;
+    if (o.on === false) profOn = false;
+    const f = profStats.get("__frame");
+    const segments = {};
+    for (const [name, s] of profStats) {
+      if (name === "__frame") continue;
+      segments[name] = {
+        avg: +(s.t / s.n).toFixed(3),
+        max: +s.max.toFixed(2),
+        total: +s.t.toFixed(1),
+      };
+    }
+    const out = {
+      on: profOn,
+      frames: f ? f.n : 0,
+      frameAvg: f ? +(f.t / f.n).toFixed(3) : 0,
+      frameMax: f ? +f.max.toFixed(2) : 0,
+      segments,
+    };
+    if (o.reset !== false) profStats.clear();
+    return out;
   },
 
   /** Atmosphere/renderer color snapshot for visual tuning. */

@@ -258,6 +258,14 @@ const LOD_DISTANCE = 32;
 // The eye pair is only ~2 px beyond this distance; hiding it earlier saves one
 // draw per mid-range unit while the limbs (which carry the silhouette) stay.
 const EYE_LOD_DISTANCE = 18;
+// Distance culling: beyond the 100 m hitscan cap a zombie can never be shot,
+// and FogExp2 0.020 leaves it under ~2% visible — so the whole group leaves
+// the scene (skipping traversal + draw entirely). Re-attaches inside
+// REATTACH_DISTANCE; the gap is hysteresis so boundary units never flicker.
+// AI, steering, collisions and voices keep running while detached — this is
+// render-only culling, not a logic sleep.
+const CULL_DISTANCE = 105;
+const REATTACH_DISTANCE = 92;
 
 // Geometries are shared across ALL zombie instances (allocated once per page —
 // the contract explicitly allows sharing geometries). Materials are
@@ -1037,6 +1045,20 @@ export class Zombie {
    * @returns {void}
    */
   _applyLod(dist) {
+    // Whole-group cull first: past CULL_DISTANCE the unit is unshootable and
+    // fog-invisible, so its subtree leaves the scene graph entirely. The
+    // detached state is latched until REATTACH_DISTANCE (hysteresis) and also
+    // skipped while dead — a corpse that dies far away never pops back for
+    // its 1.5 s fade.
+    const culled = this._culled ? dist > REATTACH_DISTANCE : dist > CULL_DISTANCE;
+    if (culled !== this._culled) {
+      this._culled = culled;
+      if (this._scene) {
+        if (culled) this._scene.remove(this.group);
+        else this._scene.add(this.group);
+      }
+    }
+    if (this._culled) return;
     const far = dist > LOD_DISTANCE;
     const eyesVisible = dist <= EYE_LOD_DISTANCE;
     if (this._lodFar !== far) {

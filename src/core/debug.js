@@ -183,6 +183,7 @@ const DEBUG_KEYS = [
   "teleportTo",
   "shootHazard",
   "atmosphereInfo",
+  "frameProfile",
 ];
 
 export function createDebugHook() {

@@ -797,6 +797,38 @@ export function createLevel(scene) {
     return areaNodeAt(x, z) !== -1;
   }
 
+  // --- collider spatial hash ---------------------------------------------------
+  // isBlocked used to scan the whole collider list per call — with the city's
+  // props that meant ~300 AABB tests × ~100 calls/frame (40 zombies steering +
+  // LOS + the player). A 16 m uniform grid over the colliders turns a query
+  // into 1–4 cells of a few entries each. The grid rebuilds lazily whenever
+  // the public `colliders` array has grown since the last call (builders and
+  // zone seals append to it; dispose() empties it, which also retriggers).
+  const COLLIDER_CELL = 16;
+  /** @type {Map<number, number[]> | null} cellKey -> collider indices */
+  let colliderGrid = null;
+  let colliderGridLen = -1;
+
+  function rebuildColliderGrid() {
+    colliderGrid = new Map();
+    colliderGridLen = colliders.length;
+    for (let i = 0; i < colliders.length; i++) {
+      const c = colliders[i];
+      const x0 = Math.floor(c.minX / COLLIDER_CELL);
+      const x1 = Math.floor(c.maxX / COLLIDER_CELL);
+      const z0 = Math.floor(c.minZ / COLLIDER_CELL);
+      const z1 = Math.floor(c.maxZ / COLLIDER_CELL);
+      for (let cx = x0; cx <= x1; cx++) {
+        for (let cz = z0; cz <= z1; cz++) {
+          const k = cx * 4096 + cz;
+          let cell = colliderGrid.get(k);
+          if (!cell) colliderGrid.set(k, (cell = []));
+          cell.push(i);
+        }
+      }
+    }
+  }
+
   /**
    * Circle-vs-AABB: clamp the circle center to the box, compare distances.
    * A LOCKED zone's rect counts as solid too (feature C1): the whole area —
@@ -813,8 +845,19 @@ export function createLevel(scene) {
     for (const id in zoneLocks) {
       if (zoneLocks[id] && circleHitsRect(x, z, r2, ZONE_RECT_OF[id])) return true;
     }
-    for (let i = 0; i < colliders.length; i++) {
-      if (circleHitsRect(x, z, r2, colliders[i])) return true;
+    if (colliderGridLen !== colliders.length) rebuildColliderGrid();
+    const x0 = Math.floor((x - r) / COLLIDER_CELL);
+    const x1 = Math.floor((x + r) / COLLIDER_CELL);
+    const z0 = Math.floor((z - r) / COLLIDER_CELL);
+    const z1 = Math.floor((z + r) / COLLIDER_CELL);
+    for (let cx = x0; cx <= x1; cx++) {
+      for (let cz = z0; cz <= z1; cz++) {
+        const cell = colliderGrid.get(cx * 4096 + cz);
+        if (!cell) continue;
+        for (let i = 0; i < cell.length; i++) {
+          if (circleHitsRect(x, z, r2, colliders[cell[i]])) return true;
+        }
+      }
     }
     return false;
   }

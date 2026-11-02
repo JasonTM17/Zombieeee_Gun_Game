@@ -309,7 +309,7 @@ export function createEngine(canvas) {
   });
   renderer.setPixelRatio(pixelRatioFor(window.devicePixelRatio || 1, window.innerWidth));
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.shadowMap.type = THREE.PCFShadowMap;
   // Static world shadows only need a low-frequency refresh (see the scheduler
   // below): skip the per-frame shadow pass entirely and force the first one.
   renderer.shadowMap.autoUpdate = false;
@@ -350,11 +350,63 @@ export function createEngine(canvas) {
     const ratio = syncPixelRatio();
     renderer.shadowMap.enabled = q.shadows;
     renderer.shadowMap.needsUpdate = true;
+    // Toggling the shadow map flips a program define: every lit material
+    // recompiles on the next render. Queue a parallel precompile so the
+    // quality step never lands as one big frame hitch.
+    schedulePrecompile();
     bus.dispatchEvent(
       new CustomEvent("quality-changed", {
         detail: { pixelRatio: ratio, shadows: q.shadows, fps: q.fps },
       })
     );
+  }
+
+  // --- shader precompile -----------------------------------------------------
+  // First-time programs (a boss's new material combos, the Origin's extra
+  // light recompiling every lit material, storm visuals, the shadow-toggle
+  // above) previously compiled inside the FIRST render that drew them — one
+  // multi-hundred-ms frame hitch. A synchronous `renderer.compile()` issues
+  // the same links at spawn time instead of inside the first draw that needs
+  // them, so the cost lands once per spawn event rather than mid-frame.
+  //
+  // compileAsync was tried and REMOVED: its checkMaterialsReady() poll calls
+  // gl.getProgramParameter(COMPLETION_STATUS_KHR) every 10 ms, which blocks
+  // the main thread on ANGLE/D3D11 while a link is in flight — and spawnables
+  // keep feeding new pending programs into the wait set, so the poll starved
+  // rAF down to ~1 fps indefinitely. Sync compile has no poll loop: links are
+  // issued and the driver resolves them on first use.
+  //
+  // The queue is debounced: "zombie-spawned" fires per unit during wave
+  // spawns; one pass covers everything queued in the same tick.
+  const PRECOMPILE_DEBOUNCE_MS = 300;
+  let precompileQueued = false;
+  let lastPrecompile = -Infinity;
+
+  function schedulePrecompile() {
+    precompileQueued = true;
+  }
+
+  function pumpPrecompile() {
+    if (!precompileQueued) return;
+    const now = performance.now();
+    if (now - lastPrecompile < PRECOMPILE_DEBOUNCE_MS) return;
+    precompileQueued = false;
+    lastPrecompile = now;
+    try {
+      renderer.compile(scene, camera);
+    } catch (err) {
+      console.warn("engine: shader precompile failed", err);
+    }
+  }
+
+  for (const type of [
+    "zombie-spawned",
+    "boss-spawned",
+    "origin-alive",
+    "weather-changed",
+    "state-changed",
+  ]) {
+    bus.addEventListener(type, schedulePrecompile);
   }
 
   const camera = new THREE.PerspectiveCamera(
@@ -416,6 +468,7 @@ export function createEngine(canvas) {
   }
 
   function render() {
+    pumpPrecompile();
     renderer.render(scene, camera);
   }
 
@@ -428,5 +481,11 @@ export function createEngine(canvas) {
     },
     update,
     render,
+    /**
+     * Queue a parallel shader precompile for materials that entered the scene
+     * since the last pass (spawned bosses, weather visuals). Debounced; the
+     * bus events above already cover the common spawn paths.
+     */
+    precompile: schedulePrecompile,
   };
 }
