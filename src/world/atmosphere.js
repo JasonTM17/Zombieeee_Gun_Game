@@ -1,13 +1,16 @@
 /**
  * Night atmosphere for the 60 x 60 m arena:
- * - near-black blue night sky (scene.background);
- * - FogExp2 with a dark color (density 0.026 — NIGHT 30 P1 §5.7: thickened
- *   from 0.022 so the far city melts into fog before the draw limit);
- * - moon: DirectionalLight, pale blue, LOW intensity, castShadow with a
- *   shadow frustum sized to cover the arena;
- * - very weak ambient + hemisphere light (shadows stay readable);
- * - 4–6 warm PointLights placed around the arena that flicker (each with its
- *   own random flicker phase/rate);
+ * - readable dark-blue night sky (scene.background 0x0a1322);
+ * - FogExp2 0x111b2d at density 0.020 — still hides the draw limit, but the
+ *   near streets and props stay legible;
+ * - moon: DirectionalLight 0xbdd4ff at 1.05, castShadow with a 1024 map and a
+ *   64 × 64 frustum that follows the player;
+ * - ambient 0.95 + hemisphere 0.75 (ground 0x1a2333) and a weak cool fill
+ *   DirectionalLight (0x6f8fbf, 0.35) from the opposite side so shadowed faces
+ *   read instead of going black;
+ * - 3 warm PointLights placed around the arena that flicker (each with its
+ *   own random flicker phase/rate); the forward renderer compiles every
+ *   visible light, so the two redundant arena lamps were removed.
  * - stars as a THREE.Points dome above the arena.
  *
  * update(dt) advances the flicker timers (dt in seconds).
@@ -19,12 +22,12 @@
  * `moon.target = player`, both quantized to 2 m steps so the shadow map does
  * not shimmer as the frustum re-centers (map size / bias untouched). Without
  * the second argument the moon stays parked over the legacy arena, exactly as
- * before. The 84 × 84 frustum keeps covering everything the fog lets you see
+ * before. The 64 × 64 frustum keeps covering everything the fog lets you see
  * of the near streets; far silhouettes are deliberately unshadowed.
  *
  * NIGHT 30 P2 (docs/EXPANSION-P2.md §3.6.2 — ADDITIVE, Builder A): listens
  * "bloodmoon-active" {active} on the shared bus and lerps `scene.background`
- * (SKY 0x05070c → blood 0x180507) and `scene.fog.color` (FOG_COLOR 0x0a0e16
+ * (SKY 0x0a1322 → blood 0x180507) and `scene.fog.color` (FOG_COLOR 0x111b2d
  * → 0x26070a) over ~2.5 s inside the existing update(dt) — factor dt/2.5,
  * then back to the exact base constants when the flag clears. No other
  * behavior changes: lamps, stars, moon and the P1 moon-follow are untouched,
@@ -44,9 +47,18 @@
 import * as THREE from "three";
 import { bus } from "../systems/gamestate.js";
 
-const SKY = 0x05070c;
-const FOG_COLOR = 0x0a0e16;
-const FOG_DENSITY = 0.026; // §3.7/§5.7: 0.022 → 0.026 (hides the draw limit)
+// Readable dark-blue night: lighter than the old near-black (0x05070c) but
+// still clearly nighttime, not daylight.
+const SKY = 0x0a1322;
+const FOG_COLOR = 0x111b2d;
+const FOG_DENSITY = 0.020; // thinned from 0.026 so near streets stay legible
+
+// Moon shadow budget: 1024 map over a 64 × 64 m player-followed frustum.
+// Halves the shadow-map resolution and ~40% of the covered area vs the old
+// 2048 / 84 m setup while still shadowing everything the fog reveals.
+export const MOON_SHADOW_MAP_SIZE = 1024;
+export const MOON_SHADOW_FRUSTUM = 64;
+export const MOON_INTENSITY = 1.05;
 
 // NIGHT 30 P2 §3.6.2 — bloodmoon targets (contract numbers, verbatim).
 const BLOODMOON_SKY = 0x180507;
@@ -59,16 +71,18 @@ export function createAtmosphere(scene) {
   scene.fog = new THREE.FogExp2(FOG_COLOR, FOG_DENSITY);
 
   // --- moon (the only shadow caster) --------------------------------------------
-  const moon = new THREE.DirectionalLight(0xbdd4ff, 0.6);
+  const moon = new THREE.DirectionalLight(0xbdd4ff, MOON_INTENSITY);
   moon.position.set(40, 70, -25);
   moon.target.position.set(0, 0, 0);
   moon.castShadow = true;
-  moon.shadow.mapSize.set(2048, 2048);
-  // Ortho frustum covers the whole 60 x 60 arena with margin.
-  moon.shadow.camera.left = -42;
-  moon.shadow.camera.right = 42;
-  moon.shadow.camera.top = 42;
-  moon.shadow.camera.bottom = -42;
+  moon.shadow.mapSize.set(MOON_SHADOW_MAP_SIZE, MOON_SHADOW_MAP_SIZE);
+  // Ortho frustum (64 × 64 m) covers the arena + near streets with margin;
+  // update() re-centers it on the player, so the smaller box is enough.
+  const half = MOON_SHADOW_FRUSTUM / 2;
+  moon.shadow.camera.left = -half;
+  moon.shadow.camera.right = half;
+  moon.shadow.camera.top = half;
+  moon.shadow.camera.bottom = -half;
   moon.shadow.camera.near = 10;
   moon.shadow.camera.far = 180;
   moon.shadow.bias = -0.0002;
@@ -76,19 +90,29 @@ export function createAtmosphere(scene) {
   scene.add(moon);
   scene.add(moon.target);
 
-  // --- very weak fill ------------------------------------------------------------
-  const ambient = new THREE.AmbientLight(0x223048, 0.55);
+  // --- readable night fill -------------------------------------------------------
+  // Moonlight + ambient + hemisphere keep unlit faces from turning black; a
+  // single cool directional from the opposite side adds shape to shadowed
+  // sides without a second shadow map (castShadow stays false).
+  const ambient = new THREE.AmbientLight(0x223048, 0.95);
   scene.add(ambient);
-  const hemi = new THREE.HemisphereLight(0x32456e, 0x0c0f16, 0.4);
+  const hemi = new THREE.HemisphereLight(0x32456e, 0x1a2333, 0.75);
   scene.add(hemi);
+  const fill = new THREE.DirectionalLight(0x6f8fbf, 0.35);
+  fill.position.set(-40, 30, 25); // opposite the moon (40, 70, -25)
+  fill.target.position.set(0, 0, 0);
+  fill.castShadow = false; // budget: the moon stays the only shadow caster
+  scene.add(fill);
+  scene.add(fill.target);
 
   // --- warm flickering lamps ------------------------------------------------------
+  // Three corner lamps (was five): every visible light is compiled into the
+  // forward shader, so the redundant center + fourth-corner lamps are gone.
+  // Ambient + hemisphere + moon + the city district lights still cover them.
   const lampPos = [
     [-17, 3.2, -17],
     [17, 3.2, -17],
     [-17, 3.2, 17],
-    [17, 3.2, 17],
-    [0, 3.8, 6],
   ];
   /** @type {import("three").PointLight[]} */
   const lamps = [];
@@ -98,7 +122,9 @@ export function createAtmosphere(scene) {
   const bulbGeo = new THREE.SphereGeometry(0.09, 8, 6);
 
   for (const [x, y, z] of lampPos) {
-    const base = 24 + Math.random() * 6; // physical intensity (candela-ish)
+    // Modest lift (+25%): warm pools read on the darker ground/pavement now
+    // that ambient/moonlight are higher. Physical intensity (candela-ish).
+    const base = 30 + Math.random() * 7;
     const light = new THREE.PointLight(0xffa95c, base, 24, 2);
     light.position.set(x, y, z);
     scene.add(light);

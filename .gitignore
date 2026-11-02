@@ -4,3 +4,4 @@ dist/
 .zcode/
 
 .vercel
+.env*.local

@@ -1073,7 +1073,7 @@ export function createSurvivors(scene, bus, level, city, i18n, camera) {
 
     const bodyGeo = buildBodyGeo(def.palette);
     const body = new THREE.Mesh(bodyGeo, npcMat);
-    body.castShadow = true;
+    body.castShadow = false; // small NPC: static moon map, no shadow draws
     body.receiveShadow = true;
     pose.add(body);
 
@@ -1082,8 +1082,8 @@ export function createSurvivors(scene, bus, level, city, i18n, camera) {
     legL.position.set(-0.115, 0.9, 0);
     const legR = new THREE.Mesh(legGeo, npcMat);
     legR.position.set(0.115, 0.9, 0);
-    legL.castShadow = true;
-    legR.castShadow = true;
+    legL.castShadow = false;
+    legR.castShadow = false;
     pose.add(legL, legR);
 
     const lantern = new THREE.Mesh(lanternGeo, lanternMat);
@@ -1178,7 +1178,7 @@ export function createSurvivors(scene, bus, level, city, i18n, camera) {
     if (merged) {
       campMesh = new THREE.Mesh(merged, campMat);
       campMesh.name = "survivor-camps";
-      campMesh.castShadow = true;
+      campMesh.castShadow = false; // small camp prop: emissive, no shadow draw
       campMesh.receiveShadow = true;
       campMesh.userData.solid = true;
       scene.add(campMesh);

@@ -53,6 +53,10 @@
  * flashes, and dispose geometries/materials on removal (no shared-material
  * leaks; sharing geometries is fine).
  *
+ * Shadow budget (perf pass): regular zombies cast shadows from the torso and
+ * head only — 2 shadow draws instead of 8 per unit. BossZombie subclasses keep
+ * every part as a caster (detected through `new.target` in the base ctor).
+ *
  * update(dt, player, level, others):
  * - steering: move toward the player on XZ at type speed + SEPARATION from
  *   `others` (push apart when closer than 1.2 m) + avoid level colliders
@@ -71,7 +75,7 @@
  * picked among the gates reachable in a straight line, nearest to the PLAYER
  * (falling back to the nearest gate overall). Same-area chases keep the old
  * steering + collider-slide untouched; the decision is replanned every
- * GATE_RECHECK seconds per zombie, never per frame.
+ * GATE_RECHECK_NEAR / _FAR seconds per zombie, never per frame.
  *
  * takeDamage(d, headshot):
  * - armored: body hits are reduced ×0.65 before the hp subtraction; headshots
@@ -111,6 +115,16 @@
  *   type, hp, alive, group (THREE.Group), position (Vector3, mirrors group),
  *   update(dt, player, level, others), takeDamage(d, headshot), dispose().
  *
+ * WEATHER (additive; systems/weather-effects.js): `weatherSpeedMul` defaults
+ * to 1 and scales steering + separation inside update() via
+ * `this.speed * (this.weatherSpeedMul || 1)`; at 1 the movement numbers are
+ * byte-identical. Every subclass inherits the field (bosses + Origin). The
+ * three bosses that reuse Zombie.prototype.update (butcher / screamer /
+ * golem) and the Origin's chase move with the multiplier; the spitter's
+ * scripted keep-distance rows and the butcher/origin CHARGE dashes use fixed
+ * speeds in bosses.js/origin.js (outside this module's scope) and therefore
+ * stay at their contract speeds.
+ *
  * The model faces local +Z (eyes / hunch / arm reach point that way); yaw is
  * rotation.y = atan2(dx, dz) toward the player.
  *
@@ -124,6 +138,7 @@
  */
 
 import * as THREE from "three";
+import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 
 // --- spec table — numbers frozen, see file header ----------------------------
 const TYPES = {
@@ -218,7 +233,13 @@ const ELITE_AURA_OPACITY = 0.55;
 const ELITE_AURA_SPIN = 0.8; // rad/s — slow, readable rotation
 const ELITE_AURA_Y = 0.06; // world-space height above the feet
 // --- expansion C3: gate pathing (docs/EXPANSION.md) ---------------------------
-const GATE_RECHECK = 0.3; // seconds between gate-path replans (cheap, staggered)
+// Perf pass: keep the original 0.3 s replan near the player (where a zombie
+// visibly grinding a wall matters) and use 1.0 s beyond 12 m, where a replan
+// runs line-of-sight sampling for the player + up to 14 gate waypoints and
+// used to cost ~25 % of the main thread at 40 units.
+const GATE_RECHECK_NEAR = 0.3; // seconds between replans within 12 m
+const GATE_RECHECK_FAR = 1.0; // seconds between replans further out
+const GATE_NEAR_RANGE = 12;
 const GATE_REACH2 = 0.8 * 0.8; // squared: "at the waypoint" → chase the player again
 // --- NIGHT 30 P2 (docs/EXPANSION-P2.md §5.1): voice pacing --------------------
 const VOICE_CHASE_CYCLE = { walker: 2.4, runner: 1.3, brute: 3.2, crawler: 1.1, bloater: 3.0, armored: 2.8 }; // s between chase calls
@@ -228,6 +249,16 @@ const VOICE_ALERT_REARM = 30; // the alert growl re-arms beyond this distance
 const VOICE_CHASE_RANGE = 30; // chase calls (and idle deferral) use this range
 const VOICE_PAIN_CD = 0.4; // pain-voice throttle per zombie (P2-K4)
 
+// --- perf: distance LOD -------------------------------------------------------
+// Beyond 32 m the limbs + eyes of a zombie are sub-pixel clutter; the torso
+// and head still read as a silhouette, so they stay. Hiding the 5 small
+// meshes removes 5 draw calls per distant unit without touching movement,
+// attacks or headshot hitboxes.
+const LOD_DISTANCE = 32;
+// The eye pair is only ~2 px beyond this distance; hiding it earlier saves one
+// draw per mid-range unit while the limbs (which carry the silhouette) stay.
+const EYE_LOD_DISTANCE = 18;
+
 // Geometries are shared across ALL zombie instances (allocated once per page —
 // the contract explicitly allows sharing geometries). Materials are
 // per-instance and are the ONLY resources disposed on removal, so a hurt
@@ -235,10 +266,30 @@ const VOICE_PAIN_CD = 0.4; // pain-voice throttle per zombie (P2-K4)
 let sharedGeo = null;
 function geometries() {
   if (!sharedGeo) {
+    // Eye pairs are merged into ONE geometry (two small boxes) so each zombie
+    // spends one draw call on eyes instead of two. Coordinates are local to
+    // the head mesh, which is where the pair is parented.
+    const eyePair =
+      mergeGeometries(
+        [
+          new THREE.BoxGeometry(0.05, 0.05, 0.02).translate(-0.06, 0.04, 0.135),
+          new THREE.BoxGeometry(0.05, 0.05, 0.02).translate(0.06, 0.04, 0.135),
+        ],
+        false
+      ) || new THREE.BoxGeometry(0.17, 0.05, 0.02).translate(0, 0.04, 0.135);
+    const crawlerEyePair =
+      mergeGeometries(
+        [
+          new THREE.BoxGeometry(0.05, 0.05, 0.02).translate(-0.08, 0.04, 0.175),
+          new THREE.BoxGeometry(0.05, 0.05, 0.02).translate(0.08, 0.04, 0.175),
+        ],
+        false
+      ) || new THREE.BoxGeometry(0.21, 0.05, 0.02).translate(0, 0.04, 0.175);
     sharedGeo = {
       torso: new THREE.BoxGeometry(0.5, 0.7, 0.28),
       head: new THREE.BoxGeometry(0.26, 0.32, 0.26),
-      eye: new THREE.BoxGeometry(0.05, 0.05, 0.02),
+      eyePair,
+      crawlerEyePair,
       arm: new THREE.CapsuleGeometry(0.07, 0.46, 3, 8), // 0.6 m overall
       leg: new THREE.CapsuleGeometry(0.09, 0.6, 3, 8), // 0.78 m overall
       // --- multi-type expansion (shared like every other geometry) ----------
@@ -258,11 +309,20 @@ function geometries() {
 
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
-/** Tag a mesh for headshot detection + per-zombie lookup, enable shadows. */
+/**
+ * Tag a mesh for headshot detection + per-zombie lookup.
+ * Perf pass: zombies NEVER cast shadows. At night, 40 units × several body
+ * meshes cost more shadow draws than the silhouettes are worth; the moon map
+ * is reserved for the static city.
+ * @param {THREE.Mesh} mesh
+ * @param {Zombie} zombie
+ * @param {"body"|"head"} part
+ * @returns {THREE.Mesh}
+ */
 function tagMesh(mesh, zombie, part) {
   mesh.userData.part = part;
   mesh.userData.zombie = zombie;
-  mesh.castShadow = true;
+  mesh.castShadow = false;
   mesh.receiveShadow = true;
   return mesh;
 }
@@ -282,12 +342,21 @@ export class Zombie {
     const eliteKind = typeof elite === "string" && ELITE_DEFS[elite] ? elite : null;
     const e = eliteKind ? ELITE_DEFS[eliteKind] : null;
     this.type = kind;
+    // Perf pass: all zombies (regular + bosses) are shadow-free; the moon
+    // shadow map is reserved for static city geometry.
+    this._lodFar = false;
+    this._lodEyesVisible = true;
+    this._shadowStripped = false;
     this.elite = eliteKind;
     this.eliteNameKey = e ? e.nameKey : null;
     this.eliteMoneyMul = e ? e.moneyMul : 1;
     this.eliteScoreMul = e ? e.scoreMul : 1;
     this.hp = e ? Math.round(t.hp * e.hpMul) : t.hp;
     this.alive = true;
+    // Weather (systems/weather-effects.js): 1 = normal. Rain/storm/fog set a
+    // smooth <1 multiplier on every LIVE unit each frame; the default keeps
+    // every pre-weather caller byte-identical (speed × 1).
+    this.weatherSpeedMul = 1;
     this.speed = e ? t.speed * e.speedMul : t.speed;
     this.dmg = e ? t.dmg * e.dmgMul : t.dmg;
     // `score` is the reward value the death event carries. Elite score is
@@ -360,8 +429,9 @@ export class Zombie {
     this._burstFx = [];
 
     // Gate pathing state (expansion C3): current {x, z} waypoint target or
-    // null; _gateT is the replan countdown (0 → plan on the first update).
-    this._gateT = 0;
+    // null; _gateT is the replan countdown.  Stagger the first plan across the
+    // whole window so a 40-unit wave never runs 40 LOS scans on one frame.
+    this._gateT = Math.random() * GATE_RECHECK_FAR;
     this._gateTarget = null;
 
     // Voice emit state (NIGHT 30 P2 §5.1, additive — no behavior change):
@@ -403,10 +473,10 @@ export class Zombie {
     torso.position.y = 0.35;
     const head = tagMesh(new THREE.Mesh(geo.head, skin), this, "head");
     head.position.set(0, 0.86, 0.02);
-    const eyeL = tagMesh(new THREE.Mesh(geo.eye, eyes), this, "head");
-    eyeL.position.set(-0.06, 0.9, 0.155);
-    const eyeR = tagMesh(new THREE.Mesh(geo.eye, eyes), this, "head");
-    eyeR.position.set(0.06, 0.9, 0.155);
+    // ONE merged eye mesh parented to the head (was two separate meshes).
+    const eyeMesh = tagMesh(new THREE.Mesh(geo.eyePair, eyes), this, "head");
+    head.add(eyeMesh);
+    this._eyeMesh = eyeMesh;
 
     // Arms: pivot at the shoulders (relative to the torso pivot).
     const armLm = tagMesh(new THREE.Mesh(geo.arm, skin), this, "body");
@@ -422,7 +492,7 @@ export class Zombie {
 
     const torsoPivot = new THREE.Group();
     torsoPivot.position.set(0, TORSO_Y, 0);
-    torsoPivot.add(torso, head, eyeL, eyeR, armL, armR);
+    torsoPivot.add(torso, head, armL, armR);
 
     g.add(legL, legR, torsoPivot);
 
@@ -466,10 +536,10 @@ export class Zombie {
     torso.rotation.x = 0.08; // chest dips toward the ground
     const head = tagMesh(new THREE.Mesh(geo.crawlerHead, skin), this, "head");
     head.position.set(0, 0.06, 0.55); // pushed out in front (+Z = facing)
-    const eyeL = tagMesh(new THREE.Mesh(geo.eye, eyes), this, "head");
-    eyeL.position.set(-0.08, 0.1, 0.725);
-    const eyeR = tagMesh(new THREE.Mesh(geo.eye, eyes), this, "head");
-    eyeR.position.set(0.08, 0.1, 0.725);
+    // ONE merged crawler eye mesh parented to the head.
+    const eyeMesh = tagMesh(new THREE.Mesh(geo.crawlerEyePair, eyes), this, "head");
+    head.add(eyeMesh);
+    this._eyeMesh = eyeMesh;
 
     const armLm = tagMesh(new THREE.Mesh(geo.crawlerArm, skin), this, "body");
     armLm.position.y = -0.32;
@@ -486,7 +556,7 @@ export class Zombie {
 
     const torsoPivot = new THREE.Group();
     torsoPivot.position.set(0, CRAWLER_TORSO_Y, 0);
-    torsoPivot.add(torso, head, eyeL, eyeR, armL, armR);
+    torsoPivot.add(torso, head, armL, armR);
     g.add(legL, legR, torsoPivot);
 
     this._legL = legL;
@@ -589,6 +659,15 @@ export class Zombie {
    */
   update(dt, player, level, others) {
     if (this._gone || !Number.isFinite(dt) || dt <= 0) return;
+    // Boss subclasses add their own meshes AFTER super() returns, so strip
+    // shadow casting from the whole finished model on its first update. This
+    // also covers blade/armour props that individual classes set themselves.
+    if (!this._shadowStripped) {
+      this._shadowStripped = true;
+      this.group.traverse((o) => {
+        if (o && o.isMesh) o.castShadow = false;
+      });
+    }
     if (!this.alive) {
       this._deathStep(dt); // a dead zombie only runs its death animation
       return;
@@ -616,15 +695,20 @@ export class Zombie {
     let dx = 0;
     let dz = 0;
     let dist = Infinity;
-    if (canChase) {
+    if (ppos && Number.isFinite(ppos.x) && Number.isFinite(ppos.z)) {
       dx = ppos.x - pos.x;
       dz = ppos.z - pos.z;
       dist = Math.sqrt(dx * dx + dz * dz);
     }
 
+    // Distance LOD: one distance value (already needed for steering) decides
+    // whether the small limb/eye meshes are drawn. Visibility flips only when
+    // crossing a threshold, so the per-frame cost is one comparison.
+    this._applyLod(dist);
+
     // --- gate pathing (expansion C3): reroute through a fence gate when a ---
     // wall separates this zombie from the player. Replanned every
-    // GATE_RECHECK seconds; the cached waypoint drops once reached.
+    // GATE_RECHECK_NEAR / _FAR seconds; the cached waypoint drops once reached.
     let gate = null;
     if (canChase && level && typeof level.getGateWaypoints === "function") {
       const t = this._gateTarget;
@@ -635,7 +719,7 @@ export class Zombie {
       }
       this._gateT -= dt;
       if (this._gateT <= 0) {
-        this._gateT = GATE_RECHECK;
+        this._gateT = dist <= GATE_NEAR_RANGE ? GATE_RECHECK_NEAR : GATE_RECHECK_FAR;
         this._gateTarget = this._planGatePath(ppos.x, ppos.z, level);
       }
       gate = this._gateTarget;
@@ -644,11 +728,15 @@ export class Zombie {
     // --- steering: approach the player (or the gate waypoint) + separation --
     let vx = 0;
     let vz = 0;
+    // Weather-scaled speed (default 1 → exactly this.speed). Applies to gate
+    // pathing, the direct chase and the crowd-separation push, so a slowed
+    // unit never shoves neighbours at full speed.
+    const moveSpeed = this.speed * (this.weatherSpeedMul || 1);
     const tx = gate ? gate.x - pos.x : dx;
     const tz = gate ? gate.z - pos.z : dz;
     const tl = Math.sqrt(tx * tx + tz * tz);
     if (canChase && (dist > HOLD_RANGE || gate) && tl > 1e-6) {
-      const inv = this.speed / tl;
+      const inv = moveSpeed / tl;
       vx = tx * inv;
       vz = tz * inv;
     }
@@ -669,20 +757,34 @@ export class Zombie {
         sz += (oz / d) * push;
       }
       if (sx !== 0 || sz !== 0) {
-        vx += sx * this.speed;
-        vz += sz * this.speed;
+        vx += sx * moveSpeed;
+        vz += sz * moveSpeed;
       }
     }
 
     // --- move; test X and Z against the colliders separately (slide) --------
+    // Perf pass: in open space one combined test suffices (isBlocked walks the
+    // whole collider list). Only when that is blocked do we fall back to the
+    // original per-axis slide, preserving the exact wall-hugging behavior.
     const r = BASE_RADIUS * this.scale;
     const oldX = pos.x;
     const oldZ = pos.z;
     const stepX = vx * dt;
     const stepZ = vz * dt;
     if (level && typeof level.isBlocked === "function") {
-      if (stepX !== 0 && !level.isBlocked(pos.x + stepX, pos.z, r)) pos.x += stepX;
-      if (stepZ !== 0 && !level.isBlocked(pos.x, pos.z + stepZ, r)) pos.z += stepZ;
+      if (stepX !== 0 && stepZ !== 0) {
+        if (!level.isBlocked(pos.x + stepX, pos.z + stepZ, r)) {
+          pos.x += stepX;
+          pos.z += stepZ;
+        } else {
+          if (!level.isBlocked(pos.x + stepX, pos.z, r)) pos.x += stepX;
+          if (!level.isBlocked(pos.x, pos.z + stepZ, r)) pos.z += stepZ;
+        }
+      } else if (stepX !== 0) {
+        if (!level.isBlocked(pos.x + stepX, pos.z, r)) pos.x += stepX;
+      } else if (stepZ !== 0) {
+        if (!level.isBlocked(pos.x, pos.z + stepZ, r)) pos.z += stepZ;
+      }
     } else {
       pos.x += stepX;
       pos.z += stepZ;
@@ -715,7 +817,9 @@ export class Zombie {
     this.gait += ((moved > 1e-4 ? 1 : 0) - this.gait) * Math.min(1, dt * 6);
     // Crawler scuttles: the same travel feeds a much faster gait cycle.
     this.walkPhase += moved * (this.type === "crawler" ? GAIT_RATE * CRAWLER_GAIT_MUL : GAIT_RATE);
-    this._animate(dt);
+    // Far zombies keep moving/attacking but skip the 8 limb writes: the parts
+    // are hidden, and skipping the pose costs nothing visually at 32 m.
+    if (!this._lodFar) this._animate(dt);
   }
 
   /**
@@ -746,7 +850,7 @@ export class Zombie {
   /**
    * Expansion C3 — decide whether this zombie must path through a gate and,
    * if so, which waypoint to head for first. Returns null when the old
-   * straight chase applies. Called at most every GATE_RECHECK per zombie.
+   * straight chase applies. Called at most every GATE_RECHECK_NEAR/_FAR per zombie.
    *
    * Order of checks (cheap first):
    * 1. zombie + player in the SAME area (level.sameArea) → old behavior; the
@@ -923,6 +1027,32 @@ export class Zombie {
 
   // --- internals --------------------------------------------------------------
 
+  /**
+   * Toggle the distance-LOD meshes. Keeps torso + head (the readable
+   * silhouette and the headshot target). Beyond 32 m the arms/legs go too;
+   * beyond 18 m the tiny eye pair is hidden (the limbs stay until 32 m).
+   * Idempotent: repeated calls with the same state do no work, so there is no
+   * per-frame visibility churn.
+   * @param {number} dist - XZ distance to the player
+   * @returns {void}
+   */
+  _applyLod(dist) {
+    const far = dist > LOD_DISTANCE;
+    const eyesVisible = dist <= EYE_LOD_DISTANCE;
+    if (this._lodFar !== far) {
+      this._lodFar = far;
+      const show = !far;
+      if (this._armL) this._armL.visible = show;
+      if (this._armR) this._armR.visible = show;
+      if (this._legL) this._legL.visible = show;
+      if (this._legR) this._legR.visible = show;
+    }
+    if (this._lodEyesVisible !== eyesVisible) {
+      this._lodEyesVisible = eyesVisible;
+      if (this._eyeMesh) this._eyeMesh.visible = eyesVisible;
+    }
+  }
+
   /** Pose the limbs: sin swings scaled by gait + attack overlay. */
   _animate(dt = 0) {
     // Elite aura: slow spin in its own plane (local Z after the flat X tilt).
@@ -983,6 +1113,9 @@ export class Zombie {
 
   /** Death starts here — exactly once, from the killing takeDamage. */
   _die(headshot) {
+    // A corpse must read as a whole body even if the unit died at LOD range
+    // (an explosion can kill far away while the limbs are hidden).
+    this._applyLod(0);
     this.alive = false;
     this.hp = 0;
     this.deathT = 0;

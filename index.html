@@ -32,9 +32,67 @@
         pointer-events: none;
         font-family: system-ui, sans-serif;
       }
+      /* First-paint loading screen — removed by main.js after the first frame. */
+      #boot {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+        background:
+          radial-gradient(ellipse at 50% 65%, rgba(255, 150, 60, 0.08), transparent 55%),
+          radial-gradient(ellipse at center, #0b1422 0%, #05080e 70%);
+        color: #dbe6f5;
+        font-family: "Segoe UI", system-ui, sans-serif;
+        transition: opacity 0.45s ease-out;
+      }
+      #boot.boot-done {
+        opacity: 0;
+        pointer-events: none;
+      }
+      #boot .boot-title {
+        font-size: clamp(30px, 5vw, 54px);
+        font-weight: 800;
+        letter-spacing: 0.18em;
+        color: #f2f7ff;
+        text-shadow: 0 0 28px rgba(127, 178, 255, 0.35);
+      }
+      #boot .boot-sub {
+        font-size: 11px;
+        letter-spacing: 0.32em;
+        color: #ffd35e;
+        text-transform: uppercase;
+      }
+      #boot .boot-bar {
+        width: min(260px, 60vw);
+        height: 3px;
+        overflow: hidden;
+        border-radius: 2px;
+        background: rgba(127, 178, 255, 0.16);
+      }
+      #boot .boot-bar i {
+        display: block;
+        width: 38%;
+        height: 100%;
+        background: linear-gradient(90deg, transparent, #ffd35e, transparent);
+        animation: boot-slide 1.1s ease-in-out infinite;
+      }
+      @keyframes boot-slide {
+        0% { transform: translateX(-120%); }
+        100% { transform: translateX(320%); }
+      }
     </style>
   </head>
   <body>
+    <div id="boot" role="status" aria-live="polite">
+      <div class="boot-sub">Zombie Survival FPS</div>
+      <div class="boot-title">GUN GAME</div>
+      <div class="boot-bar"><i></i></div>
+      <div class="boot-sub">Đang tải · Loading</div>
+    </div>
     <div id="ui"></div>
     <canvas id="game"></canvas>
     <script type="module" src="/src/main.js"></script>

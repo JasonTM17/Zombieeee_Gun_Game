@@ -41,6 +41,7 @@
  *   1000 × bossesDown + time bonus.
  *   time bonus = round(max(0, 600 − elapsed) × 10) → max 6000 at 0:00,
  *   exactly 0 at 10:00. A clean 5-boss win therefore scores 5000 + bonus.
+ *   A run option scoreMul multiplies the WHOLE total and is rounded once.
  *
  * DIFFICULTY
  *   The preset is read from localStorage "gungame.settings" at start()
@@ -50,6 +51,22 @@
  *   constants inside bosses.js/origin.js are not reachable (same limitation
  *   as main's own path). No NG+ scaling: Origin's hp/speed are overwritten to
  *   the base values, so a previous NG+ flag cannot leak in.
+ *
+ * START OPTIONS (backward compatible — start() keeps working with no args)
+ *   start(options?) accepts:
+ *     difficulty  "easy" | "normal" | "hard" (overrides the localStorage read)
+ *     hpMul       extra HP multiplier  (base × difficulty × hpMul)
+ *     dmgMul      extra damage multiplier (dmg × difficulty × dmgMul)
+ *     scoreMul    final score multiplier (default 1)
+ *     daily       true for a Daily Challenge run
+ *     dateKey     local "YYYY-MM-DD" (stored / forwarded, no validation of day)
+ *     modifierId  daily modifier id ("hardcore" | "storm" | "fog")
+ *     weather     "storm" | "fog" | null (metadata only — the LEAD forces it
+ *                 through weather.setMode; this module holds no weather ref)
+ *   Every option is sanitized: unknown / non-finite values fall back to the
+ *   pre-option behavior. The daily/dateKey/modifierId/weather/scoreMul fields
+ *   are stored in state() and included in "bossrush-open"/"bossrush-over" so
+ *   the leaderboard + result overlay can mark the run as daily.
  *
  * ORIGIN BUS FILTER
  *   The Origin dispatches "origin-defeated" itself. In a story run that event
@@ -80,11 +97,24 @@
 
 /**
  * @typedef {Object} BossRush
- * @property {() => void} start - begin boss #1 (idempotent while active).
+ * @property {(options?: BossRushOptions) => void} start - begin boss #1
+ *   (idempotent while active). Options are optional and additive.
  * @property {() => void} stop - clear run state + release the tracked boss.
  * @property {(dt: number) => void} update - dt-driven timer / wait / poll.
  * @property {() => boolean} isActive - true until victory, defeat or stop.
  * @property {() => BossRushState} state - fresh snapshot for UI/debug.
+ */
+
+/**
+ * @typedef {Object} BossRushOptions
+ * @property {"easy"|"normal"|"hard"} [difficulty]
+ * @property {number} [hpMul]
+ * @property {number} [dmgMul]
+ * @property {number} [scoreMul]
+ * @property {boolean} [daily]
+ * @property {string} [dateKey]
+ * @property {string} [modifierId]
+ * @property {"storm"|"fog"|string|null} [weather]
  */
 
 /**
@@ -101,6 +131,11 @@
  * @property {number} time - seconds, 2 decimals.
  * @property {number} score
  * @property {"easy"|"normal"|"hard"} difficulty
+ * @property {boolean} daily
+ * @property {string} dateKey - daily local date, "" on a normal run.
+ * @property {string|null} modifierId
+ * @property {"storm"|"fog"|null} weather - mode the lead should force.
+ * @property {number} scoreMul
  * @property {boolean} waiting - true during the 2.5 s gap.
  * @property {number} aliveBosses - live boss instances seen in `zombies`.
  */
@@ -154,6 +189,9 @@ const DIFFICULTY = {
   normal: { hpMul: 1, dmgMul: 1 },
   hard: { hpMul: 1.35, dmgMul: 1.3 },
 };
+// Weather values a Daily modifier may ask the lead to force. Anything else is
+// dropped to null (this module never calls weather.setMode itself).
+const WEATHER_MODES = { storm: 1, fog: 1 };
 
 const BOSS_TYPES = {
   butcher: 1,
@@ -166,6 +204,23 @@ const BOSS_TYPES = {
 /** Seconds → 2 decimal places (stable event/state numbers). */
 function roundTime(v) {
   return Math.round(Math.max(0, Number(v) || 0) * 100) / 100;
+}
+
+/** Positive finite multiplier or the fallback (1). 0 is not meaningful here. */
+function mulOr(v, fallback) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+/** Finite non-negative multiplier (scoreMul may legitimately be 0). */
+function scoreMulOr(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? n : 1;
+}
+
+/** Optional string option → trimmed string or "". */
+function strOr(v) {
+  return typeof v === "string" ? v : "";
 }
 
 /**
@@ -240,19 +295,30 @@ export function createBossRush(bus, deps) {
   /** @type {"easy"|"normal"|"hard"} */
   let difficulty = "normal";
   let diff = DIFFICULTY.normal;
+  // Daily Challenge / optional-run metadata (start(options)). Defaults keep a
+  // plain start() byte-identical to the pre-option behavior.
+  let runHpMul = 1;
+  let runDmgMul = 1;
+  let runScoreMul = 1;
+  let daily = false;
+  let dateKey = "";
+  /** @type {string|null} */
+  let modifierId = null;
+  /** @type {"storm"|"fog"|null} */
+  let runWeather = null;
   let warnedArena = false;
 
   function emit(name, detail) {
     B.dispatchEvent(new CustomEvent(name, { detail }));
   }
 
-  /** 1000 × bossesDown + max(0, 600 − t) × 10. */
+  /** 1000 × bossesDown + max(0, 600 − t) × 10, then × run scoreMul. */
   function scoreAt(t) {
     const remaining = Math.max(0, BOSS_RUSH_TIME_LIMIT - Math.max(0, t));
-    return (
+    const base =
       bossesDown * BOSS_RUSH_SCORE_PER_BOSS +
-      Math.round(remaining * BOSS_RUSH_TIME_BONUS_PER_SEC)
-    );
+      Math.round(remaining * BOSS_RUSH_TIME_BONUS_PER_SEC);
+    return Math.round(base * runScoreMul);
   }
 
   /** Count LIVE bosses in the shared array (debug/state only, no gating). */
@@ -280,20 +346,22 @@ export function createBossRush(bus, deps) {
     }
   }
 
-  /** Base stats + current difficulty preset. */
+  /** Base stats + current difficulty preset + optional daily multipliers. */
   function applyDifficulty(boss, type) {
+    const hpMul = diff.hpMul * runHpMul;
+    const dmgMul = diff.dmgMul * runDmgMul;
     if (type === "origin") {
-      boss.maxHp = Math.round(BASE_HP.origin * diff.hpMul);
+      boss.maxHp = Math.round(BASE_HP.origin * hpMul);
       boss.hp = boss.maxHp;
       // Origin normalizes its speed through _baseSpeed in P3; both are reset so
       // an earlier NG+ session cannot leak ×1.1 into Boss Rush.
       if (Number.isFinite(boss._baseSpeed)) boss._baseSpeed = ORIGIN_BASE_SPEED;
       boss.speed = ORIGIN_BASE_SPEED;
     } else {
-      boss.maxHp = Math.round(BASE_HP[type] * diff.hpMul);
+      boss.maxHp = Math.round(BASE_HP[type] * hpMul);
       boss.hp = boss.maxHp;
     }
-    if (typeof boss.dmg === "number") boss.dmg *= diff.dmgMul;
+    if (typeof boss.dmg === "number") boss.dmg *= dmgMul;
     boss.wave = 1; // summons stay at the early-wave composition (walkers)
   }
 
@@ -362,6 +430,11 @@ export function createBossRush(bus, deps) {
       time: roundTime(elapsed),
       bossesDown,
       score,
+      daily,
+      dateKey,
+      modifierId,
+      weather: runWeather,
+      scoreMul: runScoreMul,
     };
     if (win) emit("bossrush-open", detail);
     emit("bossrush-over", detail);
@@ -400,11 +473,33 @@ export function createBossRush(bus, deps) {
   });
 
   // --- public API ------------------------------------------------------------
-  function start() {
+  /**
+   * Begin a run. Options are optional and additive (Daily Challenge):
+   * difficulty/hpMul/dmgMul/scoreMul/daily/dateKey/modifierId/weather.
+   * @param {BossRushOptions=} options
+   */
+  function start(options) {
     if (active) return; // idempotent while a run is live
     // Defensive: a tracked boss from an ended run must never survive a restart
     // (main.js normally calls freshRun first, but start() is safe on its own).
     releaseBoss();
+    const opts = options && typeof options === "object" ? options : {};
+    const wanted = opts.difficulty;
+    difficulty =
+      wanted === "easy" || wanted === "hard" || wanted === "normal"
+        ? wanted
+        : readDifficulty();
+    diff = DIFFICULTY[difficulty] || DIFFICULTY.normal;
+    runHpMul = mulOr(opts.hpMul, 1);
+    runDmgMul = mulOr(opts.dmgMul, 1);
+    runScoreMul = scoreMulOr(opts.scoreMul);
+    daily = opts.daily === true;
+    dateKey = strOr(opts.dateKey);
+    modifierId =
+      typeof opts.modifierId === "string" && opts.modifierId
+        ? opts.modifierId
+        : null;
+    runWeather = WEATHER_MODES[opts.weather] ? opts.weather : null;
     active = true;
     over = false;
     win = null;
@@ -413,8 +508,6 @@ export function createBossRush(bus, deps) {
     elapsed = 0;
     pendingT = 0;
     deathHandled = true;
-    difficulty = readDifficulty();
-    diff = DIFFICULTY[difficulty] || DIFFICULTY.normal;
     score = scoreAt(0);
     spawnCurrent();
   }
@@ -429,6 +522,15 @@ export function createBossRush(bus, deps) {
     score = 0;
     pendingT = 0;
     deathHandled = true;
+    difficulty = "normal";
+    diff = DIFFICULTY.normal;
+    runHpMul = 1;
+    runDmgMul = 1;
+    runScoreMul = 1;
+    daily = false;
+    dateKey = "";
+    modifierId = null;
+    runWeather = null;
     releaseBoss();
   }
 
@@ -484,6 +586,11 @@ export function createBossRush(bus, deps) {
       time: roundTime(elapsed),
       score,
       difficulty,
+      daily,
+      dateKey,
+      modifierId,
+      weather: runWeather,
+      scoreMul: runScoreMul,
       waiting: pendingT > 0,
       aliveBosses: aliveBossCount(),
     };

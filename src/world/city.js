@@ -1544,9 +1544,10 @@ export function createCity(scene, level) {
   let vaultDisc = null;
   /** Its collider record in level.colliders (cached). */
   let vaultCollider = null;
-  /** Red glow from inside the shaft; 0 intensity until the door opens. */
+  /** Red glow from inside the shaft; hidden + 0 intensity until the door opens. */
   const vaultLight = new THREE.PointLight(0xff3b30, 0, 25, 2);
   vaultLight.position.set(0, 1.5, 0);
+  vaultLight.visible = false;
   scene.add(vaultLight);
   lights.push(vaultLight); // disposeCity() removes it
   /** Target state — the idempotency guard (like Gate.open). */
@@ -1618,6 +1619,9 @@ export function createCity(scene, level) {
     }
     if (a.toOpen) vaultLight.intensity = VAULT_LIGHT_INTENSITY * p; // hold at 1
     else vaultLight.intensity = VAULT_LIGHT_INTENSITY * (1 - p); // fade out
+    // Only pay for the light while the glow is actually visible; the door is
+    // shut (and the light hidden) at rest.
+    vaultLight.visible = vaultLight.intensity > 0.001;
     if (p >= 1) {
       vaultAnim = null;
       if (a.toOpen) {

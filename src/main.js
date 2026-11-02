@@ -240,7 +240,11 @@ import { createContracts } from "./systems/contracts.js";
 import { createBossRush } from "./systems/bossrush.js";
 import { createCompanion } from "./systems/companions.js";
 import { createLightning } from "./systems/lightning.js";
+import { createWeatherEffects } from "./systems/weather-effects.js";
+import { createLeaderboard } from "./systems/leaderboard.js";
+import { createDaily } from "./systems/daily.js";
 import { createSaveTools } from "./systems/save-tools.js";
+import { createCloudSave } from "./systems/cloud-save.js";
 import { createMissions, STORY_DIALOGUE } from "./systems/missions.js";
 import { createEvents } from "./systems/events.js"; // NIGHT 30 P2 §8.1
 import { createPlayer } from "./player/controller.js";
@@ -257,8 +261,13 @@ import { createPerksUI } from "./ui/perks.js";
 import { createPerksHud } from "./ui/perks-hud.js";
 import { createContractsUI } from "./ui/contracts.js";
 import { createBossRushUI } from "./ui/bossrush.js";
+import { createLeaderboardUI } from "./ui/leaderboard.js";
+import { createDailyUI } from "./ui/daily.js";
+import { createWeaponWheel } from "./ui/weapon-wheel.js";
+import { createWeatherHud } from "./ui/weather-hud.js";
 import { createPhotoMode } from "./ui/photo.js";
 import { createSaveToolsUI } from "./ui/save-tools.js";
+import { createCloudSaveUI } from "./ui/cloud-save.js";
 import { createArmorHud } from "./ui/armor-hud.js";
 import { createThrowablesHud } from "./ui/throwables-hud.js";
 import { createMenus } from "./ui/menus.js";
@@ -347,6 +356,8 @@ const hazards = createHazards(scene, bus, level, city, zombies, particles);
 const companion = createCompanion(scene, bus, level, zombies, particles, player, camera);
 // Storm lightning strikes (weather.js emits "lightning-strike").
 const lightning = createLightning(bus, zombies, particles);
+// Weather mechanics: rain/storm/fog slow live zombies (smoothed).
+const weatherEffects = createWeatherEffects(bus, weather, zombies, player);
 // EXPANSION B1/B2: money + shop. The shop writes ownership flags onto
 // weapons.list entries and heals the player — created after both.
 //
@@ -410,6 +421,7 @@ bus.dispatchEvent(
 
 // --- 14-16. hud + menus + gamestate ---------------------------------------------
 const hud = createHud(uiRoot, bus, audio, i18n);
+const weatherHud = createWeatherHud(uiRoot, bus, i18n);
 // EXPANSION B3: the shop overlay (DOM inside #ui, event-driven). After hud so
 // its overlay node sits after the HUD root in the DOM; it owns its z-index.
 const shopUI = createShopUI(uiRoot, bus, economy, shop, i18n);
@@ -419,6 +431,7 @@ const perksUI = createPerksUI(uiRoot, bus, perks, i18n);
 const perksHud = createPerksHud(uiRoot, bus);
 const contractsUI = createContractsUI(uiRoot, bus, contracts, i18n, camera, player, scene, level);
 const armorHud = createArmorHud(uiRoot, bus);
+const weaponWheel = createWeaponWheel(uiRoot, bus, weapons, i18n);
 // GUN GAME 2.0 P4 (P4-K19): createMenus MOVED below the P4 modules — it now
 // takes the 5th `services` argument { save, profile, achievements }.
 const gamestate = createGamestate(bus, settings);
@@ -432,7 +445,11 @@ const bossrush = createBossRush(bus, {
   city,
   camera,
 });
+const leaderboard = createLeaderboard(bus);
+const daily = createDaily(bus, leaderboard);
 const bossrushUI = createBossRushUI(uiRoot, bus, bossrush, i18n);
+const leaderboardUI = createLeaderboardUI(uiRoot, bus, leaderboard, i18n);
+const dailyUI = createDailyUI(uiRoot, bus, daily, i18n);
 // Modal overlays that freeze the world but show no pause menu (same pattern
 // as the shop / merchant): the reason keeps the run paused until it closes.
 bus.addEventListener("perks-choice-open", () => gamestate.addPause("perks"));
@@ -441,6 +458,8 @@ bus.addEventListener("contracts-open", () => gamestate.addPause("contracts"));
 bus.addEventListener("contracts-closed", () => gamestate.removePause("contracts"));
 bus.addEventListener("bossrush-open", () => gamestate.addPause("bossrush"));
 bus.addEventListener("bossrush-closed", () => gamestate.removePause("bossrush"));
+bus.addEventListener("weapon-wheel-open", () => gamestate.addPause("wheel"));
+bus.addEventListener("weapon-wheel-closed", () => gamestate.removePause("wheel"));
 
 // Boss Rush defeat: the result overlay covers the normal gameover panel; hide
 // that panel's DOM so keyboard focus cannot leak behind the opaque overlay.
@@ -532,6 +551,8 @@ const tutorial = createTutorial(uiRoot, bus, i18n);
 const photo = createPhotoMode(uiRoot, bus, camera, i18n);
 const saveTools = createSaveTools(bus, i18n);
 const saveToolsUI = createSaveToolsUI(uiRoot, bus, saveTools, i18n);
+const cloudSave = createCloudSave(bus);
+const cloudSaveUI = createCloudSaveUI(uiRoot, bus, cloudSave, i18n);
 bus.addEventListener("photo-open", () => gamestate.addPause("photo"));
 bus.addEventListener("photo-closed", () => gamestate.removePause("photo"));
 
@@ -544,6 +565,7 @@ bus.addEventListener("photo-closed", () => gamestate.removePause("photo"));
 // dead endless run as a story continue-save. This flag closes that hole
 // (P4-K1's "chặn save ở endless", gameover edge).
 let endlessRun = false;
+let forcedWeather = null; // daily challenge weather, re-asserted every frame
 
 /**
  * §3.3: the FULL SaveData for save.js (normalized again by save.js before the
@@ -659,6 +681,7 @@ bus.addEventListener("endless-over", () => {
 function startBossRushRun() {
   endless.stop();
   endlessRun = false;
+  forcedWeather = null;
   storyRun = false; // Boss Rush is neither story nor free-roam
   keepStory = false;
   storyMode(false);
@@ -670,6 +693,27 @@ function startBossRushRun() {
   input.lockPointer();
 }
 bus.addEventListener("ui-bossrush", startBossRushRun);
+
+// Daily Challenge: Boss Rush with today's deterministic modifier + forced
+// weather. Same clean-world choreography as the normal Boss Rush start.
+function startDailyRun() {
+  const opts = daily.start();
+  endless.stop();
+  endlessRun = false;
+  storyRun = false;
+  keepStory = false;
+  storyMode(false);
+  gamestate.ngPlus = false;
+  freshRun(false);
+  teleportDistrictInternal("quarantine");
+  bossrush.start(opts);
+  forcedWeather = opts.weather || null;
+  if (opts.weather) weather.setMode(opts.weather);
+  gamestate.start();
+  input.lockPointer();
+  return opts;
+}
+bus.addEventListener("ui-daily-start", startDailyRun);
 
 // P4-K15: main's difficulty preset for its OWN spawn paths (event runners,
 // debug spawns, the debug/m8 boss, the Origin). Same table as waves.js
@@ -998,6 +1042,7 @@ function closeAllCityGates() {
 function freshRun(keepStoryProgress) {
   bossrush.stop(); // a fresh world never carries a Boss Rush boss/banner
   bossrushUI.hide(); // emits "bossrush-closed" so the pause reason is dropped
+  forcedWeather = null;
   waves.reset(); // disposes every zombie + announces "zombie-despawned" per one
   // Debug-spawned zombies are outside the wave director's tracked list —
   // despawn them the same way (announce, then dispose) so the shared array
@@ -1710,6 +1755,10 @@ function frame() {
     atmosphere.update(dt, player.position); // P1 §5.7: moon shadow follows
     scenery.update(dt, player.position); // flames + fireflies drift
     weather.update(dt, player.position); // rain / storm / fog cycle
+    weatherEffects.update(dt); // live zombie speed multipliers
+    if (forcedWeather && weather.state().mode !== forcedWeather) {
+      weather.setMode(forcedWeather); // daily modifier stays for the whole run
+    }
     lightning.update(dt); // storm strike damage queue
     wildlife.update(dt, player.position); // crows, rats, stray dogs
     survivors.update(dt, player.position); // friendly camps + speech bubbles
@@ -1718,6 +1767,7 @@ function frame() {
     endless.update(dt); // GUN GAME 2.0 P4 (§5.4): bloodmoon retry machine (playing only → pause freezes it)
     profile.update(dt); // P4-K21: playtimeSec tick (playing only — pause/menu excluded)
     hud.update(player, weapons.getState(), gamestate, hudExtras());
+    weaponWheel.update(dt); // radial selector timers (only while open)
     bossrushUI.update(dt); // Boss Rush banner/pips (result overlay is event-driven)
     // NIGHT 30 P2 §8.2: the M overlay repaints at 10 Hz (map.js also paints
     // itself immediately on every open/toggle).
@@ -2655,7 +2705,65 @@ const debugApi = {
   saveToolsState() {
     return saveTools.state();
   },
+
+  /** Boss Rush local leaderboard snapshot. */
+  leaderboardState() {
+    return leaderboard.state();
+  },
+
+  /** Daily challenge snapshot (today's modifier + best). */
+  dailyState() {
+    return daily.state();
+  },
+
+  /** Cloud-save client snapshot (code + last sync state). */
+  cloudSaveState() {
+    return cloudSave.state();
+  },
+
+  /** Start today's Daily Challenge (debug/verification only). */
+  startDailyChallenge() {
+    const opts = startDailyRun();
+    return { opts, bossrush: bossrush.state() };
+  },
+
+  /** Weapon wheel open flag. */
+  weaponWheelState() {
+    return { open: weaponWheel.isOpen() };
+  },
+
+  /** Live renderer counters for performance tuning. */
+  renderInfo() {
+    const r = engine.renderer;
+    let lights = 0;
+    scene.traverse((o) => {
+      if (o && o.isLight) lights++;
+    });
+    return {
+      calls: r.info.render.calls,
+      triangles: r.info.render.triangles,
+      points: r.info.render.points,
+      lines: r.info.render.lines,
+      pixelRatio: r.getPixelRatio(),
+      shadows: r.shadowMap.enabled,
+      lights,
+      zombies: zombies.length,
+      drawWidth: r.domElement.width,
+      drawHeight: r.domElement.height,
+    };
+  },
 };
 
 const debug = createDebugHook();
 debug.register(debugApi); // LAST step of the bootstrap sequence
+
+// First-paint loading screen: hold until the first rendered frame, then fade.
+const bootScreen = document.getElementById("boot");
+if (bootScreen) {
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      bootScreen.classList.add("boot-done");
+      setTimeout(() => bootScreen.remove(), 650);
+    });
+  });
+}

@@ -120,6 +120,9 @@ const MENU_BUNDLE = {
     // the endlessOver screen (§6.3/P4-K13). Verbatim EN column.
     endless: "Endless",
     bossRush: "Boss Rush",
+    dailyChallenge: "Daily Challenge",
+    leaderboard: "Leaderboard",
+    cloudSave: "Cloud Save",
     saveData: "Save Data",
     endlessOver: "ENDLESS OVER",
     endlessWaveReached: "Wave reached: {n}",
@@ -180,6 +183,9 @@ const MENU_BUNDLE = {
     // GUN GAME 2.0 P4 (§8.2 — integrator gap fill): verbatim VI column.
     endless: "SINH TỒN",
     bossRush: "ĐẤU BOSS",
+    dailyChallenge: "THỬ THÁCH NGÀY",
+    leaderboard: "BẢNG XẾP HẠNG",
+    cloudSave: "LƯU ĐÁM MÂY",
     saveData: "DỮ LIỆU LƯU",
     endlessOver: "SINH TỐN KẾT THÚC",
     endlessWaveReached: "Đợt đạt được: {n}",
@@ -311,6 +317,9 @@ export function createMenus(container, bus, settings, i18n, services) {
   button("endless", "btn", () => emitUi("ui-endless"), mainNav);
   // Boss Rush: standalone 5-boss gauntlet (src/systems/bossrush.js).
   button("bossRush", "btn", () => emitUi("ui-bossrush"), mainNav);
+  // Daily Challenge + local Boss Rush leaderboard.
+  button("dailyChallenge", "btn", () => emitUi("daily-open"), mainNav);
+  button("leaderboard", "btn", () => emitUi("leaderboard-open"), mainNav);
   button("settings", "btn", () => openSettings("main"), mainNav);
   button("howToPlay", "btn", () => openHowto("main"), mainNav);
   // User request: the full controls sheet (src/ui/help.js) — additive entry;
@@ -331,6 +340,8 @@ export function createMenus(container, bus, settings, i18n, services) {
   button("achievements", "btn", () => openAchievements("main"), mainNav);
   // Save Data: local export/import of all progress (src/systems/save-tools.js).
   button("saveData", "btn", () => emitUi("save-tools-open"), mainNav);
+  // Cloud Save: Vercel Blob backup/restore via a sync code.
+  button("cloudSave", "btn btn-wide", () => emitUi("cloud-save-open"), mainNav);
   bind(make("p", "hint", pMain), "startHint");
 
   // --- SETTINGS ----------------------------------------------------------------

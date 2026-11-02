@@ -63,7 +63,7 @@
  * - fallback (no city passed / districtAt = null / empty district pool): the
  *   legacy `level.spawnPoints` pool — the pre-P1 behavior, unchanged.
  *
- * CONCURRENCY CAP (§4.2.1): MAX_CONCURRENT = 60 LIVE zombies across the wave
+ * CONCURRENCY CAP (§4.2.1): MAX_CONCURRENT = 40 LIVE zombies across the wave
  * director's `tracked` list (wave minions + bosses + screamer summons; debug
  * spawns are not tracked). When the cap is reached the spawn is DEFERRED —
  * the queue keeps its zombie and the attempt retries next frame (never
@@ -108,7 +108,7 @@
  * FINAL recurring spawn gap ×0.5 (≈ ×2 density) while active — stacked OUTSIDE
  * the single-winner P1 multiplier (P2-K8), so a quota-done district AND a
  * bloodmoon CAN combine; the 0.05 s boss-burst floor still holds after the
- * product. reset() clears the flag. Every other behavior (cap 60, wave
+ * product. reset() clears the flag. Every other behavior (cap 50, wave
  * composition, intermission, boss cadence) is untouched.
  *
  * NIGHT 30 P3 (docs/EXPANSION-P3.md §4.7 — ADDITIVE): "ng-plus" {active}
@@ -171,7 +171,7 @@
  * @param {import("../world/city.js").City} [city] - optional (P1 §4.2); when
  *   present, spawns come from the player's district pool via districtAt() +
  *   districts[].spawnPoints (safehouse swap + adjacent-open expansion +
- *   MAX_CONCURRENT 60 + density multipliers). Omitted → the legacy
+ *   MAX_CONCURRENT 40 + density multipliers). Omitted → the legacy
  *   level.spawnPoints pool with identical behavior.
  * @returns {Waves}
  */
@@ -210,7 +210,10 @@ const BOSS_FIRST_MAX = 0.8;
 const BOSS_FALLBACK_ZONE = "main"; // zoneId reported when zones is absent
 
 // --- P1 "ĐÊM THỨ 30" (docs/EXPANSION-P1.md §4.2) -------------------------------
-const MAX_CONCURRENT = 60; // live-zombie cap (tracked) — defer, never drop
+// Perf pass: 60 → 50 → 40 live zombies. 40 keeps the street dense but trims
+// per-frame steering/separation (O(n²)), draw calls and shader skinning on
+// integrated GPUs. Exported for the headless perf harness.
+export const MAX_CONCURRENT = 40; // live-zombie cap (tracked) — defer, never drop
 const QUOTA_DENSITY = 2 / 3; // ×2/3 gap ≈ +50% spawn density
 const MIN_ELIGIBLE_POOL = 2; // < 2 eligible points → expand to adjacent opens
 

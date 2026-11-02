@@ -743,6 +743,27 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* --- main menu navigation: two compact columns (15 entries on Phase 5) ------- */
+.main-panel .nav {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.main-panel .nav > .btn-primary {
+  grid-column: 1 / -1;
+}
+
+.main-panel .nav > .btn-wide {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 520px) {
+  .main-panel .nav {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* --- compact main menu on short screens (720p / laptop panels) --------------- */
 @media (max-height: 780px) {
   .main-panel {

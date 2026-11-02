@@ -28,8 +28,9 @@
  * - Thrown projectile with light gravity, fuse 1.4 s OR ground contact → blast.
  * - Radius 3.6 m, 90 damage falling LINEARLY to 0 at the edge, zombies only
  *   (the player is never in the damage loop).
- * - FX: particle burst + a short-lived PointLight (camera shake is explicitly
- *   optional and skipped). Emits
+ * - FX: particle burst (the flash light object is detached from the scene, so
+ *   it never adds a forward-shader light; camera shake is explicitly optional
+ *   and skipped). Emits
  *   "throwable-exploded" {kind:"frag", position, radius, damage}.
  *
  * MOLOTOV (spec):
@@ -285,8 +286,10 @@ export function createThrowables(scene, camera, zombies, particles, bus) {
   }
   let mineCursor = 0;
 
+  // Blast flash light: detached on purpose (particles already show the blast).
+  // Keeping it out of the scene avoids a permanent forward-shader light.
   const flashLight = new THREE.PointLight(0xffa252, 0, 14, 2);
-  root.add(flashLight);
+  flashLight.visible = false;
   let flashT = 0;
 
   // Scratch vectors — the per-frame path allocates nothing for physics.

@@ -174,6 +174,12 @@ const DEBUG_KEYS = [
   "photoState",
   "togglePhoto",
   "saveToolsState",
+  "leaderboardState",
+  "dailyState",
+  "cloudSaveState",
+  "startDailyChallenge",
+  "weaponWheelState",
+  "renderInfo",
 ];
 
 export function createDebugHook() {

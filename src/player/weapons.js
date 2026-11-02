@@ -145,8 +145,9 @@
  *   3. emits "spread" {value: weapon.spread} (radians) for the crosshair,
  *   4. kicks recoil — camera pitch UP then recovered back to the pre-shot aim
  *      over ~0.2 s (magnitudes per weapon, tuned subtle),
- *   5. flashes a warm PointLight parented to the camera (viewmodel muzzle) for
- *      ~40 ms,
+ *   5. hands the muzzle flash to the particle system (combat.spawnMuzzle) —
+ *      the viewmodel PointLight was removed because every visible light is a
+ *      permanent shader cost in the forward renderer,
  *   6. plays the shot sound (see SOUNDS below).
  *
  * Trigger inputs (read in update()):
@@ -566,7 +567,7 @@ const PERK_MODS_DEFAULT = {
   headshotMul: 1,
 };
 
-const DRAW_TIME = 0.3;    // s — switch/draw animation; firing blocked while drawing
+const DRAW_TIME = 0.2;    // s — snappier switch/draw animation (was 0.3)
 const RECOIL_TAU = 0.07;  // s — exponential recovery (~94% back at 0.2 s, per header)
 const FLASH_TIME = 0.04;  // s — muzzle flash (spec: 40 ms)
 const VM_KICK_TAU = 0.055; // s — viewmodel kick-back recovery
@@ -1183,11 +1184,13 @@ export function createWeapons(camera, input, audio, bus) {
   }
   syncAttachmentModels();
 
-  // Warm muzzle flash light living at the viewmodel muzzle (child of the
-  // camera hierarchy → moves with the weapon, lights nothing when intensity 0).
+  // Muzzle flash light: kept as a detached object so the existing fire/update
+  // code stays harmless, but NEVER added to the scene. Particles already draw
+  // the flash; a persistent PointLight here cost every material a shader
+  // recompile for a 40 ms effect.
   const muzzleLight = new THREE.PointLight(0xffb066, 0, 9, 2);
   muzzleLight.position.set(0.08, 0.08, -0.55);
-  vmRoot.add(muzzleLight);
+  muzzleLight.visible = false;
 
   // --- firing -----------------------------------------------------------------
   // FEATURE A case 1 (shared): a shot that empties the mag with spare ammo

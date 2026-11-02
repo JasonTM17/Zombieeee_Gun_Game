@@ -93,6 +93,13 @@ export const SAVE_TOOLS_KEYS = Object.freeze([
   "gungame.settings", // src/core/settings.js
 ]);
 
+/**
+ * Shared whitelist for every save transport (local file + cloud). Same frozen
+ * array as SAVE_TOOLS_KEYS; exported under a neutral name so cloud-save.js can
+ * import the contract without knowing about the local-file tool.
+ */
+export const KNOWN_KEYS = SAVE_TOOLS_KEYS;
+
 const BUNDLE_MAX_BYTES = 5 * 1024 * 1024;
 const VALUE_MAX_CHARS = 2 * 1024 * 1024;
 const RELOAD_DELAY_MS = 300;
@@ -396,6 +403,65 @@ function triggerDownload(text, filename) {
   }
 }
 
+// --- bundle collection (shared with cloud-save.js) ---------------------------
+
+/**
+ * Copy every known, present key into a version-1 bundle. Values are parsed
+ * defensively; unparseable text is preserved as a string (same contract as the
+ * local export).
+ * @param {Storage} ls
+ * @param {Date} now
+ * @returns {{bundle: SaveToolsBundle, keys: string[]}}
+ */
+function buildBundleFromStorage(ls, now) {
+  const data = {};
+  const keys = [];
+  for (let i = 0; i < SAVE_TOOLS_KEYS.length; i++) {
+    const key = SAVE_TOOLS_KEYS[i];
+    /** @type {string|null} */
+    let raw = null;
+    try {
+      raw = ls.getItem(key);
+    } catch {
+      raw = null;
+    }
+    if (raw === null || raw === undefined) continue;
+    let value;
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      value = raw; // raw localStorage text — preserved for a faithful backup
+    }
+    data[key] = value;
+    keys.push(key);
+  }
+  return {
+    bundle: /** @type {SaveToolsBundle} */ ({
+      app: SAVE_TOOLS_APP,
+      version: SAVE_TOOLS_VERSION,
+      exportedAt: now.toISOString(),
+      data,
+    }),
+    keys,
+  };
+}
+
+/**
+ * Build the same bundle the local exporter writes, without downloading it.
+ * Used by cloud-save.js so both transports share one whitelist and one
+ * serialization path.
+ * @param {Date} [now]
+ * @returns {{ok: true, bundle: SaveToolsBundle, keys: string[]}|{ok: false, error: "storage-unavailable"}}
+ */
+export function collectBundle(now) {
+  const ls = getStorage();
+  if (!ls) return { ok: false, error: "storage-unavailable" };
+  const when =
+    now instanceof Date && !Number.isNaN(now.getTime()) ? now : new Date();
+  const built = buildBundleFromStorage(ls, when);
+  return { ok: true, bundle: built.bundle, keys: built.keys };
+}
+
 // --- factory -----------------------------------------------------------------
 
 /**
@@ -462,40 +528,6 @@ export function createSaveTools(bus, i18n) {
     return out;
   }
 
-  /** Build the bundle from the current device state. */
-  function buildBundle(ls, now) {
-    const data = {};
-    const keys = [];
-    for (let i = 0; i < SAVE_TOOLS_KEYS.length; i++) {
-      const key = SAVE_TOOLS_KEYS[i];
-      /** @type {string|null} */
-      let raw = null;
-      try {
-        raw = ls.getItem(key);
-      } catch {
-        raw = null;
-      }
-      if (raw === null || raw === undefined) continue;
-      let value;
-      try {
-        value = JSON.parse(raw);
-      } catch {
-        value = raw; // raw localStorage text — preserved for a faithful backup
-      }
-      data[key] = value;
-      keys.push(key);
-    }
-    return {
-      bundle: /** @type {SaveToolsBundle} */ ({
-        app: SAVE_TOOLS_APP,
-        version: SAVE_TOOLS_VERSION,
-        exportedAt: now.toISOString(),
-        data,
-      }),
-      keys,
-    };
-  }
-
   /** Export every existing section and trigger the browser download. */
   function exportAll() {
     const ls = getStorage();
@@ -506,7 +538,7 @@ export function createSaveTools(bus, i18n) {
     }
 
     const now = new Date();
-    const built = buildBundle(ls, now);
+    const built = buildBundleFromStorage(ls, now);
     let json;
     try {
       json = JSON.stringify(built.bundle, null, 2);

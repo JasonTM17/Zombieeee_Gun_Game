@@ -39,6 +39,7 @@ export const SAVE_TOOLS_UI_BUNDLE = {
       "Back up all local progress to one JSON file, or restore a backup here. No account and no cloud.",
     saveToolsExport: "EXPORT",
     saveToolsImport: "IMPORT",
+    saveToolsCloud: "CLOUD",
     saveToolsClose: "CLOSE",
     saveToolsHint: "F5 — export · F9 — import",
     saveStatusKeys: "{n} save section(s) on this device.",
@@ -67,6 +68,7 @@ export const SAVE_TOOLS_UI_BUNDLE = {
       "Sao lưu toàn bộ tiến trình cục bộ ra một tệp JSON, hoặc khôi phục bản sao lưu tại đây. Không tài khoản, không đám mây.",
     saveToolsExport: "XUẤT",
     saveToolsImport: "NHẬP",
+    saveToolsCloud: "ĐÁM MÂY",
     saveToolsClose: "ĐÓNG",
     saveToolsHint: "F5 — xuất · F9 — nhập",
     saveStatusKeys: "{n} mục lưu trên thiết bị này.",
@@ -222,6 +224,10 @@ const SAVE_TOOLS_CSS = `
   color: var(--gg-text-dim, #8fa1b8);
   cursor: pointer;
 }
+.gg-save-tools-cloud {
+  border-color: var(--gg-gold, #ffd35e);
+  color: var(--gg-gold, #ffd35e);
+}
 .gg-save-tools-close:hover,
 .gg-save-tools-close:focus-visible {
   border-color: var(--gg-gold, #ffd35e);
@@ -273,6 +279,22 @@ export function createSaveToolsUI(uiRoot, bus, saveTools, i18n) {
   const tr = (key, params) =>
     i18n && typeof i18n.t === "function" ? i18n.t(key, params) : key;
 
+  function emitBus(name) {
+    try {
+      let event;
+      if (typeof CustomEvent === "function") {
+        event = new CustomEvent(name);
+      } else if (typeof Event === "function") {
+        event = new Event(name);
+      } else {
+        event = { type: name };
+      }
+      bus.dispatchEvent(event);
+    } catch {
+      /* optional cross-tool link — never block the local tool */
+    }
+  }
+
   if (typeof document.getElementById === "function" && !document.getElementById("gg-save-tools-style")) {
     const style = document.createElement("style");
     style.id = "gg-save-tools-style";
@@ -322,6 +344,8 @@ export function createSaveToolsUI(uiRoot, bus, saveTools, i18n) {
 
   const foot = make("div", "gg-save-tools-foot", panel);
   const hint = make("span", "gg-save-tools-hint", foot);
+  const cloudBtn = make("button", "gg-save-tools-close gg-save-tools-cloud", foot);
+  cloudBtn.type = "button";
   const closeBtn = make("button", "gg-save-tools-close", foot);
   closeBtn.type = "button";
 
@@ -377,6 +401,7 @@ export function createSaveToolsUI(uiRoot, bus, saveTools, i18n) {
     intro.textContent = tr("saveToolsIntro");
     exportBtn.textContent = tr("saveToolsExport");
     importBtn.textContent = tr("saveToolsImport");
+    cloudBtn.textContent = tr("saveToolsCloud");
     closeBtn.textContent = tr("saveToolsClose");
     hint.textContent = tr("saveToolsHint");
     renderStatus();
@@ -500,6 +525,11 @@ export function createSaveToolsUI(uiRoot, bus, saveTools, i18n) {
   });
 
   closeBtn.addEventListener("click", close);
+
+  cloudBtn.addEventListener("click", () => {
+    close();
+    emitBus("cloud-save-open");
+  });
 
   overlay.addEventListener("click", (e) => {
     if (e && e.target === overlay) close();

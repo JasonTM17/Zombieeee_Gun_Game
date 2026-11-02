@@ -12,16 +12,20 @@
  *   it never steals a click or the crosshair.
  * - Victory / defeat overlay: full-screen dim panel above every menu layer
  *   (z-index 60; style.css screens carry no z-index). Title "BOSS RUSH
- *   CLEARED" / "BOSS RUSH FAILED", TIME / BOSSES / SCORE rows, RETRY and MENU.
- *   RETRY dispatches "ui-bossrush"; MENU dispatches "ui-quit". The overlay is
- *   modal (pointer-events auto) and closes ONLY through those buttons — no
- *   backdrop click, no Escape handler.
+ *   CLEARED" / "BOSS RUSH FAILED", TIME / BOSSES / SCORE rows, plus BEST (from
+ *   "leaderboard-updated"), the new entry's RANK when it made the top 10, a
+ *   DAILY date row on daily runs, and RETRY / LEADERBOARD / MENU buttons.
+ *   RETRY dispatches "ui-bossrush"; LEADERBOARD dispatches "leaderboard-open"
+ *   WITHOUT closing the result (the leaderboard modal sits above at z-index
+ *   70); MENU dispatches "ui-quit". The overlay is modal (pointer-events auto)
+ *   and closes ONLY through those buttons — no backdrop click, no Escape
+ *   handler.
  * - hide() closes the overlay + banner and emits "bossrush-closed" when the
  *   overlay was open, so the lead's gamestate.removePause("bossrush") runs.
- *   Both buttons emit their ui-* event FIRST, then hide() (same safe order as
- *   ending.js: the synchronous dispatch keeps pointer-lock user activation and
- *   a fresh run has already cleared its pause reasons when "bossrush-closed"
- *   lands).
+ *   Both run-ending buttons emit their ui-* event FIRST, then hide() (same
+ *   safe order as ending.js: the synchronous dispatch keeps pointer-lock user
+ *   activation and a fresh run has already cleared its pause reasons when
+ *   "bossrush-closed" lands). LEADERBOARD never hides the result.
  * - The overlay is opened by "bossrush-over"; update() also rebuilds it from
  *   bossrush.state() if the event was ever missed. The system emits
  *   "bossrush-open" for the pause itself — this module never touches
@@ -29,8 +33,8 @@
  * - All strings live in an OWN EN/VI bundle (bossrush_*). A live language
  *   switch via "settings-changed" {patch.lang} re-renders in place.
  *
- * Bus consumed: "bossrush-over", "settings-changed".
- * Bus emitted: "ui-bossrush", "ui-quit", "bossrush-closed".
+ * Bus consumed: "bossrush-over", "leaderboard-updated", "settings-changed".
+ * Bus emitted: "ui-bossrush", "ui-quit", "leaderboard-open", "bossrush-closed".
  *
  * @param {HTMLElement} uiRoot - the #ui element.
  * @param {EventTarget} bus
@@ -55,7 +59,11 @@ export const BOSS_RUSH_BUNDLE = {
     bossrush_time: "TIME",
     bossrush_bosses: "BOSSES",
     bossrush_score: "SCORE",
+    bossrush_best: "BEST",
+    bossrush_rank: "RANK",
+    bossrush_daily: "DAILY",
     bossrush_retry: "RETRY",
+    bossrush_leaderboard: "LEADERBOARD",
     bossrush_menu: "MENU",
     bossrush_boss_butcher: "THE BUTCHER",
     bossrush_boss_spitter: "THE SPITTER",
@@ -71,7 +79,11 @@ export const BOSS_RUSH_BUNDLE = {
     bossrush_time: "THỜI GIAN",
     bossrush_bosses: "BOSS",
     bossrush_score: "ĐIỂM",
+    bossrush_best: "KỶ LỤC",
+    bossrush_rank: "HẠNG",
+    bossrush_daily: "HẰNG NGÀY",
     bossrush_retry: "CHƠI LẠI",
+    bossrush_leaderboard: "XẾP HẠNG",
     bossrush_menu: "MENU",
     bossrush_boss_butcher: "ĐỒ TỂ",
     bossrush_boss_spitter: "KẺ PHUN ĐỘC",
@@ -207,6 +219,7 @@ const BOSS_RUSH_CSS = `
 .gg-bossrush-stat.score .val { color: var(--gg-gold, #ffd35e); }
 .gg-bossrush-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: center;
   gap: 10px;
 }
@@ -233,6 +246,17 @@ const BOSS_RUSH_CSS = `
 }
 .gg-bossrush-btn.primary:hover {
   background: linear-gradient(180deg, #b98033, #83561d);
+}
+.gg-bossrush-btn.board {
+  min-width: 0;
+  padding: 10px 12px;
+  letter-spacing: 0.1em;
+  color: #cfe2ff;
+  border-color: #35507a;
+}
+.gg-bossrush-btn.board:hover {
+  color: #fff;
+  border-color: var(--gg-accent, #7fb2ff);
 }
 `;
 
@@ -324,10 +348,21 @@ export function createBossRushUI(uiRoot, bus, bossrush, i18n) {
   const scoreRow = make("div", "gg-bossrush-stat score", statsBox);
   const scoreLbl = make("span", "lbl", scoreRow);
   const scoreVal = make("span", "val", scoreRow);
+  const bestRow = make("div", "gg-bossrush-stat best", statsBox);
+  const bestLbl = make("span", "lbl", bestRow);
+  const bestVal = make("span", "val", bestRow);
+  const rankRow = make("div", "gg-bossrush-stat rank", statsBox);
+  const rankLbl = make("span", "lbl", rankRow);
+  const rankVal = make("span", "val", rankRow);
+  const dailyRow = make("div", "gg-bossrush-stat daily", statsBox);
+  const dailyLbl = make("span", "lbl", dailyRow);
+  const dailyVal = make("span", "val", dailyRow);
 
   const actions = make("div", "gg-bossrush-actions", panel);
   const retryBtn = make("button", "gg-bossrush-btn primary", actions);
   retryBtn.type = "button";
+  const boardBtn = make("button", "gg-bossrush-btn board", actions);
+  boardBtn.type = "button";
   const menuBtn = make("button", "gg-bossrush-btn", actions);
   menuBtn.type = "button";
 
@@ -338,8 +373,11 @@ export function createBossRushUI(uiRoot, bus, bossrush, i18n) {
   let lastTime = "";
   let lastFilled = -1;
   let lastCurrent = -1;
-  /** @type {{win: boolean, time: number, bossesDown: number, score: number}|null} */
+  /** @type {{win: boolean, time: number, bossesDown: number, score: number,
+   *   daily: boolean, dateKey: string, modifierId: string|null}|null} */
   let result = null;
+  /** @type {{entry: Object|null, best: Object|null, rank: number}|null} */
+  let lastBoard = null;
 
   function hideBanner() {
     if (!bannerOn) return;
@@ -398,7 +436,22 @@ export function createBossRushUI(uiRoot, bus, bossrush, i18n) {
       time: Number.isFinite(Number(s.time)) ? Number(s.time) : 0,
       bossesDown: Math.max(0, Math.round(Number(s.bossesDown) || 0)),
       score: Math.max(0, Math.round(Number(s.score) || 0)),
+      daily: s.daily === true,
+      dateKey: typeof s.dateKey === "string" ? s.dateKey : "",
+      modifierId:
+        typeof s.modifierId === "string" && s.modifierId ? s.modifierId : null,
     };
+  }
+
+  /** Does a leaderboard entry describe the result currently on screen? */
+  function sameRun(entry) {
+    if (!entry || !result) return false;
+    return (
+      Number(entry.score) === result.score &&
+      Number(entry.bossesDown) === result.bossesDown &&
+      (entry.win === true) === result.win &&
+      Math.abs(Number(entry.time) - result.time) < 0.011
+    );
   }
 
   function renderResult() {
@@ -410,6 +463,22 @@ export function createBossRushUI(uiRoot, bus, bossrush, i18n) {
     timeVal.textContent = fmtClock(result.time);
     bossesVal.textContent = fmtInt(result.bossesDown) + "/" + TOTAL;
     scoreVal.textContent = fmtInt(result.score);
+
+    // BEST + rank come from the leaderboard system ("leaderboard-updated").
+    // Absent / not-yet-wired → BEST "—" and the rank row stays hidden.
+    const best = lastBoard && lastBoard.best ? lastBoard.best : null;
+    bestVal.textContent = best
+      ? fmtInt(best.score) + " · " + fmtClock(best.time)
+      : "—";
+    const rank =
+      lastBoard && sameRun(lastBoard.entry)
+        ? Math.max(0, Math.round(Number(lastBoard.rank) || 0))
+        : 0;
+    rankVal.textContent = rank > 0 ? "#" + rank : "";
+    rankRow.style.display = rank > 0 ? "" : "none";
+
+    dailyRow.style.display = result.daily ? "" : "none";
+    dailyVal.textContent = result.daily ? result.dateKey || "—" : "";
   }
 
   function openOverlay() {
@@ -445,10 +514,14 @@ export function createBossRushUI(uiRoot, bus, bossrush, i18n) {
   function applyTexts() {
     kicker.textContent = tr("bossrush_kicker");
     retryBtn.textContent = tr("bossrush_retry");
+    boardBtn.textContent = tr("bossrush_leaderboard");
     menuBtn.textContent = tr("bossrush_menu");
     timeLbl.textContent = tr("bossrush_time");
     bossesLbl.textContent = tr("bossrush_bosses");
     scoreLbl.textContent = tr("bossrush_score");
+    bestLbl.textContent = tr("bossrush_best");
+    rankLbl.textContent = tr("bossrush_rank");
+    dailyLbl.textContent = tr("bossrush_daily");
     lastLabel = "";
     lastTime = "";
     if (result) renderResult();
@@ -463,6 +536,12 @@ export function createBossRushUI(uiRoot, bus, bossrush, i18n) {
     bus.dispatchEvent(new CustomEvent("ui-bossrush"));
     hide();
   });
+  // Opening the board does NOT hide the result: the leaderboard modal stacks
+  // above (z-index 70) and closing it returns to this panel.
+  boardBtn.addEventListener("click", () => {
+    if (!overlayOpen) return;
+    bus.dispatchEvent(new CustomEvent("leaderboard-open"));
+  });
   menuBtn.addEventListener("click", () => {
     if (!overlayOpen) return;
     bus.dispatchEvent(new CustomEvent("ui-quit"));
@@ -474,6 +553,18 @@ export function createBossRushUI(uiRoot, bus, bossrush, i18n) {
     const detail = e && e.detail ? e.detail : {};
     result = normalizeResult(detail);
     openOverlay();
+  });
+
+  // Leaderboard rank / best for the result panel (system is optional — the
+  // panel simply shows BEST "—" and no rank until this event arrives).
+  bus.addEventListener("leaderboard-updated", (e) => {
+    const d = e && e.detail ? e.detail : null;
+    lastBoard = {
+      entry: d && d.entry ? d.entry : null,
+      best: d && d.best ? d.best : null,
+      rank: Math.max(0, Math.round(Number(d && d.rank) || 0)),
+    };
+    if (overlayOpen && result) renderResult();
   });
 
   // Menus / pause / gameover: the banner must never float over another screen.

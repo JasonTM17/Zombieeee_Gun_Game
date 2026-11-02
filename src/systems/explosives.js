@@ -14,9 +14,10 @@
  *   (per zombie: dmg = 90 * (1 - dist/4) clamped ≥ 0, applied via
  *   zombie.takeDamage(dmg, false) — explosion damage is not a headshot).
  * - Effects: particle burst (particles.spawnBlood/spawnSpark or a dedicated
- *   burst), a short-lived flash PointLight at the blast center, and a LIGHT
- *   camera shake (pitch/yaw jitter decaying over 0.3 s, applied as a DELTA on
- *   top of the camera rotation like weapons recoil does).
+ *   burst) and a LIGHT camera shake (pitch/yaw jitter decaying over 0.3 s,
+ *   applied as a DELTA on top of the camera rotation like weapons recoil does).
+ *   The blast light object is detached from the scene — particles carry the
+ *   flash without adding a permanent forward-shader light.
  * - Emits "explosion" {position} on the bus (position = blast center).
  * - reset(): clear every live projectile + pending effects (fresh run).
  *
@@ -263,8 +264,11 @@ export function createExplosives(scene, camera, zombies, particles, audio, bus) 
     emissive: 0x25360f, // faint glow so the shell reads against the night
     emissiveIntensity: 0.7,
   });
+  // Blast flash light: detached on purpose. The particle burst carries the
+  // visual; a scene PointLight would add a permanent shader light for a
+  // 0.16 s effect. The update code still writes its (harmless) intensity.
   const flashLight = new THREE.PointLight(0xffa252, 0, 14, 2);
-  scene.add(flashLight);
+  flashLight.visible = false;
 
   /** Live projectiles: { mesh, vx, vy, vz, t } — a handful at most. */
   const live = [];

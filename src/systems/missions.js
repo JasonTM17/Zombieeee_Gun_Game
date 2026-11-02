@@ -908,6 +908,7 @@ export function createMissions(busArg, city, economy, sceneArg, levelArg) {
     campfireFlame = new THREE.Mesh(flameGeo, flameMat);
     campfireLight = new THREE.PointLight(0xff8a3c, 0, 18, 2); // lit on activation
     campfireLight.position.set(10, 1.0, 70);
+    campfireLight.visible = false; // idle campfire: stay out of the shader
     pieces("campfire", [stones, logs, campfireFlame]);
     objects.push(campfireLight);
     scene.add(stones, logs, campfireFlame, campfireLight);
@@ -1013,7 +1014,10 @@ export function createMissions(busArg, city, economy, sceneArg, levelArg) {
       if (mat) mat.color.setHex(0xffc23d);
     } else if (target === "campfire" && built) {
       if (campfireFlame) campfireFlame.material.color.setHex(0xff9a3c);
-      if (campfireLight) campfireLight.intensity = 14;
+      if (campfireLight) {
+        campfireLight.intensity = 14;
+        campfireLight.visible = true; // activated campfire: add its warm light
+      }
     }
   }
 

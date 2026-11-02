@@ -25,15 +25,22 @@
  * instantly, second skip advances to the next line; after the last line →
  * hide + onDone().
  *
- * showIntro(slides, onDone): the New Game slides — white text on black,
- * fading, ONE slide at a time, world rendering dimmed behind them (the
- * slide backdrop is ~0.85 opaque black; the renderer is not touched). Runs
- * while gamestate is "intro" (docs/EXPANSION-P1.md §5.6.1). Skip = next
- * slide; after the last slide → onDone(). Slides WAIT for input (no
- * auto-advance — the gamestate stays "intro" until the player finishes);
- * each slide shows a language-neutral "E ▸" hint at the bottom. Free-roam
- * mode skips the slides entirely (main.js decides — dialogue only renders
- * what it is given).
+ * showIntro(slides, onDone): the New Game slides — a cinematic, full-screen
+ * night transmission (deep blue-black + low amber glow, drifting fog,
+ * scanlines, vignette, gold top rule, concentric radio rings) over the dimmed
+ * world. ONE slide at a time, each with a chapter stamp (NIGHT 30), an
+ * i18n title (intro_title_1..4), body text and a 01 / 04 counter + progress
+ * dots. The intro's visual/animation CSS is injected ONCE as
+ * <style id="gg-intro-style"> (style.css is outside this module's surface).
+ * Runs while gamestate is "intro" (docs/EXPANSION-P1.md §5.6.1). Advance =
+ * E / click (skip protocol); the bottom-right SKIP INTRO button is the only
+ * pointer-events:auto descendant and finishes the whole sequence in one
+ * click (stopPropagation, so the document click path cannot double-advance).
+ * After the last slide → onDone(). Slides WAIT for input (no auto-advance —
+ * the gamestate stays "intro" until the player finishes). Escape is
+ * deliberately ignored here: the intro has no pause menu and the story must
+ * be finished or skipped. Free-roam mode skips the slides entirely (main.js
+ * decides — dialogue only renders what it is given).
  *
  * showOutro(text, onDone): full-screen black fade-through; `text` is
  * a string or an array of strings rendered one after another; the story
@@ -59,7 +66,8 @@
  *
  * i18n keys owned by THIS module (register via i18n.registerBundle, flat
  * keys, EN + VI verbatim from docs/STORY.md §2/§4/§7.1): speaker_radio,
- * speaker_you, speaker_unknown, intro_s1..intro_s4, story_outro_line1..3.
+ * speaker_you, speaker_unknown, intro_s1..intro_s4, intro_title_1..4,
+ * introKicker, introSkip, introContinue, introChapter, story_outro_line1..3.
  * A live language switch re-renders the current item (key-based text and
  * speaker labels re-resolve; text passed as a finished string cannot).
  *
@@ -111,12 +119,557 @@ const OUTRO_AUTO_MS = 8000;
 const OUTRO_LAST_MS = 6500;
 // Ignores the document click that opened the sequence (see header).
 const CLICK_GUARD_MS = 350;
+// Content crossfade between intro slides (the backdrop never blinks).
+const INTRO_SWAP_MS = 220;
+const INTRO_STYLE_ID = "gg-intro-style";
+
+/**
+ * Everything visual about the story intro lives in this one injected sheet —
+ * src/style.css is not ours to edit. Classic CSS animations only (fog drift,
+ * scanline scroll, ring pulse, signal bars, hint blink): no rAF loop, no
+ * per-frame JS, and every layer is hidden by display:none after the intro.
+ */
+const INTRO_CSS = `
+.gg-intro { background: #04060a; overflow: hidden; }
+
+/* --- backdrop: deep blue-black + warm amber glow low on the screen -------- */
+
+.gg-intro__bg {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(115% 78% at 50% 114%, rgba(255, 166, 66, 0.26) 0%, rgba(255, 122, 30, 0.11) 30%, rgba(255, 122, 30, 0) 58%),
+    radial-gradient(72% 56% at 50% 36%, rgba(30, 52, 86, 0.5) 0%, rgba(8, 12, 20, 0) 72%),
+    linear-gradient(180deg, rgba(3, 5, 10, 0.98) 0%, rgba(6, 10, 18, 0.95) 46%, rgba(2, 4, 8, 0.99) 100%);
+}
+
+.gg-intro__fog,
+.gg-intro__fog--far {
+  position: absolute;
+  inset: -18%;
+  pointer-events: none;
+  opacity: 0.5;
+  filter: blur(20px);
+}
+
+.gg-intro__fog {
+  background:
+    radial-gradient(34% 24% at 24% 64%, rgba(130, 164, 210, 0.12), transparent 70%),
+    radial-gradient(38% 22% at 76% 44%, rgba(130, 164, 210, 0.09), transparent 72%),
+    radial-gradient(46% 26% at 56% 82%, rgba(255, 168, 72, 0.08), transparent 74%);
+  animation: gg-intro-fog 26s ease-in-out infinite alternate;
+}
+
+.gg-intro__fog--far {
+  background:
+    radial-gradient(40% 20% at 66% 70%, rgba(96, 132, 184, 0.08), transparent 72%),
+    radial-gradient(30% 18% at 32% 34%, rgba(255, 190, 96, 0.05), transparent 74%);
+  animation: gg-intro-fog-far 38s ease-in-out infinite alternate;
+}
+
+@keyframes gg-intro-fog {
+  from { opacity: 0.38; transform: translate3d(-2%, 1%, 0) scale(1.02); }
+  to   { opacity: 0.68; transform: translate3d(2.5%, -2%, 0) scale(1.09); }
+}
+
+@keyframes gg-intro-fog-far {
+  from { opacity: 0.3; transform: translate3d(2%, -1%, 0) scale(1.06); }
+  to   { opacity: 0.55; transform: translate3d(-3%, 2%, 0) scale(1.02); }
+}
+
+.gg-intro__scan {
+  position: absolute;
+  inset: -12% 0;
+  pointer-events: none;
+  opacity: 0.34;
+  background: repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.055) 0px, rgba(255, 255, 255, 0.055) 1px, transparent 1px, transparent 3px);
+  animation: gg-intro-scan 6s linear infinite;
+}
+
+@keyframes gg-intro-scan {
+  from { transform: translate3d(0, 0, 0); }
+  to   { transform: translate3d(0, 12px, 0); }
+}
+
+.gg-intro__beam {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 26vh;
+  pointer-events: none;
+  opacity: 0;
+  background: linear-gradient(180deg, transparent 0%, rgba(127, 178, 255, 0.05) 55%, transparent 100%);
+  animation: gg-intro-beam 16s linear infinite;
+}
+
+@keyframes gg-intro-beam {
+  0%   { transform: translate3d(0, -30vh, 0); opacity: 0; }
+  10%  { opacity: 1; }
+  90%  { opacity: 1; }
+  100% { transform: translate3d(0, 130vh, 0); opacity: 0; }
+}
+
+/* readable pool behind the text + cinematic edge falloff */
+.gg-intro__halo {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: min(1080px, 120vw);
+  aspect-ratio: 1.6;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  z-index: 1;
+  background: radial-gradient(ellipse at center, rgba(3, 6, 12, 0.74) 0%, rgba(3, 6, 12, 0.44) 44%, transparent 72%);
+}
+
+.gg-intro__vignette {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 3;
+  background:
+    radial-gradient(115% 95% at 50% 48%, transparent 40%, rgba(0, 0, 0, 0.5) 76%, rgba(0, 0, 0, 0.84) 100%),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.5), transparent 18%, transparent 82%, rgba(0, 0, 0, 0.5));
+}
+
+.gg-intro__rule {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  z-index: 6;
+  opacity: 0.9;
+  background: linear-gradient(90deg, rgba(255, 211, 94, 0), rgba(255, 211, 94, 0.85) 18%, rgba(255, 236, 190, 0.95) 50%, rgba(255, 211, 94, 0.85) 82%, rgba(255, 211, 94, 0));
+  box-shadow: 0 0 18px rgba(255, 190, 80, 0.35);
+}
+
+/* --- radio transmission motif (CSS only, no images) ----------------------- */
+
+.gg-intro__motif {
+  position: absolute;
+  top: 50%;
+  width: clamp(190px, 21vw, 280px);
+  aspect-ratio: 1;
+  transform: translateY(-50%);
+  pointer-events: none;
+  z-index: 2;
+  opacity: 0.55;
+}
+
+.gg-intro__motif--l { left: clamp(-110px, -3vw, -34px); }
+.gg-intro__motif--r { right: clamp(-110px, -3vw, -34px); }
+
+.gg-intro__ring {
+  position: absolute;
+  inset: 0;
+  border: 1px solid rgba(127, 178, 255, 0.16);
+  border-radius: 50%;
+  opacity: 0.55;
+  animation: gg-intro-pulse 7s ease-in-out infinite;
+}
+
+.gg-intro__ring:nth-child(2) { inset: 14%; border-color: rgba(127, 178, 255, 0.12); animation-delay: -1.6s; }
+.gg-intro__ring:nth-child(3) { inset: 30%; border-color: rgba(255, 211, 94, 0.14); animation-delay: -3.2s; }
+.gg-intro__ring:nth-child(4) { inset: 44%; border-color: rgba(255, 211, 94, 0.42); animation-delay: -4.8s; }
+.gg-intro__motif--r .gg-intro__ring { animation-direction: reverse; }
+
+.gg-intro__core {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  margin: -3px 0 0 -3px;
+  border-radius: 50%;
+  background: var(--gg-gold, #ffd35e);
+  box-shadow: 0 0 18px rgba(255, 211, 94, 0.8);
+  opacity: 0.8;
+}
+
+.gg-intro__bars {
+  position: absolute;
+  left: 50%;
+  bottom: 6%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 22px;
+  opacity: 0.55;
+}
+
+.gg-intro__motif--r .gg-intro__bars { bottom: auto; top: 6%; }
+
+.gg-intro__bars i {
+  display: block;
+  width: 2px;
+  height: 100%;
+  background: linear-gradient(180deg, rgba(255, 211, 94, 0.9), rgba(127, 178, 255, 0.35));
+  transform-origin: bottom;
+  animation: gg-intro-bar 2.4s ease-in-out infinite;
+}
+
+.gg-intro__bars i:nth-child(1) { height: 32%; animation-delay: -0.1s; }
+.gg-intro__bars i:nth-child(2) { height: 58%; animation-delay: -0.5s; }
+.gg-intro__bars i:nth-child(3) { height: 86%; animation-delay: -0.9s; }
+.gg-intro__bars i:nth-child(4) { height: 44%; animation-delay: -1.3s; }
+.gg-intro__bars i:nth-child(5) { height: 72%; animation-delay: -0.35s; }
+.gg-intro__bars i:nth-child(6) { height: 100%; animation-delay: -0.75s; }
+.gg-intro__bars i:nth-child(7) { height: 38%; animation-delay: -1.15s; }
+
+@keyframes gg-intro-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.75; }
+  50%      { transform: scale(1.045); opacity: 0.38; }
+}
+
+@keyframes gg-intro-bar {
+  0%, 100% { transform: scaleY(0.32); opacity: 0.3; }
+  50%      { transform: scaleY(1); opacity: 0.9; }
+}
+
+/* --- chapter stamp / counter --------------------------------------------- */
+
+.gg-intro__stamp {
+  position: absolute;
+  top: clamp(22px, 4.4vh, 46px);
+  left: clamp(18px, 4vw, 56px);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-left: 14px;
+  border-left: 2px solid rgba(255, 211, 94, 0.6);
+  text-align: left;
+}
+
+.gg-intro__kicker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.42em;
+  text-transform: uppercase;
+  color: rgba(255, 211, 94, 0.7);
+}
+
+.gg-intro__live {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--gg-gold, #ffd35e);
+  box-shadow: 0 0 10px rgba(255, 211, 94, 0.9);
+  animation: gg-intro-live 2.4s ease-in-out infinite;
+}
+
+@keyframes gg-intro-live {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.25; }
+}
+
+.gg-intro__chapter {
+  font-size: clamp(13px, 1.15vw, 16px);
+  font-weight: 700;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: #f2f5fb;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.8);
+}
+
+.gg-intro__meta {
+  position: absolute;
+  top: clamp(22px, 4.4vh, 46px);
+  right: clamp(18px, 4vw, 56px);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 12px;
+  text-align: right;
+}
+
+.gg-intro__count {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5em;
+  font-size: 12px;
+  letter-spacing: 0.22em;
+  color: rgba(219, 230, 245, 0.55);
+  font-variant-numeric: tabular-nums;
+}
+
+.gg-intro__count strong {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--gg-gold, #ffd35e);
+}
+
+.gg-intro__dots {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.gg-intro__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(219, 230, 245, 0.42);
+  transition: width 0.4s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.4s ease, box-shadow 0.4s ease;
+}
+
+.gg-intro__dot.is-active {
+  width: 26px;
+  background: var(--gg-gold, #ffd35e);
+  box-shadow: 0 0 14px rgba(255, 211, 94, 0.5);
+}
+
+/* --- slide copy ----------------------------------------------------------- */
+
+.gg-intro__stage {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 11vh clamp(20px, 5vw, 48px) 16vh;
+  text-align: center;
+}
+
+.gg-intro__mark {
+  position: relative;
+  width: 54px;
+  height: 2px;
+  margin-bottom: 26px;
+  background: linear-gradient(90deg, transparent, var(--gg-gold, #ffd35e), transparent);
+}
+
+.gg-intro__mark::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 5px;
+  height: 5px;
+  transform: translate(-50%, -50%) rotate(45deg);
+  background: var(--gg-gold, #ffd35e);
+  box-shadow: 0 0 12px rgba(255, 211, 94, 0.8);
+}
+
+.gg-intro__title {
+  margin: 0;
+  max-width: 920px;
+  font-size: clamp(28px, 4.8vw, 62px);
+  font-weight: 800;
+  line-height: 1.08;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #ffe9a8;
+  text-shadow: 0 4px 26px rgba(0, 0, 0, 0.9), 0 0 34px rgba(255, 180, 60, 0.22);
+}
+
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  .gg-intro__title {
+    background: linear-gradient(180deg, #fffdf6 0%, #ffe9a8 42%, #ffd35e 68%, #e8ab3c 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    -webkit-text-fill-color: transparent;
+  }
+}
+
+.gg-intro__body {
+  margin: 30px 0 0;
+  max-width: 720px;
+  font-size: clamp(17px, 1.35vw, 19px);
+  line-height: 1.8;
+  letter-spacing: 0.01em;
+  color: #ffffff;
+  text-shadow: 0 2px 14px rgba(0, 0, 0, 0.92);
+}
+
+/* entry / exit: children stagger, the backdrop never blinks */
+.gg-intro__mark,
+.gg-intro__title,
+.gg-intro__body {
+  opacity: 0;
+  transform: translate3d(0, 18px, 0);
+  transition: opacity 0.55s ease, transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.gg-intro.is-ready .gg-intro__mark { opacity: 1; transform: none; transition-delay: 0.04s; }
+.gg-intro.is-ready .gg-intro__title { opacity: 1; transform: none; transition-delay: 0.12s; }
+.gg-intro.is-ready .gg-intro__body { opacity: 1; transform: none; transition-delay: 0.24s; }
+
+.gg-intro.is-leaving .gg-intro__mark,
+.gg-intro.is-leaving .gg-intro__title,
+.gg-intro.is-leaving .gg-intro__body {
+  opacity: 0;
+  transform: translate3d(0, -10px, 0);
+  transition-duration: 0.18s, 0.18s;
+  transition-delay: 0s;
+}
+
+/* --- footer: continue hint + skip ---------------------------------------- */
+
+.gg-intro__hint {
+  position: absolute;
+  left: 50%;
+  bottom: clamp(22px, 4vh, 40px);
+  transform: translateX(-50%);
+  z-index: 5;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: rgba(219, 230, 245, 0.78);
+  animation: gg-intro-hint 3.4s ease-in-out infinite;
+}
+
+.gg-intro__hint::before {
+  content: "";
+  display: inline-block;
+  width: 4px;
+  height: 4px;
+  margin-right: 10px;
+  border-radius: 50%;
+  background: var(--gg-gold, #ffd35e);
+  vertical-align: middle;
+  opacity: 0.75;
+}
+
+@keyframes gg-intro-hint {
+  0%, 100% { opacity: 0.7; }
+  50%      { opacity: 1; }
+}
+
+.gg-intro__skip {
+  position: absolute;
+  right: clamp(18px, 4vw, 56px);
+  bottom: clamp(18px, 3.4vh, 34px);
+  z-index: 6;
+  pointer-events: auto;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 16px;
+  border: 1px solid rgba(255, 211, 94, 0.38);
+  border-radius: 999px;
+  background: rgba(8, 12, 20, 0.62);
+  color: rgba(255, 211, 94, 0.86);
+  font: 700 10px/1 "Segoe UI", system-ui, sans-serif;
+  letter-spacing: 0.26em;
+  text-transform: uppercase;
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  transition: background-color 0.2s, color 0.2s, border-color 0.2s, box-shadow 0.2s, transform 0.2s;
+}
+
+.gg-intro__skip::after {
+  content: "\\203A";
+  font-size: 14px;
+  line-height: 1;
+  letter-spacing: 0;
+  transform: translateY(-1px);
+  opacity: 0.8;
+}
+
+.gg-intro__skip:hover,
+.gg-intro__skip:focus-visible {
+  background: var(--gg-gold, #ffd35e);
+  border-color: var(--gg-gold, #ffd35e);
+  color: #0a0e16;
+  box-shadow: 0 0 26px rgba(255, 211, 94, 0.35);
+  outline: none;
+  transform: translateY(-1px);
+}
+
+.gg-intro__skip:active { transform: translateY(0); }
+
+/* --- responsive / reduced motion ----------------------------------------- */
+
+@media (max-width: 780px) {
+  .gg-intro__motif { opacity: 0.22; }
+  .gg-intro__motif--r { display: none; }
+}
+
+@media (max-width: 640px) {
+  .gg-intro__chapter { font-size: 12px; letter-spacing: 0.2em; }
+  .gg-intro__kicker { font-size: 9px; letter-spacing: 0.3em; }
+  .gg-intro__count { font-size: 10px; }
+  .gg-intro__count strong { font-size: 14px; }
+  .gg-intro__title { letter-spacing: 0.1em; }
+  .gg-intro__hint { bottom: 72px; font-size: 9px; letter-spacing: 0.24em; }
+  .gg-intro__skip { padding: 9px 13px; font-size: 9px; letter-spacing: 0.2em; }
+}
+
+@media (pointer: coarse) {
+  .gg-intro__skip { min-height: 44px; padding: 13px 18px; }
+}
+
+@media (max-height: 520px) {
+  .gg-intro__mark { margin-bottom: 14px; }
+  .gg-intro__title { font-size: clamp(22px, 3.6vw, 34px); }
+  .gg-intro__body { margin-top: 16px; font-size: 16px; line-height: 1.6; }
+  .gg-intro__stage { padding-top: 8vh; padding-bottom: 14vh; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gg-intro__fog,
+  .gg-intro__fog--far,
+  .gg-intro__scan,
+  .gg-intro__beam,
+  .gg-intro__ring,
+  .gg-intro__bars i,
+  .gg-intro__live,
+  .gg-intro__hint {
+    animation: none !important;
+  }
+  .gg-intro__mark,
+  .gg-intro__title,
+  .gg-intro__body,
+  .gg-intro__dot {
+    transition: none !important;
+  }
+  .gg-intro__beam { opacity: 0 !important; }
+}
+`;
+
+/** Inject the intro stylesheet exactly once per document. */
+function ensureIntroStyle() {
+  if (typeof document === "undefined" || !document.createElement) return;
+  if (document.getElementById && document.getElementById(INTRO_STYLE_ID)) {
+    return;
+  }
+  const target = document.head || document.documentElement;
+  if (!target) return;
+  const tag = document.createElement("style");
+  tag.id = INTRO_STYLE_ID;
+  tag.textContent = INTRO_CSS;
+  target.appendChild(tag);
+}
 
 const DIALOGUE_BUNDLE = {
   en: {
     speaker_radio: "RADIO",
     speaker_you: "YOU",
     speaker_unknown: "UNKNOWN",
+    // Intro chrome + per-slide titles (cinematic story intro, dialogue.js).
+    introKicker: "STORY INTRO",
+    introChapter: "NIGHT 30",
+    introSkip: "SKIP INTRO",
+    introContinue: "E / CLICK — CONTINUE",
+    intro_title_1: "THE CITY IS QUIET",
+    intro_title_2: "FIVE ARE GONE",
+    intro_title_3: "THE SIGNAL",
+    intro_title_4: "LIGHTS ON",
     intro_s1:
       "Day 30. The city died last week — what walks its streets now is something else. I still count the days. It's how I remember I'm human.",
     intro_s2:
@@ -208,6 +761,15 @@ const DIALOGUE_BUNDLE = {
     speaker_radio: "GIỌNG RADIO",
     speaker_you: "BẠN",
     speaker_unknown: "KHÔNG RÕ",
+    // Intro chrome + per-slide titles (cinematic story intro, dialogue.js).
+    introKicker: "MỞ ĐẦU",
+    introChapter: "ĐÊM THỨ 30",
+    introSkip: "BỎ QUA",
+    introContinue: "E / CLICK — TIẾP TỤC",
+    intro_title_1: "THÀNH PHỐ IM",
+    intro_title_2: "NĂM NGƯỜI ĐÃ MẤT",
+    intro_title_3: "TÍN HIỆU",
+    intro_title_4: "BẬT ĐIỆN",
     intro_s1:
       "Ngày thứ 30. Thành phố chết từ tuần trước — thứ đi lại trên phố bây giờ không còn là người. Tôi vẫn đếm ngày. Để còn nhớ mình là người.",
     intro_s2:
@@ -388,42 +950,79 @@ export function createDialogue(container, bus, i18n) {
   });
   moreNode.textContent = "▸"; // blink while waiting for the skip input
 
-  // Intro slides — full-screen dim backdrop over the rendered world.
-  const slide = make("div", "dlg-slide", container);
+  // Intro — cinematic full-screen story slides. Visuals + ambient animation
+  // live in the injected #gg-intro-style sheet; only display/opacity are
+  // inline. Everything stays pointer-events:none except the SKIP button.
+  ensureIntroStyle();
+  const slide = make("div", "dlg-slide gg-intro", container);
   css(slide, {
     position: "absolute",
     inset: "0",
     display: "none",
-    alignItems: "center",
-    justifyContent: "center",
-    background: "rgba(0, 0, 0, 0.85)",
+    overflow: "hidden",
+    background: "#04060a",
     zIndex: "30",
     pointerEvents: "none",
     opacity: "0",
     transition: "opacity " + FADE_MS + "ms ease",
   });
-  const slideText = make("div", "dlg-slide-text", slide);
-  css(slideText, {
-    maxWidth: "580px",
-    padding: "0 24px",
-    textAlign: "center",
-    fontSize: "17px",
-    lineHeight: "1.75",
-    color: "#e8edf5",
-    textShadow: "0 1px 6px rgba(0, 0, 0, 0.9)",
+
+  // Layered backdrop: gradient + fog + scanlines + light beam.
+  make("div", "gg-intro__bg", slide);
+  make("div", "gg-intro__fog", slide);
+  make("div", "gg-intro__fog--far", slide);
+  make("div", "gg-intro__scan", slide);
+  make("div", "gg-intro__beam", slide);
+  make("div", "gg-intro__halo", slide);
+
+  // Radio transmission motif — concentric rings + signal bars, CSS only.
+  function buildMotif(side) {
+    const motif = make("div", "gg-intro__motif gg-intro__motif--" + side, slide);
+    motif.setAttribute("aria-hidden", "true");
+    for (let r = 0; r < 4; r++) make("span", "gg-intro__ring", motif);
+    make("span", "gg-intro__core", motif);
+    const bars = make("span", "gg-intro__bars", motif);
+    for (let b = 0; b < 7; b++) make("i", "", bars);
+  }
+  buildMotif("l");
+  buildMotif("r");
+
+  make("div", "gg-intro__vignette", slide);
+  make("div", "gg-intro__rule", slide);
+
+  // Chapter stamp (top left) — "STORY INTRO" + "NIGHT 30".
+  const stamp = make("div", "gg-intro__stamp", slide);
+  const kickerNode = make("div", "gg-intro__kicker", stamp);
+  make("span", "gg-intro__live", kickerNode).setAttribute("aria-hidden", "true");
+  const kickerText = make("span", "gg-intro__kicker-text", kickerNode);
+  const chapterNode = make("div", "gg-intro__chapter", stamp);
+
+  // Counter + progress dots (top right).
+  const meta = make("div", "gg-intro__meta", slide);
+  const countNode = make("div", "gg-intro__count", meta);
+  const countNow = make("strong", "gg-intro__count-now", countNode);
+  const countRest = make("span", "gg-intro__count-rest", countNode);
+  const dotsNode = make("div", "gg-intro__dots", meta);
+  dotsNode.setAttribute("aria-hidden", "true");
+
+  // Centered copy.
+  const stage = make("div", "gg-intro__stage", slide);
+  make("div", "gg-intro__mark", stage).setAttribute("aria-hidden", "true");
+  const titleNode = make("h2", "gg-intro__title", stage);
+  const slideBody = make("p", "gg-intro__body", stage);
+  stage.setAttribute("aria-live", "polite");
+  stage.setAttribute("aria-atomic", "true");
+
+  // Footer hint + the only interactive element of the overlay.
+  const slideHint = make("div", "gg-intro__hint", slide);
+  const skipBtn = make("button", "gg-intro__skip", slide);
+  skipBtn.type = "button";
+  skipBtn.addEventListener("click", (e) => {
+    // Must not bubble into the document click handler (would double-advance).
+    if (e && typeof e.stopPropagation === "function") e.stopPropagation();
+    if (mode !== "intro") return;
+    finish(); // skip every remaining slide — onDone fires once
   });
-  const slideHint = make("div", "dlg-slide-hint", slide);
-  css(slideHint, {
-    position: "absolute",
-    bottom: "26px",
-    left: "0",
-    right: "0",
-    textAlign: "center",
-    fontSize: "12px",
-    letterSpacing: "0.3em",
-    color: "rgba(219, 230, 245, 0.4)",
-  });
-  slideHint.textContent = "E · ▸"; // language-neutral glyphs — no i18n key
 
   // Outro — full-screen black, white text; the middle story line is a banner.
   const outro = make("div", "dlg-outro", container);
@@ -597,21 +1196,73 @@ export function createDialogue(container, bus, i18n) {
 
   // --- intro mode -----------------------------------------------------------------
 
+  let introDots = [];
+  let introDotsTotal = 0;
+
+  const pad2 = (n) => String(n).padStart(2, "0");
+
+  /** Rebuild dots only when the slide count changes (replays may differ). */
+  function renderIntroDots(total, active) {
+    if (introDotsTotal !== total) {
+      introDotsTotal = total;
+      introDots = [];
+      dotsNode.textContent = "";
+      for (let d = 0; d < total; d++) {
+        introDots.push(make("span", "gg-intro__dot", dotsNode));
+      }
+    }
+    for (let d = 0; d < introDots.length; d++) {
+      introDots[d].className =
+        "gg-intro__dot" + (d === active ? " is-active" : "");
+    }
+  }
+
+  /** Language-dependent chrome: labels, counter, dots, skip visibility. */
+  function renderIntroChrome(i) {
+    const total = seq.length;
+    kickerText.textContent = tr("introKicker");
+    chapterNode.textContent = tr("introChapter");
+    slideHint.textContent = tr("introContinue");
+    skipBtn.textContent = tr("introSkip");
+    skipBtn.setAttribute("aria-label", tr("introSkip"));
+    countNow.textContent = pad2(i + 1);
+    countRest.textContent = " / " + pad2(total);
+    renderIntroDots(total, i);
+    // Nothing left to skip on the final slide (finishing = one more advance).
+    skipBtn.style.display = i >= total - 1 ? "none" : "inline-flex";
+  }
+
+  /** Update copy in place — no DOM rebuild (the overlay is reused). */
   function renderSlide(i) {
     idx = i;
-    slideText.textContent = itemText(seq[i]);
+    renderIntroChrome(i);
+    const titleKey = "intro_title_" + (i + 1);
+    const titleText = tr(titleKey);
+    const hasTitle = !!titleText && titleText !== titleKey;
+    titleNode.textContent = hasTitle ? titleText : "";
+    titleNode.style.display = hasTitle ? "block" : "none";
+    slideBody.textContent = itemText(seq[i]);
+  }
+
+  /** Switch the entry/exit phase class on the overlay root. The forced reflow
+   * commits the hidden base state, so the next class re-runs the staggered CSS
+   * transition even when the text changes in the same frame. */
+  function setIntroPhase(phase) {
+    slide.className = "dlg-slide gg-intro" + (phase ? " " + phase : "");
+    void slide.offsetWidth;
   }
 
   function fadeToSlide(i) {
     busy = true;
-    slide.style.opacity = "0";
+    setIntroPhase("is-leaving"); // only the copy leaves — backdrop stays
     fadeTimer = setTimeout(() => {
       fadeTimer = 0;
-      busy = false;
       if (mode !== "intro") return;
       renderSlide(i);
-      slide.style.opacity = "1";
-    }, FADE_MS);
+      setIntroPhase(""); // commit the hidden base state…
+      setIntroPhase("is-ready"); // …then transition the new copy in
+      busy = false;
+    }, INTRO_SWAP_MS);
   }
 
   // --- outro mode -------------------------------------------------------------------
@@ -742,6 +1393,11 @@ export function createDialogue(container, bus, i18n) {
       }, FADE_MS);
     }
     box.style.display = "none";
+    if (wasMode === "intro") {
+      // The skip affordance dies with the sequence (restored by showIntro).
+      skipBtn.style.display = "none";
+      skipBtn.disabled = false;
+    }
     if (cb) {
       doneFired = true;
       cb();
@@ -812,7 +1468,7 @@ export function createDialogue(container, bus, i18n) {
       textNode.textContent = itemText(raw);
       showMore(true);
     } else if (mode === "intro") {
-      slideText.textContent = itemText(seq[idx]);
+      renderSlide(idx);
     } else if (mode === "outro") {
       if (typeTimer) {
         clearInterval(typeTimer);
@@ -845,8 +1501,11 @@ export function createDialogue(container, bus, i18n) {
       mode = "";
       onDoneCb = null;
       box.style.display = "none";
+      setIntroPhase(""); // reset entry/exit classes for the next replay
       slide.style.display = "none";
       slide.style.opacity = "0";
+      skipBtn.style.display = "none";
+      skipBtn.disabled = false;
       outro.style.display = "none";
       outro.style.opacity = "0";
       outroText.style.opacity = "0";
@@ -855,18 +1514,24 @@ export function createDialogue(container, bus, i18n) {
     /** @type {Dialogue["showIntro"]} */
     showIntro(slides, onDone) {
       const items = Array.isArray(slides) ? slides.slice() : [];
+      ensureIntroStyle(); // idempotent — never a second style tag
       begin("intro", items, onDone);
       if (!items.length) {
         finish();
         return;
       }
+      setIntroPhase(""); // fresh entry state (also clears a stale is-leaving)
       slide.style.display = "flex";
-      renderSlide(0);
+      slide.style.opacity = "0";
+      skipBtn.style.display = "none";
+      skipBtn.disabled = false;
+      renderSlide(0); // updates title/body/counter/dots + re-reveals skip
       busy = true; // the fade-in window swallows skips (advance() no-ops)
       // Fade in on the next frame so the transition replays from display:none.
       requestAnimationFrame(() => {
         if (mode !== "intro") return;
         slide.style.opacity = "1";
+        setIntroPhase("is-ready"); // staggered copy entrance
         busy = false;
       });
     },

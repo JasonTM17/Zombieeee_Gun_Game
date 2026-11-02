@@ -158,7 +158,7 @@ export const bus = new EventTarget();
  */
 
 /**
- * @typedef {("shop"|"merchant"|"perks"|"contracts"|"bossrush"|"photo"|"user"|"outro"|"ending")} PauseReason - why the run is frozen. "user" is
+ * @typedef {("shop"|"merchant"|"perks"|"contracts"|"bossrush"|"photo"|"wheel"|"user"|"outro"|"ending")} PauseReason - why the run is frozen. "user" is
  * the legacy Esc/P pause; "shop" is set while the shop overlay is open;
  * "merchant" while the physical Trader overlay is open (same contract as the
  * shop); "outro" while the full-screen story outro owns the display; "ending"

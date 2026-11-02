@@ -11,8 +11,9 @@
  *   - 12 fake volumetric lamp shafts (nested additive cones) under existing
  *     street / district lamps, merged into ONE draw call;
  *   - 8 burning barrels (safehouse / quarantine / docks edges) with merged
- *     bodies, individual additive flame cones, and 6 flickering PointLights
- *     total (castShadow explicitly false);
+ *     bodies and individual additive flame cones — NO dynamic PointLights:
+ *     the emissive flame + tone mapping read as fire in the dark, and the
+ *     saved shader lights are worth more than the warm pool they added;
  *   - rubble, sandbag walls, abandoned cars and traffic barricades along the
  *     residential / commercial streets and the quarantine rim. Only the big
  *     items (barrel body, sandbag wall, car) push AABB colliders;
@@ -64,7 +65,10 @@ const SKYLINE_RADIUS = 158;
 const SKYLINE_COUNT = 46;
 
 const BARREL_COUNT = 8;
-const BARREL_LIGHT_MAX = 6;
+// Perf pass: 3 → 0 dynamic point lights. Every barrel keeps its animated
+// additive flame cone; the forward shader no longer pays for barrel lights
+// (city district lamps + the three arena lamps carry the warm pools).
+const BARREL_LIGHT_MAX = 0;
 const FIREFLY_COUNT = 220;
 
 /**
@@ -118,13 +122,12 @@ const SHAFTS_FALLBACK = [
   { x: -17, z: -17, y: 3.2 },
   { x: 17, z: -17, y: 3.2 },
   { x: -17, z: 17, y: 3.2 },
-  { x: 17, z: 17, y: 3.2 },
-  { x: 0, z: 6, y: 3.8 },
 ];
 
 /**
  * Barrel candidates at district edges, in priority order. The first eight
- * that pass the placement rules become barrels; the first six get a light.
+ * that pass the placement rules become barrels (no dynamic lights — the
+ * additive flame cone is the light source).
  * All are ≥ 6 m from spawns and ≥ 4 m from gates/POIs on the real layout.
  * @type {Array<{x: number, z: number, district: string}>}
  */
@@ -787,7 +790,7 @@ export function createScenery(scene, level, city) {
   }
 
   // ===========================================================================
-  // 4. FIRE BARRELS — 8 bodies, 8 flames, max 6 PointLights
+  // 4. FIRE BARRELS — 8 bodies, 8 flames, NO PointLights
   // ===========================================================================
   /** @type {Array<{x: number, z: number, light: THREE.PointLight|null,
    *   flame: THREE.Mesh, phase: number, sp1: number, sp2: number,
@@ -846,18 +849,9 @@ export function createScenery(scene, level, city) {
       toneMapped: false,
       fog: true,
     });
-    // Chosen order is grouped safehouse → quarantine → docks, so this pattern
-    // spreads the six lights evenly instead of lighting only the first six.
-    const LIT_PATTERNS = {
-      6: [0, 1, 2, 3, 4, 5],
-      7: [0, 1, 3, 4, 5, 6],
-      8: [0, 1, 3, 4, 6, 7],
-    };
-    const litIndices = new Set(
-      chosen.length <= BARREL_LIGHT_MAX
-        ? chosen.map((_, k) => k)
-        : LIT_PATTERNS[chosen.length] || [0, 1, 2, 3, 4, 5]
-    );
+    // No barrel PointLights: every barrel reads through its additive flame
+    // cone (and the city district lamps own the warm pools). This keeps the
+    // forward shader at 12 visible lights instead of 15.
     for (let i = 0; i < chosen.length; i++) {
       const b = chosen[i];
       const flame = new THREE.Mesh(flameGeo, flameMat);
@@ -868,15 +862,7 @@ export function createScenery(scene, level, city) {
       addRenderable(flame);
       stats.barrelFlames++;
 
-      /** @type {THREE.PointLight|null} */
-      let light = null;
-      if (litIndices.has(i) && lightCount < BARREL_LIGHT_MAX) {
-        light = new THREE.PointLight(0xff9448, 7.5, 8.5, 2);
-        light.position.set(b.x, 1.15, b.z);
-        light.castShadow = false; // explicit: no new shadow-casting lights
-        scene.add(light);
-        lightCount++;
-      }
+      const light = null;
       barrels.push({
         x: b.x,
         z: b.z,
@@ -1047,8 +1033,8 @@ export function createScenery(scene, level, city) {
       roughness: 0.85,
       metalness: 0.05,
     });
-    addMerged(chunkGeos, debrisMat, "scenery-rubble-chunks", { cast: true, receive: true });
-    addMerged(rockGeos, debrisMat, "scenery-rubble-rocks", { cast: true, receive: true });
+    addMerged(chunkGeos, debrisMat, "scenery-rubble-chunks", { cast: false, receive: true });
+    addMerged(rockGeos, debrisMat, "scenery-rubble-rocks", { cast: false, receive: true });
     addMerged(bagGeos, bagMat, "scenery-sandbags", { cast: true, receive: true, solid: true });
     addMerged(carGeos, carMat, "scenery-wrecked-cars", { cast: true, receive: true, solid: true });
     addMerged(barricadeGeos, barricadeMat, "scenery-barricades", { cast: false, receive: true });

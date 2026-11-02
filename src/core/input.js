@@ -121,6 +121,11 @@ import { bus } from "../systems/gamestate.js"; // shared bus — see wiring note
  */
 
 const PAUSE_DEDUPE_MS = 300;
+// Weapon switching via wheel used to fire on every high-resolution wheel tick
+// (trackpads / free-spin mice cycled 3-5 guns from one gesture). Require a real
+// notch and enforce a short cooldown so one deliberate scroll = one weapon.
+const WHEEL_MIN_DELTA = 16;
+const WHEEL_COOLDOWN_MS = 180;
 // Help overlay: its pointer-lock release is expected, not a pause. The grace
 // window covers a fast open→close before the queued pointerlockchange lands.
 const HELP_UNLOCK_GRACE_MS = 1000;
@@ -135,6 +140,7 @@ export function createInput(canvas, settings) {
   let accY = 0;
   let clickPending = false;
   let wheel = 0;
+  let lastWheelAt = -Infinity;
   let lastPauseEmit = -Infinity;
   let lastKnownState = "menu";
   let shopOpen = false; // tracked via bus "shop-open"/"shop-closed" — see header
@@ -271,7 +277,15 @@ export function createInput(canvas, settings) {
     "wheel",
     (e) => {
       if (!isLockedNow() || e.deltaY === 0) return;
-      wheel = e.deltaY > 0 ? -1 : 1;
+      // Normalise line/page deltas and reject trackpad micro-scrolls.
+      const dy =
+        e.deltaY *
+        (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? window.innerHeight : 1);
+      if (Math.abs(dy) < WHEEL_MIN_DELTA) return;
+      const now = performance.now();
+      if (now - lastWheelAt < WHEEL_COOLDOWN_MS) return;
+      lastWheelAt = now;
+      wheel = dy > 0 ? -1 : 1;
     },
     { passive: true }
   );

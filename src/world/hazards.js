@@ -40,7 +40,8 @@
  *     by distance and capped at MAX_CHAIN_DEPTH (8). State flags (intact +
  *     pending) make loops impossible.
  *   - FX: particle burst + sparks + smoke, one short orange PointLight from a
- *     preallocated pool of 3 (only one is ever lit at a time), and a flat dark
+ *     preallocated single-light pool (hidden until a blast, then toggled back
+ *     out of the forward shader), and a flat dark
  *     scorch disc via a single InstancedMesh. No per-frame allocation and no
  *     per-frame raycasts.
  *
@@ -53,9 +54,9 @@
  * have exploded since the last reset; `pending` counts lit fuses.
  *
  * Budget: 55 meshes (13×3 barrels + 5×3 canisters + 1 scorch InstancedMesh),
- * 5 shared materials (2 body colours + trim + hazard band + scorch), 3
- * PointLights (castShadow false), no geometry creation in update, no extra
- * shadow casters beyond the prop bodies.
+ * 5 shared materials (2 body colours + trim + hazard band + scorch), 1
+ * PointLight (hidden unless a blast is fading, castShadow false), no geometry
+ * creation in update, no extra shadow casters beyond the prop bodies.
  *
  * @param {import("three").Scene} scene
  * @param {EventTarget} bus
@@ -99,7 +100,7 @@ const COLLIDER_CANISTER = 0.55;
 // --- FX ---------------------------------------------------------------------
 const FLASH_TIME = 0.22; // s — explosion light fade
 const FLASH_INTENSITY = 26;
-const FLASH_POOL = 3; // preallocated PointLights; only one lit at a time
+const FLASH_POOL = 1; // ONE preallocated PointLight; visible only during a blast
 const SCORCH_MAX = 20; // one InstancedMesh slot per possible hazard + slack
 
 /**
@@ -525,13 +526,14 @@ export function createHazards(scene, bus, level, city, zombies, particles) {
   const scorchDummy = new THREE.Object3D();
   let scorchCount = 0;
 
-  // --- blast light pool: 3 preallocated, at most ONE lit ---------------------
+  // --- blast light pool: ONE preallocated, hidden until a blast ---------------
   /** @type {THREE.PointLight[]} */
   const flashLights = [];
   for (let i = 0; i < FLASH_POOL; i++) {
     const light = new THREE.PointLight(0xff8a3a, 0, 9, 2);
     light.name = "hazard-blast-light-" + i;
     light.castShadow = false; // explicit: no new shadow-casting lights
+    light.visible = false; // idle light: keep it out of the forward shader
     light.position.set(0, 1, 0);
     root.add(light);
     flashLights.push(light);
@@ -715,13 +717,17 @@ export function createHazards(scene, bus, level, city, zombies, particles) {
     }
   }
 
-  /** Claim the next pool light; zero every other light first (max 1 lit). */
+  /** Claim the pool light; zero every other light first (max 1 lit). */
   function flashAt(x, z) {
     const light = flashLights[flashIndex % FLASH_POOL];
     flashIndex = (flashIndex + 1) % FLASH_POOL;
-    for (let i = 0; i < flashLights.length; i++) flashLights[i].intensity = 0;
+    for (let i = 0; i < flashLights.length; i++) {
+      flashLights[i].intensity = 0;
+      flashLights[i].visible = false;
+    }
     light.position.set(x, 1.15, z);
     light.intensity = FLASH_INTENSITY;
+    light.visible = true; // single toggle in; update() toggles it back out
     activeFlash = light;
     flashT = FLASH_TIME;
   }
@@ -872,7 +878,10 @@ export function createHazards(scene, bus, level, city, zombies, particles) {
       if (st === "playing") return;
       flashT = 0;
       activeFlash = null;
-      for (let i = 0; i < flashLights.length; i++) flashLights[i].intensity = 0;
+      for (let i = 0; i < flashLights.length; i++) {
+        flashLights[i].intensity = 0;
+        flashLights[i].visible = false;
+      }
     });
   }
 
@@ -908,7 +917,10 @@ export function createHazards(scene, bus, level, city, zombies, particles) {
       flashT -= dt;
       if (flashT <= 0) {
         flashT = 0;
-        if (activeFlash) activeFlash.intensity = 0;
+        if (activeFlash) {
+          activeFlash.intensity = 0;
+          activeFlash.visible = false; // back out of the forward shader
+        }
       } else if (activeFlash) {
         activeFlash.intensity = FLASH_INTENSITY * (flashT / FLASH_TIME);
       }
@@ -936,7 +948,10 @@ export function createHazards(scene, bus, level, city, zombies, particles) {
     scorchMesh.instanceMatrix.needsUpdate = true;
     flashT = 0;
     activeFlash = null;
-    for (let i = 0; i < flashLights.length; i++) flashLights[i].intensity = 0;
+    for (let i = 0; i < flashLights.length; i++) {
+      flashLights[i].intensity = 0;
+      flashLights[i].visible = false;
+    }
     time = 0;
   }
 

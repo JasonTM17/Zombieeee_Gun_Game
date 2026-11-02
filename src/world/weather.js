@@ -52,9 +52,16 @@
  * only while a flash is visible) and 1 extra light.
  *
  * Bus consumed: "bloodmoon-active" {active}, "settings-changed" {patch.volume}.
- * Bus emitted: "lightning-strike" {x, z, radius: 3.2, damage: 160,
- *   time: seconds since the current storm started}. Only emitted while a
- *   storm is running (never clear / rain / fog / bloodmoon).
+ * Bus emitted:
+ *   - "lightning-strike" {x, z, radius: 3.2, damage: 160,
+ *     time: seconds since the current storm started}. Only emitted while a
+ *     storm is running (never clear / rain / fog / bloodmoon).
+ *   - "weather-changed" {mode, intensity} on every mode change and every
+ *     0.1 intensity step. `intensity` is the ACTIVE weather strength 0..1:
+ *     rain amount in rain/storm, fog-bank strength in fog, the decaying rain
+ *     amount in clear. src/ui/weather-hud.js consumes this; it is emitted
+ *     only when the mode or the 0.1 bucket actually changes (no per-frame
+ *     events).
  *
  * @param {import("three").Scene} scene
  * @param {EventTarget} bus - shared bus (src/systems/gamestate.js).
@@ -71,9 +78,22 @@
  *   Advance the cycle, intensity, fog density, rain drift, lightning and
  *   audio. dt is seconds; playerPos re-centers the rain box.
  * @property {() => {mode: "clear"|"rain"|"storm"|"fog", intensity: number,
- *   timer: number, strikes: number}} state - fresh snapshot for debug/HUD.
+ *   timer: number, strikes: number, rainIntensity: number,
+ *   fogIntensity: number, effects: {zombieSpeedMul: number,
+ *   playerSpreadMul: number, visionMul: number}}} state - fresh snapshot for
+ *   debug/HUD. `intensity` is the active weather strength (rain/storm: rain
+ *   amount; fog: fog-bank strength; clear: the remaining rain fade);
  *   `timer` is seconds until the current regime would change on its own
  *   (frozen in bloodmoon); `strikes` is the cumulative close-strike count.
+ *   `rainIntensity` / `fogIntensity` are the raw channel values (additive).
+ *   `effects` is the instantaneous gameplay target: zombieSpeedMul (clear 1,
+ *   rain 1−0.10×intensity, storm 1−0.12×intensity, fog 1−0.05×fogIntensity),
+ *   playerSpreadMul (always 1 — weapons.js is out of scope for weather) and
+ *   visionMul (informational fog visibility, HUD only).
+ * @property {(out?: Object) => Object} readState - allocation-free hot-path
+ *   read for systems/weather-effects.js: fills `out` (and `out.effects`) in
+ *   place when provided, otherwise behaves like state(). Never retain `out`
+ *   across frames without re-reading.
  * @property {(mode: string) => boolean} setMode - force a transition to
  *   "clear" | "rain" | "storm" | "fog"; unknown values are ignored. Returns
  *   true when accepted, false for an unknown mode (or a non-clear force while
@@ -108,6 +128,16 @@ const RAIN_OPACITY = 0.55;
 // --- fog --------------------------------------------------------------------
 const FOG_DENSE = 0.04; // denser target; never touches fog.color
 const FOG_LERP_SECONDS = 8;
+
+// --- gameplay effects (target values advertised by state().effects) ---------
+// Frozen by the weather-gameplay request: rain slows live zombies 10% at full
+// intensity, storm 12%, a full fog bank 5%. weather-effects.js applies these
+// to every live zombie through zombie.weatherSpeedMul. Player weapon spread
+// is deliberately NOT touched (weapons.js is outside this module's scope).
+const RAIN_SLOW = 0.1;
+const STORM_SLOW = 0.12;
+const FOG_SLOW = 0.05;
+const FOG_VISION_DROP = 0.55; // informational only: 0.45 visibility at full fog
 
 // --- lightning --------------------------------------------------------------
 const LIGHTNING_MIN = 6;
@@ -631,6 +661,12 @@ export function createWeather(scene, bus, settings, camera) {
   let windAngle = rand(0, Math.PI * 2);
   let windSpeed = 1.2;
   let bloodmoon = false;
+  // Fog-bank strength 0..1 (headless-safe: independent of scene.fog, so the
+  // HUD/effects still see the ramp when the scene has no fog object).
+  let fogIntensity = 0;
+  // "weather-changed" edge detection (mode + 0.1 intensity bucket).
+  let lastChangedMode = "clear";
+  let lastChangedStep = 0;
 
   // --- storm state ----------------------------------------------------------
   let lightningTimer = rand(LIGHTNING_MIN, LIGHTNING_MAX);
@@ -674,6 +710,52 @@ export function createWeather(scene, bus, settings, camera) {
       modeTimer = rand(FOG_DURATION_MIN, FOG_DURATION_MAX);
       // The next fog bank is measured from THIS one (150–260 s cadence).
       fogTimer = rand(FOG_INTERVAL_MIN, FOG_INTERVAL_MAX);
+    }
+  }
+
+  /**
+   * Active weather strength 0..1 (what the HUD percent shows): rain amount in
+   * rain/storm, fog-bank strength in fog, the remaining rain fade in clear.
+   * @returns {number}
+   */
+  function activeIntensity() {
+    return mode === "fog" ? fogIntensity : intensity;
+  }
+
+  /**
+   * Fill an effects object with the INSTANTANEOUS gameplay targets for the
+   * current mode. No allocation — callers reuse their own object.
+   * @param {{zombieSpeedMul: number, playerSpreadMul: number,
+   *   visionMul: number}} out
+   */
+  function effectsInto(out) {
+    let speed = 1;
+    if (mode === "rain") speed = 1 - RAIN_SLOW * intensity;
+    else if (mode === "storm") speed = 1 - STORM_SLOW * intensity;
+    else if (mode === "fog") speed = 1 - FOG_SLOW * fogIntensity;
+    out.zombieSpeedMul = speed;
+    out.playerSpreadMul = 1; // reserved; weapons.js is not edited by weather
+    out.visionMul = mode === "fog" ? 1 - FOG_VISION_DROP * fogIntensity : 1;
+    return out;
+  }
+
+  /**
+   * Emit "weather-changed" only when the mode or the 0.1 intensity bucket
+   * changed. Called after every update + on forced mode switches, so the HUD
+   * always converges without a per-frame event stream.
+   */
+  function emitWeatherChanged() {
+    const current = clamp(activeIntensity(), 0, 1);
+    const step = Math.floor(current * 10 + 1e-6);
+    if (mode === lastChangedMode && step === lastChangedStep) return;
+    lastChangedMode = mode;
+    lastChangedStep = step;
+    if (B) {
+      B.dispatchEvent(
+        new CustomEvent("weather-changed", {
+          detail: { mode, intensity: current },
+        })
+      );
     }
   }
 
@@ -802,6 +884,9 @@ export function createWeather(scene, bus, settings, camera) {
       strikeCoreMat.opacity = 0;
       strikeGlowMat.opacity = 0;
       strikeRingMat.opacity = 0;
+
+      // The forced clear is a real mode change → tell the HUD immediately.
+      emitWeatherChanged();
     });
   }
 
@@ -819,16 +904,53 @@ export function createWeather(scene, bus, settings, camera) {
     }
     if (bloodmoon && next !== "clear") return false;
     applyMode(next);
+    emitWeatherChanged(); // forced switches notify immediately (debug / script)
     return true;
   }
 
   /**
    * Fresh debug snapshot (callers may mutate it — not the live state).
    * @returns {{mode: "clear"|"rain"|"storm"|"fog", intensity: number,
-   *   timer: number, strikes: number}}
+   *   timer: number, strikes: number, rainIntensity: number,
+   *   fogIntensity: number, effects: {zombieSpeedMul: number,
+   *   playerSpreadMul: number, visionMul: number}}}
    */
   function state() {
-    return { mode, intensity, timer: Math.max(0, modeTimer), strikes };
+    return {
+      mode,
+      intensity: clamp(activeIntensity(), 0, 1),
+      timer: Math.max(0, modeTimer),
+      strikes,
+      rainIntensity: intensity,
+      fogIntensity,
+      effects: effectsInto({ zombieSpeedMul: 1, playerSpreadMul: 1, visionMul: 1 }),
+    };
+  }
+
+  /**
+   * Allocation-free read for the per-frame weather-effects path: fills `out`
+   * (and `out.effects`) in place. Falls back to a fresh state() snapshot when
+   * no buffer is supplied.
+   * @param {{mode?: string, intensity?: number, timer?: number,
+   *   strikes?: number, rainIntensity?: number, fogIntensity?: number,
+   *   effects?: {zombieSpeedMul: number, playerSpreadMul: number,
+   *   visionMul: number}}} [out]
+   * @returns {Object}
+   */
+  function readState(out) {
+    if (!out || typeof out !== "object") return state();
+    out.mode = mode;
+    out.intensity = clamp(activeIntensity(), 0, 1);
+    out.timer = Math.max(0, modeTimer);
+    out.strikes = strikes;
+    out.rainIntensity = intensity;
+    out.fogIntensity = fogIntensity;
+    const e =
+      out.effects && typeof out.effects === "object"
+        ? out.effects
+        : (out.effects = { zombieSpeedMul: 1, playerSpreadMul: 1, visionMul: 1 });
+    effectsInto(e);
+    return out;
   }
 
   /**
@@ -874,6 +996,15 @@ export function createWeather(scene, bus, settings, camera) {
       } else if (density > fogTarget) {
         sceneRef.fog.density = Math.max(fogTarget, density - fogStep * dt);
       }
+    }
+    // 3b. fog strength 0..1 — drives state().effects + the weather HUD. Kept
+    // independent of scene.fog so headless scenes (no fog object) still ramp.
+    const fogTarget = mode === "fog" && !bloodmoon ? 1 : 0;
+    const fogInc = dt / FOG_LERP_SECONDS;
+    if (fogIntensity < fogTarget) {
+      fogIntensity = Math.min(fogTarget, fogIntensity + fogInc);
+    } else if (fogIntensity > fogTarget) {
+      fogIntensity = Math.max(fogTarget, fogIntensity - fogInc);
     }
 
     // 4. wind (stronger in a storm; slowly rotating direction)
@@ -1001,7 +1132,10 @@ export function createWeather(scene, bus, settings, camera) {
 
     // 8. rain hiss level (storm is a little louder; silent when dry)
     audio.setRain(intensity * (mode === "storm" ? 0.22 : 0.15));
+
+    // 9. announce mode / 0.1 intensity edges (HUD + debug listeners).
+    emitWeatherChanged();
   }
 
-  return { update, state, setMode };
+  return { update, state, setMode, readState };
 }
