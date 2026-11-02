@@ -45,7 +45,7 @@
  * WEAPON UPGRADES (GUN GAME 2.0 feature B — docs/EXPANSION-P4.md §4.1/P4-K6):
  * every weapon instance carries `upgrades {dmg: 0..3, mag: 0..3, rl: 0..3}`
  * (0 = stock). The WEAPONS[] def table above stays IMMUTABLE — the effective
- * values are written onto the RUNTIME entry by the internal applyUpgrades()
+ * values are written onto the RUNTIME entry by the internal applyDerivedStats()
  * helper, so combat.js and the HUD keep reading the same fields:
  *   damage  = base × (1 + 0.2 × dmg)          → ×1.0 / 1.2 / 1.4 / 1.6
  *   magSize = floor(base × (1 + 0.25 × mag))  → ×1.0 / 1.25 / 1.5 / 1.75
@@ -54,7 +54,7 @@
  * viewmodel reload animation both use it; nothing is stored over the def).
  * Public surfaces added for this feature (all additive, beyond the frozen
  * factory signature, like reset()/unlock()):
- *   getStats(name?) → {name, damage, magSize, reloadTime, upgrades} — ACTIVE
+ *   getStats(name?) → {name, damage, magSize, reloadTime, upgrades, attachments} — ACTIVE
  *     weapon when name is omitted, null for an unknown name (shop UI + the
  *     save snapshot read through this).
  *   setUpgrades(name, patch) → set track levels from the shop / restore path;
@@ -65,6 +65,30 @@
  *     restored guns come back mag-full.
  * reset() zeroes the upgrades (fresh run); main.js re-applies the captured
  * levels on NG+/save-restore through setUpgrades()/applySaveState().
+ *
+ * TRADER ATTACHMENTS (deeper weapon customization — user request):
+ * four per-gun parts bought from the physical Trader (systems/merchant.js)
+ * and applied to the ACTIVE weapon. Every runtime entry carries
+ * `attachments {scope, extmag, suppressor, laser}` (all false = stock); the
+ * WEAPONS[] def table stays IMMUTABLE and the effective values are resolved
+ * through helpers, then mirrored onto the runtime fields combat/HUD already
+ * read:
+ *   spread   = def.spread × scope(0.65) × suppressor(0.8) × laser(0.75),
+ *              then × perk spreadMul; the runtime `spread` field carries the
+ *              attachment part so the HUD crosshair tightens immediately.
+ *   magSize  = ceil(floor(def.magSize × (1 + 0.25 × magLvl)) × 1.5) with
+ *              extmag (upgrade first, then +50 %, rounded up); the current
+ *              mag grows by exactly the added capacity.
+ *   recoil   = cfg.kick × 0.75 (and the yaw jitter by the same factor) with
+ *              suppressor; resolved at fire time.
+ * Multipliers stack multiplicatively with upgrades and perks (scope +
+ * suppressor + laser = ×0.39 spread). Public surfaces:
+ *   applyAttachment(id) → true when the ACTIVE weapon gained the part; false
+ *     for an unknown id or a duplicate on that weapon.
+ *   getAttachmentInfo(name?) → {name, owned:{id:boolean}, prices:{id:number}}
+ *     for the Trader UI (ACTIVE weapon when name is omitted, null unknown).
+ * reset() clears every attachment (per-run); applySaveState() accepts an
+ * optional `attachments` object per entry and restores it.
  *
  * PERK MODIFIERS (roguelite level-up layer — src/systems/perks.js):
  * a second, independent additive multiplier surface layered ON TOP of the
@@ -162,7 +186,9 @@
  *
  * Bus events emitted: "fire" {weapon} (a PREVIEW copy carrying the effective
  *   perk-adjusted damage/spread/headshotMult), "spread" {value},
- *   "weapon-unlocked" {name} (once per ownership transition in unlock()).
+ *   "weapon-unlocked" {name} (once per ownership transition in unlock()),
+ *   "weapon-switched" {name, index} (successful switchTo — the Trader overlay
+ *   refreshes its per-gun attachment state).
  * Bus events consumed: "pickup" {kind:"ammo"} → every weapon gains reserve
  *   (active +magSize, the others +round(0.5*magSize); pistol's Infinity
  *   reserve stays Infinity) — the legacy rule generalized to twelve weapons;
@@ -206,7 +232,11 @@
  * @property {{dmg: number, mag: number, rl: number}} upgrades - GUN GAME 2.0
  *   (feature B): per-gun upgrade levels, one integer 0..3 per track
  *   ("dmg" = damage, "mag" = magazine size, "rl" = reload speed); 0 = stock.
- *   Effective damage/magSize are mirrored onto this entry by applyUpgrades().
+ *   Effective damage/magSize are mirrored onto this entry by applyDerivedStats().
+ * @property {{scope: boolean, extmag: boolean, suppressor: boolean, laser: boolean}} attachments
+ *   TRADER ATTACHMENTS: per-gun flags (all false = stock). Effective
+ *   spread/magSize are mirrored onto this entry by applyDerivedStats();
+ *   recoil is resolved at fire time (see the header).
  */
 
 /**
@@ -237,7 +267,7 @@
  * @property {() => WeaponState} getState
  *   The ACTIVE weapon's state; HUD/debug use at least
  *   {name, mag, magSize, reserve, reloading, spread}.
- * @property {(name?: string) => ({name: string, damage: number, magSize: number, reloadTime: number, spread: number, headshotMult: number, interval: number, upgrades: {dmg: number, mag: number, rl: number}} | null)} getStats
+ * @property {(name?: string) => ({name: string, damage: number, magSize: number, reloadTime: number, spread: number, headshotMult: number, interval: number, upgrades: {dmg: number, mag: number, rl: number}, attachments: {scope: boolean, extmag: boolean, suppressor: boolean, laser: boolean}} | null)} getStats
  *   GUN GAME 2.0 (feature B): EFFECTIVE stats of one weapon — the ACTIVE one
  *   when `name` is omitted; null for an unknown name. damage/magSize are the
  *   upgraded runtime values; reloadTime the upgraded duration. PERKS adds
@@ -250,12 +280,20 @@
  *   integer 0..3 and the effective damage/magSize are recomputed in place.
  *   False for an unknown name. The shop's "upg:{weapon}:{track}" purchases
  *   and main.js's NG+/save-restore paths call this.
- * @property {(entries: Array<{name: string, owned?: boolean, reserve: number | null, upgrades?: {dmg?: number, mag?: number, rl?: number}}>) => void} applySaveState
+ * @property {(entries: Array<{name: string, owned?: boolean, reserve: number | null, upgrades?: {dmg?: number, mag?: number, rl?: number}, attachments?: {scope?: boolean, extmag?: boolean, suppressor?: boolean, laser?: boolean}}>) => void} applySaveState
  *   GUN GAME 2.0 (feature B / save-restore §3.4): apply a save's weapon
  *   entries AFTER reset() — owned === true owns (never un-owns), reserve
  *   null → Infinity (pistol) / number → clamped to ≥ 0, upgrade levels
  *   clamped to 0..3, and every restored gun comes back mag-full. Entries
- *   with unknown names are ignored.
+ *   with unknown names are ignored. TRADER ATTACHMENTS: an optional
+ *   `attachments` object restores the four flags (missing/false = not owned).
+ * @property {(id: string) => boolean} applyAttachment
+ *   TRADER ATTACHMENTS: fit one part ("scope"|"extmag"|"suppressor"|"laser")
+ *   to the ACTIVE weapon. False for an unknown id or an already-owned part on
+ *   that weapon. extmag grows the current mag by the added capacity.
+ * @property {(name?: string) => ({name: string, owned: Record<string, boolean>, prices: Record<string, number>} | null)} getAttachmentInfo
+ *   TRADER ATTACHMENTS: the ACTIVE weapon's owned flags + the four prices
+ *   (name → null for an unknown weapon). Consumed by ui/merchant.js.
  * @property {(patch: {damageMul?: number, fireRateMul?: number, reloadMul?: number, spreadMul?: number, headshotMul?: number}) => {damageMul: number, fireRateMul: number, reloadMul: number, spreadMul: number, headshotMul: number}} setPerkMods
  *   PERKS: apply the multiplicative perk budget (partial patch, defaults 1).
  *   Effective damage/interval/reload/spread/headshot are resolved on read —
@@ -491,6 +529,27 @@ const UPG_MAX_LEVEL = 3;
 const UPG_DMG_PER_LEVEL = 0.2;  // damage   × (1 + 0.2 × lvl)
 const UPG_MAG_PER_LEVEL = 0.25; // magSize  × (1 + 0.25 × lvl), floored
 const UPG_RL_PER_LEVEL = 0.12;  // reload   × (1 − 0.12 × lvl)
+
+// TRADER ATTACHMENTS (user request) — FROZEN ids/prices/effects. The merchant
+// catalog imports this table so prices can never drift between the two files.
+// Every multiplier stacks multiplicatively on top of the upgraded runtime
+// stats and the independent perk surface.
+//   scope      −35 % spread (×0.65)
+//   extmag     +50 % magazine capacity (upgrade first, then ceil)
+//   suppressor −25 % recoil kick, −20 % spread (×0.8)
+//   laser      −25 % spread (×0.75) + cosmetic red dot
+export const ATTACHMENTS = Object.freeze([
+  Object.freeze({ id: "scope", price: 450, spreadMul: 0.65 }),
+  Object.freeze({ id: "extmag", price: 400, magMul: 1.5 }),
+  Object.freeze({ id: "suppressor", price: 500, spreadMul: 0.8, kickMul: 0.75 }),
+  Object.freeze({ id: "laser", price: 350, spreadMul: 0.75 }),
+]);
+
+const ATTACHMENT_BY_ID = Object.create(null);
+for (let i = 0; i < ATTACHMENTS.length; i++) {
+  ATTACHMENT_BY_ID[ATTACHMENTS[i].id] = ATTACHMENTS[i];
+}
+const EXT_MAG_MULT = 1.5;
 
 // PERKS (src/systems/perks.js): the second, independent multiplier surface.
 // Values are plain multipliers resolved on read; 1 = stock. headshotMul is an
@@ -737,6 +796,11 @@ const GUN_SYNTH_SHOTS = {
 export function createWeapons(camera, input, audio, bus) {
   const gunSynth = createGunSynth(bus);
 
+  /** A fresh stock attachment set (all four parts off). */
+  function emptyAttachments() {
+    return { scope: false, extmag: false, suppressor: false, laser: false };
+  }
+
   // Live runtime state, one entry per weapon (typedef WeaponState shape).
   const list = WEAPONS.map((w, i) => ({
     name: w.name,
@@ -760,8 +824,10 @@ export function createWeapons(camera, input, audio, bus) {
     price: w.price,
     // GUN GAME 2.0 (feature B): every gun starts stock; the shop's
     // "upg:{weapon}:{track}" purchases raise these (0..3 per track) and
-    // applyUpgrades() mirrors the effect onto damage/magSize above.
+    // applyDerivedStats() mirrors the effect onto damage/magSize above.
     upgrades: { dmg: 0, mag: 0, rl: 0 },
+    // TRADER ATTACHMENTS: per-gun flags, all off at the start of a run.
+    attachments: emptyAttachments(),
   }));
 
   let current = 0;
@@ -1057,6 +1123,66 @@ export function createWeapons(camera, input, audio, bus) {
   }
   const minigunBarrels = models[5].userData.barrels || null;
 
+  // --- cosmetic attachment meshes --------------------------------------------
+  // One suppressor tube + one laser dot per viewmodel (12 extra low-poly
+  // meshes, no lights). Toggled from the owning weapon's flags; the group's
+  // own `visible` still follows the active slot, so only the held gun shows.
+  // z = barrel tip in the model's local space, len = tube length behind it.
+  const MUZZLE_TIPS = [
+    { x: 0, y: 0.03, z: -0.22, len: 0.12, r: 0.026 }, // pistol
+    { x: 0, y: 0.02, z: -0.75, len: 0.14, r: 0.03 },  // shotgun
+    { x: 0, y: 0.015, z: -0.59, len: 0.14, r: 0.028 }, // rifle
+    { x: 0, y: 0.02, z: -0.36, len: 0.12, r: 0.024 }, // smg
+    { x: 0, y: 0.015, z: -0.78, len: 0.16, r: 0.026 }, // sniper
+    { x: 0, y: 0.01, z: -0.46, len: 0.14, r: 0.036 }, // minigun
+    { x: 0, y: 0.01, z: -0.33, len: 0.12, r: 0.038 }, // grenade
+    { x: 0, y: 0.028, z: -0.51, len: 0.14, r: 0.03 }, // magnum
+    { x: 0, y: 0.018, z: -1.01, len: 0.16, r: 0.028 }, // dmr
+    { x: 0, y: 0.042, z: -0.845, len: 0.14, r: 0.032 }, // railgun
+    { x: 0, y: 0.018, z: -0.405, len: 0.12, r: 0.032 }, // sawnoff
+    { x: 0, y: 0.04, z: -0.48, len: 0.12, r: 0.026 }, // crossbow
+  ];
+  const laserMat = new THREE.MeshBasicMaterial({
+    color: 0xff2a2a,
+    toneMapped: false,
+  });
+  const laserGeo = new THREE.SphereGeometry(0.008, 6, 6);
+  for (let i = 0; i < models.length; i++) {
+    const tip = MUZZLE_TIPS[i];
+    if (!tip) continue;
+    const suppressorMesh = cyl(
+      mats.dark,
+      tip.r,
+      tip.len,
+      tip.x,
+      tip.y,
+      tip.z - tip.len / 2,
+      8
+    );
+    suppressorMesh.visible = false;
+    models[i].add(suppressorMesh);
+    const laserDot = new THREE.Mesh(laserGeo, laserMat);
+    laserDot.position.set(tip.x + 0.028, tip.y + 0.012, tip.z - 0.006);
+    laserDot.visible = false;
+    models[i].add(laserDot);
+    models[i].userData.suppressorMesh = suppressorMesh;
+    models[i].userData.laserDot = laserDot;
+  }
+
+  /** Mirror every gun's attachment flags onto its cosmetic meshes. */
+  function syncAttachmentModels() {
+    for (let i = 0; i < models.length; i++) {
+      const a = list[i].attachments || {};
+      if (models[i].userData.suppressorMesh) {
+        models[i].userData.suppressorMesh.visible = a.suppressor === true;
+      }
+      if (models[i].userData.laserDot) {
+        models[i].userData.laserDot.visible = a.laser === true;
+      }
+    }
+  }
+  syncAttachmentModels();
+
   // Warm muzzle flash light living at the viewmodel muzzle (child of the
   // camera hierarchy → moves with the weapon, lights nothing when intensity 0).
   const muzzleLight = new THREE.PointLight(0xffb066, 0, 9, 2);
@@ -1086,15 +1212,47 @@ export function createWeapons(camera, input, audio, bus) {
     return Math.min(UPG_MAX_LEVEL, Math.max(0, n));
   }
 
+  /** Combined attachment spread multiplier (1 when none are fitted). */
+  function attachmentSpreadMul(w) {
+    const a = w.attachments;
+    if (!a) return 1;
+    let mul = 1;
+    for (let i = 0; i < ATTACHMENTS.length; i++) {
+      const part = ATTACHMENTS[i];
+      if (part.spreadMul && a[part.id]) mul *= part.spreadMul;
+    }
+    return mul;
+  }
+
+  /** Suppressor recoil multiplier (applied to pitch + yaw kick at fire time). */
+  function attachmentKickMul(w) {
+    return w.attachments && w.attachments.suppressor
+      ? ATTACHMENT_BY_ID.suppressor.kickMul
+      : 1;
+  }
+
   /**
-   * Mirror entry i's upgrade levels onto its runtime damage/magSize. Called
-   * after every upgrade change (init, reset, unlock, setUpgrades,
-   * applySaveState) so combat/HUD read upgraded values with no other changes.
+   * Mirror entry i's effective damage/magSize/spread onto the runtime entry.
+   * The WEAPONS[] def table stays immutable; upgrades apply first, then the
+   * attachment multipliers (extmag rounds the upgraded capacity UP, exactly
+   * +50 % of the upgraded mag). Called after every upgrade/attachment change
+   * (init, reset, unlock, setUpgrades, applyAttachment, applySaveState) so
+   * combat/HUD keep reading the same fields with no other changes.
    */
-  function applyUpgrades(w, i) {
+  function applyDerivedStats(w, i) {
     const def = WEAPONS[i];
     w.damage = def.damage * (1 + UPG_DMG_PER_LEVEL * w.upgrades.dmg);
-    w.magSize = Math.floor(def.magSize * (1 + UPG_MAG_PER_LEVEL * w.upgrades.mag));
+    const upgradedMag = Math.floor(
+      def.magSize * (1 + UPG_MAG_PER_LEVEL * w.upgrades.mag)
+    );
+    w.magSize =
+      w.attachments && w.attachments.extmag
+        ? Math.ceil(upgradedMag * EXT_MAG_MULT)
+        : upgradedMag;
+    w.spread = def.spread * attachmentSpreadMul(w);
+    // Defensive: a lowered mag upgrade (or a restored save) can never leave
+    // the current mag above its capacity.
+    if (w.mag > w.magSize) w.mag = w.magSize;
   }
 
   /** Effective reload duration (s) of weapon index i — def × rl discount. */
@@ -1193,11 +1351,18 @@ export function createWeapons(camera, input, audio, bus) {
     bus.dispatchEvent(new CustomEvent("fire", { detail: { weapon: shot } }));
     bus.dispatchEvent(new CustomEvent("spread", { detail: { value: shot.spread } }));
     // Recoil: pitch up + tiny random yaw, recovered exponentially in update().
-    recoilPitch += cfg.kick;
-    recoilYaw += (Math.random() * 2 - 1) * cfg.yawKick;
+    // TRADER ATTACHMENTS: the suppressor scales both the pitch kick and the
+    // yaw jitter by ×0.75 (resolved here, never written onto the def).
+    const kickMul = attachmentKickMul(w);
+    recoilPitch += cfg.kick * kickMul;
+    recoilYaw += (Math.random() * 2 - 1) * cfg.yawKick * kickMul;
     vmKick = cfg.vmKick;
     // Crossbow (flash 0) never lights the muzzle — silent, flashless shot.
     if (cfg.flash > 0) {
+      // Laser fitting tints the flash red (cosmetic; no new mechanics).
+      muzzleLight.color.setHex(
+        w.attachments && w.attachments.laser ? 0xff4a3a : 0xffb066
+      );
       muzzleLight.intensity = cfg.flash * (0.85 + Math.random() * 0.3);
       flashTimer = FLASH_TIME;
     } else {
@@ -1229,6 +1394,13 @@ export function createWeapons(camera, input, audio, bus) {
     current = i;
     drawT = 0;
     cooldown = DRAW_TIME; // no firing mid-draw
+    // Additive signal for the Trader overlay: the attachment "OWNED" state is
+    // per active gun, so the UI refreshes when the held weapon changes.
+    bus.dispatchEvent(
+      new CustomEvent("weapon-switched", {
+        detail: { name: list[current].name, index: current },
+      })
+    );
   }
 
   function reload() {
@@ -1403,7 +1575,8 @@ export function createWeapons(camera, input, audio, bus) {
     for (let i = 0; i < list.length; i++) {
       const w = list[i];
       w.upgrades = { dmg: 0, mag: 0, rl: 0 }; // GUN GAME 2.0: back to stock
-      applyUpgrades(w, i);                    // effective damage/magSize = base
+      w.attachments = emptyAttachments();      // TRADER: parts are per-run
+      applyDerivedStats(w, i);                 // effective damage/magSize/spread
       w.mag = w.magSize;
       w.reserve = WEAPONS[i].startReserve;
       w.reloading = false;
@@ -1422,6 +1595,7 @@ export function createWeapons(camera, input, audio, bus) {
     // PERKS: a fresh run starts with the multiplier surface at stock.
     perkMods = { ...PERK_MODS_DEFAULT };
     if (minigunBarrels) minigunBarrels.rotation.z = 0;
+    syncAttachmentModels();
   }
 
   // EXPANSION — shop integration surface: unlock a weapon by name (idempotent;
@@ -1432,12 +1606,15 @@ export function createWeapons(camera, input, audio, bus) {
       if (list[i].name !== name) continue;
       if (!list[i].owned) {
         list[i].owned = true;
+        // Fresh gun = stock upgrades AND no attachments (idempotent for an
+        // already-owned gun, which keeps both — only the ownership transition
+        // resets these).
+        list[i].upgrades = { dmg: 0, mag: 0, rl: 0 };
+        list[i].attachments = emptyAttachments();
+        applyDerivedStats(list[i], i);
         list[i].mag = list[i].magSize;
         list[i].reserve = WEAPONS[i].startReserve;
-        // Fresh gun = stock (idempotent for an already-owned gun, which keeps
-        // its upgrades — only the ownership transition resets these).
-        list[i].upgrades = { dmg: 0, mag: 0, rl: 0 };
-        applyUpgrades(list[i], i);
+        syncAttachmentModels();
         // Additive ownership signal: achievements (arsenal), the HUD bar and
         // the merchant UI can react without polling. Emitted AFTER the flag
         // lands so listeners see the final state.
@@ -1452,8 +1629,8 @@ export function createWeapons(camera, input, audio, bus) {
 
   // GUN GAME 2.0 (feature B) — effective-stats accessor for the shop UI and
   // the save snapshot. No name (or empty) → the ACTIVE weapon; an unknown
-  // name → null (never throws). `upgrades` is a copy — callers cannot mutate
-  // the runtime levels through it (writes go through setUpgrades()).
+  // name → null (never throws). `upgrades`/`attachments` are copies — callers
+  // cannot mutate the runtime through them.
   function getStats(name) {
     let idx = -1;
     if (typeof name !== "string" || name === "") {
@@ -1471,7 +1648,7 @@ export function createWeapons(camera, input, audio, bus) {
     return {
       name: w.name,
       damage: perkDamage(w), // effective (upgraded × perk damage)
-      magSize: w.magSize, // effective (upgraded) value
+      magSize: w.magSize, // effective (upgraded, extmag-applied) value
       reloadTime: perkReload(idx), // effective (upgraded × perk reload)
       // PERKS preview fields (additive): combat/HUD/debug can read the exact
       // effective values without touching the runtime entry.
@@ -1479,6 +1656,12 @@ export function createWeapons(camera, input, audio, bus) {
       headshotMult: perkHeadshot(w),
       interval: perkInterval(idx),
       upgrades: { dmg: w.upgrades.dmg, mag: w.upgrades.mag, rl: w.upgrades.rl },
+      attachments: {
+        scope: w.attachments.scope === true,
+        extmag: w.attachments.extmag === true,
+        suppressor: w.attachments.suppressor === true,
+        laser: w.attachments.laser === true,
+      },
     };
   }
 
@@ -1496,10 +1679,69 @@ export function createWeapons(camera, input, audio, bus) {
         if ("mag" in patch) list[i].upgrades.mag = clampLevel(patch.mag);
         if ("rl" in patch) list[i].upgrades.rl = clampLevel(patch.rl);
       }
-      applyUpgrades(list[i], i);
+      applyDerivedStats(list[i], i);
       return true;
     }
     return false;
+  }
+
+  // TRADER ATTACHMENTS — fit one part to the ACTIVE weapon. False for an
+  // unknown id or a part already owned by that gun (max 1 of each per weapon).
+  // extmag raises magSize by +50 % of the UPGRADED capacity (rounded up) and
+  // grows the current mag by exactly the added capacity.
+  function applyAttachment(id, name) {
+    if (typeof id !== "string") return false;
+    const part = ATTACHMENT_BY_ID[id];
+    if (!part) return false;
+    let idx = current;
+    if (typeof name === "string" && name) {
+      idx = -1;
+      for (let i = 0; i < list.length; i++) {
+        if (list[i].name === name) {
+          idx = i;
+          break;
+        }
+      }
+      if (idx < 0) return false;
+    }
+    const w = list[idx];
+    if (!w || !w.attachments) return false;
+    if (w.attachments[id] === true) return false;
+    const oldMagSize = w.magSize;
+    w.attachments[id] = true;
+    applyDerivedStats(w, idx);
+    if (id === "extmag") {
+      const added = Math.max(0, w.magSize - oldMagSize);
+      w.mag = Math.min(w.magSize, w.mag + added);
+    }
+    syncAttachmentModels();
+    return true;
+  }
+
+  // TRADER ATTACHMENTS — ownership + prices for the merchant UI. No name (or
+  // empty) → the ACTIVE weapon; an unknown name → null (never throws).
+  function getAttachmentInfo(name) {
+    let idx = -1;
+    if (typeof name !== "string" || name === "") {
+      idx = current;
+    } else {
+      for (let i = 0; i < list.length; i++) {
+        if (list[i].name === name) {
+          idx = i;
+          break;
+        }
+      }
+      if (idx < 0) return null;
+    }
+    const w = list[idx];
+    const owned = {};
+    const prices = {};
+    for (let i = 0; i < ATTACHMENTS.length; i++) {
+      const part = ATTACHMENTS[i];
+      owned[part.id] = w.attachments[part.id] === true;
+      prices[part.id] = part.price;
+    }
+    return { name: w.name, owned, prices };
   }
 
   // GUN GAME 2.0 (feature B, save-restore §3.4) — apply a save's weapon
@@ -1508,9 +1750,11 @@ export function createWeapons(camera, input, audio, bus) {
   //   reserve         → null maps back to Infinity (pistol, P4-K3), a finite
   //                     number to max(0, round) — anything else is ignored;
   //   upgrades        → clamped to integers 0..3, then effects re-applied;
+  //   attachments     → TRADER extension (additive, optional): the four
+  //                     flags restored; missing/false = not owned;
   //   mag             → magSize (restored guns come back mag-full).
   // Unknown weapon names are skipped. Ownership-only entries (no
-  // upgrades/reserve) are also fine.
+  // upgrades/attachments/reserve) are also fine.
   function applySaveState(entries) {
     if (!Array.isArray(entries)) return;
     for (let e = 0; e < entries.length; e++) {
@@ -1533,16 +1777,29 @@ export function createWeapons(camera, input, audio, bus) {
       else if (typeof r === "number" && Number.isFinite(r)) {
         w.reserve = Math.max(0, Math.round(r));
       }
+      let changed = false;
       if (entry.upgrades && typeof entry.upgrades === "object") {
         w.upgrades = {
           dmg: clampLevel(entry.upgrades.dmg),
           mag: clampLevel(entry.upgrades.mag),
           rl: clampLevel(entry.upgrades.rl),
         };
-        applyUpgrades(w, idx);
+        changed = true;
       }
+      if (entry.attachments && typeof entry.attachments === "object") {
+        const a = entry.attachments;
+        w.attachments = {
+          scope: a.scope === true,
+          extmag: a.extmag === true,
+          suppressor: a.suppressor === true,
+          laser: a.laser === true,
+        };
+        changed = true;
+      }
+      if (changed) applyDerivedStats(w, idx);
       w.mag = w.magSize; // restored guns come back mag-full (P4-K6)
     }
+    syncAttachmentModels();
   }
 
   // Ammo pickup: active weapon gets a full mag, the others half a mag each.
@@ -1573,6 +1830,9 @@ export function createWeapons(camera, input, audio, bus) {
     getStats,
     setUpgrades,
     applySaveState,
+    // TRADER ATTACHMENTS — active-weapon customization (see header):
+    applyAttachment,
+    getAttachmentInfo,
     // PERKS — independent multiplier surface (see header PERK MODIFIERS):
     setPerkMods,
     getPerkMods,

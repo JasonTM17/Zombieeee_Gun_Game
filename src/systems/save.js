@@ -11,10 +11,16 @@
  *   (chặn save ở endless / ngoài run sống).
  * - Schema v1, localStorage key "gungame.save.v1":
  *     { v: 1, ts, storyRun, ngPlus, mission, objectivesSnapshot?,
- *       money, weapons: [{name, owned, reserve, upgrades:{dmg,mag,rl}}],
+ *       money, weapons: [{name, owned, reserve, upgrades:{dmg,mag,rl},
+ *                         attachments?}],
  *       unlockedDistricts, currentDistrict, wave, score, highScore, difficulty }
  * - P4-K3: Infinity serialize thành null (reserve của pistol) — restore ánh
  *   xạ null → Infinity. upgrades.* là số nguyên 0..3.
+ * - TRADER ATTACHMENTS (additive, optional): each weapon entry MAY carry
+ *   attachments {scope, extmag, suppressor, laser} booleans;
+ *   weapons.applySaveState() already restores them. NOTE: this module's v1
+ *   normalizer (toWeaponEntry) preserves the schema fields above only until
+ *   the snapshot/normalizer wiring is added — the lead owns that follow-up.
  * - saveNow(reason): deps.snapshot() → validate/normalize → JSON.stringify
  *   (try/catch) → setItem. Lỗi → console.warn 1 lần, KHÔNG throw. Trả
  *   {ok:true, ts} hoặc {ok:false}.
@@ -51,6 +57,9 @@
  * @property {boolean} owned
  * @property {number|null} reserve - số nguyên ≥ 0; null = Infinity.
  * @property {{dmg: number, mag: number, rl: number}} upgrades - mỗi giá trị 0..3.
+ * @property {{scope?: boolean, extmag?: boolean, suppressor?: boolean, laser?: boolean}} [attachments]
+ *   TRADER ATTACHMENTS (optional additive extension): per-weapon flags
+ *   restored by weapons.applySaveState(); omitted/false = not owned.
  */
 
 /**
@@ -143,13 +152,21 @@ function toWeaponEntry(raw) {
   if (!raw || typeof raw !== "object") return null;
   const name = /** @type {{name?: unknown}} */ (raw).name;
   if (typeof name !== "string" || !name) return null;
-  const rawUpg = /** @type {{upgrades?: unknown}} */ (raw).upgrades;
+  const rawUpg = /** @type {{upgrades?: unknown, attachments?: unknown}} */ (raw).upgrades;
   const u = rawUpg && typeof rawUpg === "object" ? /** @type {Record<string, unknown>} */ (rawUpg) : {};
+  const rawAtt = /** @type {{attachments?: unknown}} */ (raw).attachments;
+  const a = rawAtt && typeof rawAtt === "object" ? /** @type {Record<string, unknown>} */ (rawAtt) : {};
   return {
     name,
     owned: /** @type {{owned?: unknown}} */ (raw).owned === true,
     reserve: toReserve(/** @type {{reserve?: unknown}} */ (raw).reserve),
     upgrades: { dmg: toLevel(u.dmg), mag: toLevel(u.mag), rl: toLevel(u.rl) },
+    attachments: {
+      scope: a.scope === true,
+      extmag: a.extmag === true,
+      suppressor: a.suppressor === true,
+      laser: a.laser === true,
+    },
   };
 }
 

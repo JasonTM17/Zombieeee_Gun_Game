@@ -237,6 +237,10 @@ import { createShop } from "./systems/shop.js";
 import { createMerchant } from "./systems/merchant.js";
 import { createPerks } from "./systems/perks.js";
 import { createContracts } from "./systems/contracts.js";
+import { createBossRush } from "./systems/bossrush.js";
+import { createCompanion } from "./systems/companions.js";
+import { createLightning } from "./systems/lightning.js";
+import { createSaveTools } from "./systems/save-tools.js";
 import { createMissions, STORY_DIALOGUE } from "./systems/missions.js";
 import { createEvents } from "./systems/events.js"; // NIGHT 30 P2 §8.1
 import { createPlayer } from "./player/controller.js";
@@ -252,6 +256,9 @@ import { createMerchantUI } from "./ui/merchant.js";
 import { createPerksUI } from "./ui/perks.js";
 import { createPerksHud } from "./ui/perks-hud.js";
 import { createContractsUI } from "./ui/contracts.js";
+import { createBossRushUI } from "./ui/bossrush.js";
+import { createPhotoMode } from "./ui/photo.js";
+import { createSaveToolsUI } from "./ui/save-tools.js";
 import { createArmorHud } from "./ui/armor-hud.js";
 import { createThrowablesHud } from "./ui/throwables-hud.js";
 import { createMenus } from "./ui/menus.js";
@@ -336,6 +343,10 @@ const explosives = createExplosives(scene, camera, zombies, particles, audio, bu
 const throwables = createThrowables(scene, camera, zombies, particles, bus);
 // Chain-reacting red barrels / gas canisters across the districts.
 const hazards = createHazards(scene, bus, level, city, zombies, particles);
+// Rescued-survivor ally: follows the player and provides covering fire.
+const companion = createCompanion(scene, bus, level, zombies, particles, player, camera);
+// Storm lightning strikes (weather.js emits "lightning-strike").
+const lightning = createLightning(bus, zombies, particles);
 // EXPANSION B1/B2: money + shop. The shop writes ownership flags onto
 // weapons.list entries and heals the player — created after both.
 //
@@ -411,12 +422,44 @@ const armorHud = createArmorHud(uiRoot, bus);
 // GUN GAME 2.0 P4 (P4-K19): createMenus MOVED below the P4 modules — it now
 // takes the 5th `services` argument { save, profile, achievements }.
 const gamestate = createGamestate(bus, settings);
+// Boss Rush: 5-boss gauntlet, standalone from the story/endless directors.
+const bossrush = createBossRush(bus, {
+  scene,
+  zombies,
+  player,
+  gamestate,
+  economy,
+  city,
+  camera,
+});
+const bossrushUI = createBossRushUI(uiRoot, bus, bossrush, i18n);
 // Modal overlays that freeze the world but show no pause menu (same pattern
 // as the shop / merchant): the reason keeps the run paused until it closes.
 bus.addEventListener("perks-choice-open", () => gamestate.addPause("perks"));
 bus.addEventListener("perks-choice-closed", () => gamestate.removePause("perks"));
 bus.addEventListener("contracts-open", () => gamestate.addPause("contracts"));
 bus.addEventListener("contracts-closed", () => gamestate.removePause("contracts"));
+bus.addEventListener("bossrush-open", () => gamestate.addPause("bossrush"));
+bus.addEventListener("bossrush-closed", () => gamestate.removePause("bossrush"));
+
+// Boss Rush defeat: the result overlay covers the normal gameover panel; hide
+// that panel's DOM so keyboard focus cannot leak behind the opaque overlay.
+let bossRushGameoverHidden = false;
+bus.addEventListener("bossrush-over", (e) => {
+  const d = e && e.detail ? e.detail : {};
+  if (d.win) return;
+  const screen = uiRoot.querySelector(".screen-gameover");
+  if (screen) {
+    screen.style.display = "none";
+    bossRushGameoverHidden = true;
+  }
+});
+bus.addEventListener("bossrush-closed", () => {
+  if (!bossRushGameoverHidden) return;
+  const screen = uiRoot.querySelector(".screen-gameover");
+  if (screen) screen.style.display = "";
+  bossRushGameoverHidden = false;
+});
 // NIGHT 30 P1 (§5.6.2.1): dialogue after menus — the bottom dialogue box, the
 // intro slides and the outro overlay (self-styled inside #ui).
 const dialogue = createDialogue(uiRoot, bus, i18n);
@@ -486,6 +529,11 @@ const menus = createMenus(uiRoot, bus, settings, i18n, {
 // "help-toggle" / "help-open"; frees the cursor while it is open.
 const help = createHelp(uiRoot, bus, i18n);
 const tutorial = createTutorial(uiRoot, bus, i18n);
+const photo = createPhotoMode(uiRoot, bus, camera, i18n);
+const saveTools = createSaveTools(bus, i18n);
+const saveToolsUI = createSaveToolsUI(uiRoot, bus, saveTools, i18n);
+bus.addEventListener("photo-open", () => gamestate.addPause("photo"));
+bus.addEventListener("photo-closed", () => gamestate.removePause("photo"));
 
 // --- GUN GAME 2.0 P4 section (§3.3/§3.4/§5.4/P4-K13/P4-K15) -------------------
 
@@ -506,6 +554,7 @@ let endlessRun = false;
  */
 function buildSaveSnapshot() {
   if (endless.isActive() || endlessRun) return null; // P4-K1: no saves in Endless
+  if (bossrush.isActive() || bossrush.state().over) return null; // Boss Rush never overwrites the story save
   const st = gamestate.state;
   if (st !== "playing" && st !== "paused" && st !== "gameover") return null;
   // P4-K22 mission clamp: 1..10 stay; 11 (chain done) → 10 (resume = re-fight
@@ -517,6 +566,7 @@ function buildSaveSnapshot() {
   for (let i = 0; i < weapons.list.length; i++) {
     const w = weapons.list[i];
     const u = w.upgrades || { dmg: 0, mag: 0, rl: 0 };
+    const a = w.attachments || {};
     weaponsSave.push({
       name: w.name,
       owned: w.owned === true,
@@ -525,6 +575,12 @@ function buildSaveSnapshot() {
         ? Math.max(0, Math.round(w.reserve))
         : null,
       upgrades: { dmg: u.dmg | 0, mag: u.mag | 0, rl: u.rl | 0 },
+      attachments: {
+        scope: a.scope === true,
+        extmag: a.extmag === true,
+        suppressor: a.suppressor === true,
+        laser: a.laser === true,
+      },
     });
   }
   const objs = Array.isArray(missions.objectives) ? missions.objectives : [];
@@ -598,6 +654,22 @@ bus.addEventListener("ui-endless", () => {
 bus.addEventListener("endless-over", () => {
   menus.show("endlessOver");
 });
+
+// BOSS RUSH start sequence: clean world → quarantine arena → 5-boss gauntlet.
+function startBossRushRun() {
+  endless.stop();
+  endlessRun = false;
+  storyRun = false; // Boss Rush is neither story nor free-roam
+  keepStory = false;
+  storyMode(false);
+  gamestate.ngPlus = false;
+  freshRun(false);
+  teleportDistrictInternal("quarantine");
+  bossrush.start();
+  gamestate.start();
+  input.lockPointer();
+}
+bus.addEventListener("ui-bossrush", startBossRushRun);
 
 // P4-K15: main's difficulty preset for its OWN spawn paths (event runners,
 // debug spawns, the debug/m8 boss, the Origin). Same table as waves.js
@@ -924,6 +996,8 @@ function closeAllCityGates() {
  * re-opened (zones.reset() below re-sealed them).
  */
 function freshRun(keepStoryProgress) {
+  bossrush.stop(); // a fresh world never carries a Boss Rush boss/banner
+  bossrushUI.hide(); // emits "bossrush-closed" so the pause reason is dropped
   waves.reset(); // disposes every zombie + announces "zombie-despawned" per one
   // Debug-spawned zombies are outside the wave director's tracked list —
   // despawn them the same way (announce, then dispose) so the shared array
@@ -954,6 +1028,7 @@ function freshRun(keepStoryProgress) {
   // {active:false} + per-event "event-end" {reason:"reset"} first, so the
   // waves/economy/atmosphere/audio multipliers drop before the next run.
   events.reset();
+  companion.reset(); // a fresh run starts without the rescued ally
   map.show(false); // close the M overlay with the run (map also self-closes
   //                   on every state ≠ "playing" — this is belt & suspenders)
   // NIGHT 30 P3 (§4.7): waves.reset() above cleared its local NG+ flag —
@@ -986,6 +1061,7 @@ function freshRun(keepStoryProgress) {
     missions.reset(); // §5.6.2.5 (skipped when §5.6.3 keeps the progress)
   }
   dialogue.hide(); // drop any mid-flight dialogue from the previous run
+  photo.hide(); // a restart/quit never leaves the free camera or HUD hidden
   resetDialogueQueue(); // hide() drops the onDone — the queue must forget too
   ending.hide(); // NIGHT 30 P3 §6.1: leave the ending sequence if it ran
   //               (idempotent; also emits "ending-active" {active:false} so
@@ -1078,7 +1154,7 @@ bus.addEventListener("ui-play", () => {
     if (owned) {
       for (let i = 0; i < owned.length; i++) {
         const st = weapons.getStats(owned[i]);
-        if (st) ownedUpg.push({ name: owned[i], u: st.upgrades });
+        if (st) ownedUpg.push({ name: owned[i], u: st.upgrades, a: st.attachments });
       }
     }
     endlessRun = false; // any ui-play is a fresh non-endless run
@@ -1095,6 +1171,10 @@ bus.addEventListener("ui-play", () => {
       // effective damage/magSize in one call).
       for (let i = 0; i < ownedUpg.length; i++) {
         weapons.setUpgrades(ownedUpg[i].name, ownedUpg[i].u);
+        const a = ownedUpg[i].a || {};
+        for (const id of ["scope", "extmag", "suppressor", "laser"]) {
+          if (a[id] === true) weapons.applyAttachment(id, ownedUpg[i].name);
+        }
       }
     }
     gamestate.start(); // → playing directly
@@ -1238,7 +1318,7 @@ function beginNGPlus() {
   const ownedUpg = [];
   for (let i = 0; i < owned.length; i++) {
     const st = weapons.getStats(owned[i]);
-    if (st) ownedUpg.push({ name: owned[i], u: st.upgrades });
+    if (st) ownedUpg.push({ name: owned[i], u: st.upgrades, a: st.attachments });
   }
   storyMode(false);
   endlessRun = false; // NG+ is a story-shaped run, never endless
@@ -1256,6 +1336,10 @@ function beginNGPlus() {
   // the effective damage/magSize).
   for (let i = 0; i < ownedUpg.length; i++) {
     weapons.setUpgrades(ownedUpg[i].name, ownedUpg[i].u);
+    const a = ownedUpg[i].a || {};
+    for (const id of ["scope", "extmag", "suppressor", "laser"]) {
+      if (a[id] === true) weapons.applyAttachment(id, ownedUpg[i].name);
+    }
   }
   missions.reset(); // freshRun(true) skipped it — the chain restarts at m1
   closeAllCityGates(); // freshRun(true) skipped it
@@ -1602,15 +1686,19 @@ function frame() {
 
   const st = gamestate.state;
   if (st === "playing") {
+    const bossRushFrame = bossrush.isActive();
     player.update(dt); // writes camera yaw/pitch/bob absolutely
     merchantUI.update(dt, player.position); // trader prompt / stall proximity
     contractsUI.update(dt, player.position); // contract-board prompt / proximity
     if (player.alive) weapons.update(dt); // layers recoil DELTA on top; fires
     updateZombies(dt); // chase/attack (attacks call player.damage → death can flip state here)
+    if (bossRushFrame) bossrush.update(dt); // next boss / timer / victory check
     audio.update3D(camera, zombies); // NIGHT 30 P2 §8.2: 3D voice mix + murmur (1×/frame, after the zombie pass)
-    waves.update(dt, player.position);
-    missions.update(dt, player.position); // NIGHT 30 P1 §5.6.2.4: after waves.update
-    events.update(dt, player.position); // NIGHT 30 P2 §8.2: after missions.update (playing-only → pause freezes the scheduler)
+    if (!bossRushFrame) {
+      waves.update(dt, player.position);
+      missions.update(dt, player.position); // NIGHT 30 P1 §5.6.2.4: after waves.update
+      events.update(dt, player.position); // NIGHT 30 P2 §8.2: after missions.update (playing-only → pause freezes the scheduler)
+    }
     pickups.update(dt, player.position);
     explosives.update(dt); // EXPANSION B5: grenade flight/detonation + shake decay
     particles.update(dt);
@@ -1622,12 +1710,15 @@ function frame() {
     atmosphere.update(dt, player.position); // P1 §5.7: moon shadow follows
     scenery.update(dt, player.position); // flames + fireflies drift
     weather.update(dt, player.position); // rain / storm / fog cycle
+    lightning.update(dt); // storm strike damage queue
     wildlife.update(dt, player.position); // crows, rats, stray dogs
     survivors.update(dt, player.position); // friendly camps + speech bubbles
+    companion.update(dt, player.position); // rescued ally follows + covers fire
     gamestate.update(dt);
     endless.update(dt); // GUN GAME 2.0 P4 (§5.4): bloodmoon retry machine (playing only → pause freezes it)
     profile.update(dt); // P4-K21: playtimeSec tick (playing only — pause/menu excluded)
     hud.update(player, weapons.getState(), gamestate, hudExtras());
+    bossrushUI.update(dt); // Boss Rush banner/pips (result overlay is event-driven)
     // NIGHT 30 P2 §8.2: the M overlay repaints at 10 Hz (map.js also paints
     // itself immediately on every open/toggle).
     mapTimer += dt;
@@ -1673,6 +1764,7 @@ function frame() {
   // false resumes the run) — that dispatch happens inside the button click,
   // never here; update() only moves the camera FOV and the phase timers.
   ending.update(dt);
+  photo.update(dt); // freecam while photo mode is open
 
   engine.render();
 }
@@ -2511,6 +2603,57 @@ const debugApi = {
       hazards.detonateAt(Number(x) || 0, Number(z) || 0);
     }
     return hazards.stats();
+  },
+
+  /** Boss Rush snapshot (active boss, index, time, score). */
+  bossrushState() {
+    return bossrush.state();
+  },
+
+  /** Start a Boss Rush run now (debug/verification only). */
+  startBossRush() {
+    startBossRushRun();
+    return bossrush.state();
+  },
+
+  /** Rescued ally snapshot. */
+  companionState() {
+    return companion.state();
+  },
+
+  /** Debug: fire the rescue event so the ally joins immediately. */
+  rescueCompanion() {
+    bus.dispatchEvent(
+      new CustomEvent("survivor-rescued", {
+        detail: {
+          x: player.position.x + 3,
+          z: player.position.z,
+          survivorId: "mai",
+        },
+      })
+    );
+    return companion.state();
+  },
+
+  /** Active weapon effective stats (upgrades + attachments + perks). */
+  weaponStats() {
+    return weapons.getStats();
+  },
+
+  /** Photo-mode open flag. */
+  photoState() {
+    return { open: photo.isOpen() };
+  },
+
+  /** Toggle photo mode (debug/verification only). */
+  togglePhoto() {
+    photo.toggle();
+    return { open: photo.isOpen() };
+  },
+
+  /** Save backup tool state (last export/import + known keys). */
+  saveToolsState() {
+    return saveTools.state();
   },
 };
 

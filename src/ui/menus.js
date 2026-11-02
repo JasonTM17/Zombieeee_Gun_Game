@@ -119,6 +119,8 @@ const MENU_BUNDLE = {
     // GUN GAME 2.0 P4 (§8.2 — integrator gap fill): the SINH TỒN nav button +
     // the endlessOver screen (§6.3/P4-K13). Verbatim EN column.
     endless: "Endless",
+    bossRush: "Boss Rush",
+    saveData: "Save Data",
     endlessOver: "ENDLESS OVER",
     endlessWaveReached: "Wave reached: {n}",
     endlessScoreLbl: "Score",
@@ -177,6 +179,8 @@ const MENU_BUNDLE = {
     continueGame: "TIẾP TỤC",
     // GUN GAME 2.0 P4 (§8.2 — integrator gap fill): verbatim VI column.
     endless: "SINH TỒN",
+    bossRush: "ĐẤU BOSS",
+    saveData: "DỮ LIỆU LƯU",
     endlessOver: "SINH TỐN KẾT THÚC",
     endlessWaveReached: "Đợt đạt được: {n}",
     endlessScoreLbl: "Điểm",
@@ -305,6 +309,8 @@ export function createMenus(container, bus, settings, i18n, services) {
   // TIẾP TỤC → CHƠI → CHƠI TỰ DO → SINH TỒN → CÀI ĐẶT → HƯỚNG DẪN → THÀNH TỰU.
   // Emits "ui-endless" (§8.1) — main.js starts the endless mode (P4-K14).
   button("endless", "btn", () => emitUi("ui-endless"), mainNav);
+  // Boss Rush: standalone 5-boss gauntlet (src/systems/bossrush.js).
+  button("bossRush", "btn", () => emitUi("ui-bossrush"), mainNav);
   button("settings", "btn", () => openSettings("main"), mainNav);
   button("howToPlay", "btn", () => openHowto("main"), mainNav);
   // User request: the full controls sheet (src/ui/help.js) — additive entry;
@@ -323,6 +329,8 @@ export function createMenus(container, bus, settings, i18n, services) {
   // the user-requested CONTROLS entry above is additive and keeps it last).
   // Opens the internal achievements screen; BACK returns to the origin.
   button("achievements", "btn", () => openAchievements("main"), mainNav);
+  // Save Data: local export/import of all progress (src/systems/save-tools.js).
+  button("saveData", "btn", () => emitUi("save-tools-open"), mainNav);
   bind(make("p", "hint", pMain), "startHint");
 
   // --- SETTINGS ----------------------------------------------------------------

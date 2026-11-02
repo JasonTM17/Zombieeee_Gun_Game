@@ -15,7 +15,12 @@
  *   - storm: stronger rain + wind, one pooled lightning bolt plane on the
  *     horizon and one HemisphereLight that flashes for 0.08–0.25 s and then
  *     returns to intensity 0. Thunder is synthesized procedurally (WebAudio)
- *     after a short distance delay;
+ *     after a short distance delay. Every 7–16 s a CLOSE strike also lands
+ *     8–30 m from the player: a pre-built jagged cross-ribbon bolt drops from
+ *     y = 40 to the ground (0.18–0.3 s, bright blue-white additive), with a
+ *     ground flash ring and a fading scorch disc. The strike emits
+ *     "lightning-strike" {x, z, radius: 3.2, damage: 160, time} for the
+ *     lightning damage system — see src/systems/lightning.js;
  *   - fog: only `scene.fog.density` is animated (base → ~0.04 over ~8 s and
  *     back to the EXACT base value). Fog COLOR, scene.background and every
  *     atmosphere.js bloodmoon tint stay untouched;
@@ -47,7 +52,9 @@
  * only while a flash is visible) and 1 extra light.
  *
  * Bus consumed: "bloodmoon-active" {active}, "settings-changed" {patch.volume}.
- * Bus emitted: none.
+ * Bus emitted: "lightning-strike" {x, z, radius: 3.2, damage: 160,
+ *   time: seconds since the current storm started}. Only emitted while a
+ *   storm is running (never clear / rain / fog / bloodmoon).
  *
  * @param {import("three").Scene} scene
  * @param {EventTarget} bus - shared bus (src/systems/gamestate.js).
@@ -64,8 +71,9 @@
  *   Advance the cycle, intensity, fog density, rain drift, lightning and
  *   audio. dt is seconds; playerPos re-centers the rain box.
  * @property {() => {mode: "clear"|"rain"|"storm"|"fog", intensity: number,
- *   timer: number}} state - fresh snapshot for debug/HUD. `timer` is seconds
- *   until the current regime would change on its own (frozen in bloodmoon).
+ *   timer: number, strikes: number}} state - fresh snapshot for debug/HUD.
+ *   `timer` is seconds until the current regime would change on its own
+ *   (frozen in bloodmoon); `strikes` is the cumulative close-strike count.
  * @property {(mode: string) => boolean} setMode - force a transition to
  *   "clear" | "rain" | "storm" | "fog"; unknown values are ignored. Returns
  *   true when accepted, false for an unknown mode (or a non-clear force while
@@ -113,6 +121,24 @@ const BOLT_DIST_MAX = 185;
 const THUNDER_DELAY_MIN = 0.35; // flash → thunder, reads as distance
 const THUNDER_DELAY_MAX = 1.85;
 
+// --- close lightning strikes (damage gameplay) ------------------------------
+const STRIKE_MIN = 7; // s between close strikes
+const STRIKE_MAX = 16;
+const STRIKE_DIST_MIN = 8; // m from the player: well beyond the 4 m floor
+const STRIKE_DIST_MAX = 30;
+const STRIKE_RADIUS = 3.2; // m — damage radius announced on the bus
+const STRIKE_DAMAGE = 160;
+const STRIKE_BOLT_MIN = 0.18; // s — visible bolt lifetime
+const STRIKE_BOLT_MAX = 0.3;
+const STRIKE_FLASH_PEAK_MIN = 3.4;
+const STRIKE_FLASH_PEAK_MAX = 5.2;
+const STRIKE_THUNDER_MIN = 0.04; // a near strike cracks almost immediately
+const STRIKE_THUNDER_MAX = 0.28;
+const STRIKE_BOLT_WIDTH = 0.18; // half-width of the core ribbon at the ground
+const STRIKE_GLOW_SCALE = 2.4; // the wider outer ribbon fake-glow
+const SCORCH_FADE = 5; // s — ground scorch slowly fades
+const SCORCH_OPACITY = 0.55;
+
 // --- helpers ----------------------------------------------------------------
 /** @returns {number} uniform random in [min, max) */
 function rand(min, max) {
@@ -122,6 +148,96 @@ function rand(min, max) {
 /** @returns {number} clamped value */
 function clamp(v, lo, hi) {
   return v < lo ? lo : v > hi ? hi : v;
+}
+
+/**
+ * Append one two-triangle ribbon segment between `a` and `b`. `axis` selects
+ * the width direction (0 = X, 1 = Z) so two crossed ribbons read as a solid
+ * bolt from any camera angle. Widths are per-endpoint so the channel tapers.
+ * Build-time helper only — never called from update().
+ * @param {number[]} positions
+ * @param {number[]} indices
+ * @param {{x:number,y:number,z:number}} a
+ * @param {{x:number,y:number,z:number}} b
+ * @param {number} axis
+ * @param {number} wa
+ * @param {number} wb
+ */
+function pushRibbon(positions, indices, a, b, axis, wa, wb) {
+  const base = positions.length / 3;
+  if (axis === 0) {
+    positions.push(
+      a.x - wa, a.y, a.z, a.x + wa, a.y, a.z,
+      b.x - wb, b.y, b.z, b.x + wb, b.y, b.z
+    );
+  } else {
+    positions.push(
+      a.x, a.y, a.z - wa, a.x, a.y, a.z + wa,
+      b.x, b.y, b.z - wb, b.x, b.y, b.z + wb
+    );
+  }
+  indices.push(base, base + 1, base + 2, base + 1, base + 3, base + 2);
+}
+
+/**
+ * Build the ONE pooled close-strike bolt geometry: a jagged vertical spine
+ * from y = 0 to y = 40 plus three descending branches, each rendered as two
+ * crossed ribbons. Called once per weather layer; every strike reuses it.
+ * @returns {import("three").BufferGeometry}
+ */
+function buildStrikeBoltGeometry() {
+  const positions = [];
+  const indices = [];
+  const SPINE_SEGMENTS = 18;
+  const HEIGHT = 40;
+  const spine = [];
+  for (let i = 0; i <= SPINE_SEGMENTS; i++) {
+    const t = i / SPINE_SEGMENTS;
+    const reach = Math.sin(t * Math.PI); // pinned to (0, 0) / (0, 40)
+    spine.push({
+      x: (Math.random() * 2 - 1) * 1.5 * reach,
+      y: t * HEIGHT,
+      z: (Math.random() * 2 - 1) * 1.5 * reach,
+    });
+  }
+  for (let i = 0; i < SPINE_SEGMENTS; i++) {
+    const a = spine[i];
+    const b = spine[i + 1];
+    const ta = i / SPINE_SEGMENTS;
+    const tb = (i + 1) / SPINE_SEGMENTS;
+    const wa = STRIKE_BOLT_WIDTH * (1 - 0.55 * ta);
+    const wb = STRIKE_BOLT_WIDTH * (1 - 0.55 * tb);
+    pushRibbon(positions, indices, a, b, 0, wa, wb);
+    pushRibbon(positions, indices, a, b, 1, wa, wb);
+  }
+  // Forks: short descending ribbons that break the silhouette.
+  const forkRoots = [0.58, 0.42, 0.72];
+  for (let f = 0; f < forkRoots.length; f++) {
+    const si = Math.max(1, Math.min(SPINE_SEGMENTS - 2, Math.round(forkRoots[f] * SPINE_SEGMENTS)));
+    const root = spine[si];
+    const dir = Math.random() < 0.5 ? -1 : 1;
+    const points = [{ x: root.x, y: root.y, z: root.z }];
+    let px = root.x;
+    let py = root.y;
+    let pz = root.z;
+    const FORK_SEGMENTS = 5;
+    for (let k = 1; k <= FORK_SEGMENTS; k++) {
+      px += dir * (0.35 + Math.random() * 0.8) + (Math.random() * 2 - 1) * 0.2;
+      py -= 1.1 + Math.random() * 1.1;
+      pz += (Math.random() * 2 - 1) * 0.7;
+      points.push({ x: px, y: py, z: pz });
+    }
+    for (let k = 0; k < FORK_SEGMENTS; k++) {
+      const wa = 0.07 * (1 - 0.6 * (k / FORK_SEGMENTS));
+      const wb = 0.07 * (1 - 0.6 * ((k + 1) / FORK_SEGMENTS));
+      pushRibbon(positions, indices, points[k], points[k + 1], 0, wa, wb);
+      pushRibbon(positions, indices, points[k], points[k + 1], 1, wa, wb);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geo.setIndex(indices);
+  return geo;
 }
 
 /**
@@ -302,6 +418,11 @@ export function createWeather(scene, bus, settings, camera) {
   // --- player anchor (world XZ) ---------------------------------------------
   let px = 0;
   let pz = 0;
+  // Strike anchor: only a real playerPos (or the arena-center default) moves
+  // it. The camera fallback below still anchors rain, but a missing playerPos
+  // must not turn into a strike 100 m from the arena.
+  let strikeAnchorX = 0;
+  let strikeAnchorZ = 0;
   if (camRef && camRef.position) {
     if (Number.isFinite(camRef.position.x)) px = camRef.position.x;
     if (Number.isFinite(camRef.position.z)) pz = camRef.position.z;
@@ -416,6 +537,83 @@ export function createWeather(scene, bus, settings, camera) {
   flashLight.castShadow = false;
   if (sceneRef) sceneRef.add(flashLight);
 
+  // --- close strike: ONE pooled bolt group (no per-strike geometry) ---------
+  // A jagged cross-ribbon channel from y=0..40 plus a soft wider glow shell.
+  // The core and glow share the same geometry; only their materials differ.
+  const strikeGeo = buildStrikeBoltGeometry();
+  const strikeCoreMat = new THREE.MeshBasicMaterial({
+    color: 0xf2f9ff,
+    transparent: true,
+    opacity: 0,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    fog: false,
+    side: THREE.DoubleSide,
+    toneMapped: false,
+  });
+  const strikeCore = new THREE.Mesh(strikeGeo, strikeCoreMat);
+  strikeCore.name = "weather-strike-bolt";
+  strikeCore.frustumCulled = false;
+  strikeCore.renderOrder = 6;
+
+  const strikeGlowMat = new THREE.MeshBasicMaterial({
+    color: 0x7fb8ff,
+    transparent: true,
+    opacity: 0,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    fog: false,
+    side: THREE.DoubleSide,
+    toneMapped: false,
+  });
+  const strikeGlow = new THREE.Mesh(strikeGeo, strikeGlowMat);
+  strikeGlow.name = "weather-strike-glow";
+  strikeGlow.scale.set(STRIKE_GLOW_SCALE, 1, STRIKE_GLOW_SCALE);
+  strikeGlow.frustumCulled = false;
+  strikeGlow.renderOrder = 5;
+
+  // Ground flash ring — expands over the bolt's short life.
+  const strikeRingMat = new THREE.MeshBasicMaterial({
+    color: 0xbfe2ff,
+    transparent: true,
+    opacity: 0,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    fog: false,
+    side: THREE.DoubleSide,
+    toneMapped: false,
+  });
+  const strikeRing = new THREE.Mesh(new THREE.RingGeometry(0.72, 1, 32), strikeRingMat);
+  strikeRing.name = "weather-strike-ring";
+  strikeRing.rotation.x = -Math.PI / 2;
+  strikeRing.position.y = 0.07;
+  strikeRing.frustumCulled = false;
+  strikeRing.renderOrder = 6;
+
+  const strikeGroup = new THREE.Group();
+  strikeGroup.name = "weather-lightning-strike";
+  strikeGroup.visible = false;
+  strikeGroup.add(strikeCore, strikeGlow, strikeRing);
+  if (sceneRef) sceneRef.add(strikeGroup);
+
+  // Scorch decal: lives in world space (stays put when the next strike lands).
+  const scorchMat = new THREE.MeshBasicMaterial({
+    color: 0x120f0b,
+    transparent: true,
+    opacity: 0,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
+  });
+  const strikeScorch = new THREE.Mesh(new THREE.CircleGeometry(1.9, 28), scorchMat);
+  strikeScorch.name = "weather-strike-scorch";
+  strikeScorch.rotation.x = -Math.PI / 2;
+  strikeScorch.position.y = 0.045;
+  strikeScorch.visible = false;
+  strikeScorch.renderOrder = 1;
+  if (sceneRef) sceneRef.add(strikeScorch);
+
   // --- audio ----------------------------------------------------------------
   const audio = createWeatherAudio(B, () => {
     const s = settings && typeof settings.get === "function" ? settings.get() : null;
@@ -441,6 +639,15 @@ export function createWeather(scene, bus, settings, camera) {
   let flashPeak = 0;
   let thunderDelay = -1; // < 0 = nothing pending
 
+  // --- close strike state ---------------------------------------------------
+  let strikeTimer = rand(STRIKE_MIN, STRIKE_MAX);
+  let stormElapsed = 0; // s since the current storm regime started
+  let strikes = 0; // cumulative close strikes (state().strikes)
+  let strikeT = 0; // remaining bolt visibility
+  let strikeDuration = 0;
+  let strikeAge = 0;
+  let scorchT = 0; // remaining scorch fade time
+
   /**
    * Enter `next` NOW. Values (rain/wind/fog) glide for 6–10 s; the mode timer
    * starts immediately, so a full rain regime lasts its scheduled duration.
@@ -460,6 +667,8 @@ export function createWeather(scene, bus, settings, camera) {
       rainTarget = 1;
       modeTimer = rand(STORM_MIN, STORM_MAX);
       lightningTimer = rand(LIGHTNING_MIN, LIGHTNING_MAX);
+      strikeTimer = rand(STRIKE_MIN, STRIKE_MAX); // first close strike 7–16 s in
+      stormElapsed = 0;
     } else {
       rainTarget = 0;
       modeTimer = rand(FOG_DURATION_MIN, FOG_DURATION_MAX);
@@ -508,6 +717,66 @@ export function createWeather(scene, bus, settings, camera) {
     flashLight.intensity = flashPeak;
   }
 
+  /**
+   * Land a real close strike: reposition/reuse the pooled bolt group, start
+   * the near flash + thunder, refresh the scorch and emit the gameplay event.
+   * Only called from the storm branch of update(). Allocation-free apart from
+   * the one event dispatch (required by the bus contract).
+   */
+  function triggerLightningStrike() {
+    strikes++;
+    strikeTimer = rand(STRIKE_MIN, STRIKE_MAX);
+    // A close strike replaces this flash slot, so restart the distant timer
+    // too — normal horizon flashes keep their old rhythm between strikes.
+    lightningTimer = rand(LIGHTNING_MIN, LIGHTNING_MAX);
+
+    flashDuration = rand(STRIKE_BOLT_MIN, STRIKE_BOLT_MAX);
+    flashT = flashDuration;
+    flashPeak = rand(STRIKE_FLASH_PEAK_MIN, STRIKE_FLASH_PEAK_MAX);
+    thunderDelay = rand(STRIKE_THUNDER_MIN, STRIKE_THUNDER_MAX);
+
+    // 8–30 m from the current player anchor (floor 4 m is covered by the min).
+    const angle = Math.random() * Math.PI * 2;
+    const dist = rand(STRIKE_DIST_MIN, STRIKE_DIST_MAX);
+    const x = strikeAnchorX + Math.cos(angle) * dist;
+    const z = strikeAnchorZ + Math.sin(angle) * dist;
+
+    // The close bolt owns the flash; hide the distant horizon plane.
+    bolt.visible = false;
+    boltMat.opacity = 0;
+
+    strikeGroup.position.set(x, 0, z);
+    strikeGroup.rotation.y = Math.random() * Math.PI * 2;
+    strikeGroup.visible = true;
+    strikeDuration = rand(STRIKE_BOLT_MIN, STRIKE_BOLT_MAX);
+    strikeT = strikeDuration;
+    strikeAge = 0;
+    strikeCoreMat.opacity = 1;
+    strikeGlowMat.opacity = 0.5;
+    strikeRing.visible = true;
+    strikeRing.scale.setScalar(0.75);
+    strikeRingMat.opacity = 0.9;
+
+    strikeScorch.position.set(x, 0.045, z);
+    strikeScorch.visible = true;
+    scorchT = SCORCH_FADE;
+    scorchMat.opacity = SCORCH_OPACITY;
+
+    if (B) {
+      B.dispatchEvent(
+        new CustomEvent("lightning-strike", {
+          detail: {
+            x,
+            z,
+            radius: STRIKE_RADIUS,
+            damage: STRIKE_DAMAGE,
+            time: stormElapsed,
+          },
+        })
+      );
+    }
+  }
+
   // --- bloodmoon ------------------------------------------------------------
   if (B) {
     B.addEventListener("bloodmoon-active", (e) => {
@@ -524,6 +793,15 @@ export function createWeather(scene, bus, settings, camera) {
       transitionTime = rand(TRANSITION_MIN, TRANSITION_MAX);
       modeTimer = rand(CLEAR_MIN, CLEAR_MAX);
       fogTimer = rand(FOG_INTERVAL_MIN, FOG_INTERVAL_MAX);
+
+      // Kill any in-flight close bolt: the red sky owns all lightning.
+      strikeT = 0;
+      strikeAge = 0;
+      strikeGroup.visible = false;
+      strikeRing.visible = false;
+      strikeCoreMat.opacity = 0;
+      strikeGlowMat.opacity = 0;
+      strikeRingMat.opacity = 0;
     });
   }
 
@@ -546,16 +824,18 @@ export function createWeather(scene, bus, settings, camera) {
 
   /**
    * Fresh debug snapshot (callers may mutate it — not the live state).
-   * @returns {{mode: "clear"|"rain"|"storm"|"fog", intensity: number, timer: number}}
+   * @returns {{mode: "clear"|"rain"|"storm"|"fog", intensity: number,
+   *   timer: number, strikes: number}}
    */
   function state() {
-    return { mode, intensity, timer: Math.max(0, modeTimer) };
+    return { mode, intensity, timer: Math.max(0, modeTimer), strikes };
   }
 
   /**
    * Advance weather. Allocation-free.
    * @param {number} dt seconds
-   * @param {{x: number, z: number}} [playerPos] player feet position
+   * @param {{x: number, z: number}} [playerPos] player feet position; when
+   *   omitted the strike anchor stays at the arena center (0, 0)
    */
   function update(dt, playerPos) {
     if (!Number.isFinite(dt) || dt <= 0) return;
@@ -567,6 +847,8 @@ export function createWeather(scene, bus, settings, camera) {
     ) {
       px = playerPos.x;
       pz = playerPos.z;
+      strikeAnchorX = playerPos.x;
+      strikeAnchorZ = playerPos.z;
     } else if (camRef && camRef.position) {
       if (Number.isFinite(camRef.position.x)) px = camRef.position.x;
       if (Number.isFinite(camRef.position.z)) pz = camRef.position.z;
@@ -604,8 +886,14 @@ export function createWeather(scene, bus, settings, camera) {
 
     // 5. lightning scheduling + flash envelope
     if (mode === "storm" && !bloodmoon) {
-      lightningTimer -= dt;
-      if (lightningTimer <= 0) triggerLightning();
+      stormElapsed += dt;
+      strikeTimer -= dt;
+      if (strikeTimer <= 0) {
+        triggerLightningStrike(); // close, damaging bolt — replaces a flash
+      } else {
+        lightningTimer -= dt;
+        if (lightningTimer <= 0) triggerLightning();
+      }
     }
     if (flashT > 0) {
       flashT -= dt;
@@ -620,6 +908,40 @@ export function createWeather(scene, bus, settings, camera) {
         const env = k * k; // bright attack, quick decay inside 0.08–0.25 s
         flashLight.intensity = flashPeak * env;
         boltMat.opacity = 0.85 * env;
+      }
+    }
+    // Close-strike visual envelope: flickering additive core + glow + ring.
+    if (strikeT > 0) {
+      strikeT -= dt;
+      if (strikeT <= 0) {
+        strikeT = 0;
+        strikeDuration = 0;
+        strikeGroup.visible = false;
+        strikeRing.visible = false;
+        strikeCoreMat.opacity = 0;
+        strikeGlowMat.opacity = 0;
+        strikeRingMat.opacity = 0;
+      } else {
+        strikeAge += dt;
+        const k = strikeT / strikeDuration;
+        const flicker = 0.82 + 0.18 * Math.sin(strikeAge * 95);
+        const env = k * flicker;
+        strikeCoreMat.opacity = env;
+        strikeGlowMat.opacity = env * 0.45;
+        const rp = 1 - k; // 0 → 1 over the bolt's life
+        strikeRing.scale.setScalar(0.75 + (STRIKE_RADIUS - 0.75) * rp);
+        strikeRingMat.opacity = (1 - rp) * 0.9;
+      }
+    }
+    // Scorch outlives the bolt: fade over SCORCH_FADE seconds.
+    if (scorchT > 0) {
+      scorchT -= dt;
+      if (scorchT <= 0) {
+        scorchT = 0;
+        strikeScorch.visible = false;
+        scorchMat.opacity = 0;
+      } else {
+        scorchMat.opacity = SCORCH_OPACITY * (scorchT / SCORCH_FADE);
       }
     }
     if (thunderDelay >= 0) {

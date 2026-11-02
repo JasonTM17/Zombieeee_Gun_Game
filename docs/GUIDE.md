@@ -1,6 +1,6 @@
 # Gun Game — Hướng dẫn người chơi
 
-Hướng dẫn đầy đủ cho **Gun Game** — FPS sinh tồn zombie viết bằng Three.js + Vite. Từ phím bấm, **12 khẩu súng**, 6 loại zombie, 4 boss, Nguồn Gốc, cốt truyện 10 nhiệm vụ, hồ sơ nhân vật, đến **Thương Lái, bom ném, XP + 12 kỹ năng, hợp đồng, thời tiết, động vật, người sống sót và barel nổ dây chuyền**.
+Hướng dẫn đầy đủ cho **Gun Game** — FPS sinh tồn zombie viết bằng Three.js + Vite. Từ phím bấm, **12 khẩu súng**, 6 loại zombie, 4 boss, Nguồn Gốc, cốt truyện 10 nhiệm vụ, hồ sơ nhân vật, đến **Thương Lái, bom ném, XP + 12 kỹ năng, hợp đồng, thời tiết, động vật, người sống sót và barel nổ dây chuyền** — cùng **Boss Rush 5 boss, phụ tùng súng, Mai đồng đội, sét bão, chế độ ảnh và sao lưu JSON**.
 
 > Trong game, bấm `H` để mở sổ tay ba tab **ĐIỀU KHIỂN · ZOMBIE · HỒ SƠ**. Hướng dẫn này là bản đầy đủ; phần spoiler được đánh dấu rõ.
 
@@ -14,10 +14,16 @@ Cần **Node.js** `^20.19.0` hoặc `>=22.12.0` (yêu cầu của Vite 8): `npm 
 | **CHƠI** | Cốt truyện: 4 slide intro → nhiệm vụ 1 |
 | **CHƠI TỰ DO** | Bỏ intro, vào thẳng thế giới, nhiệm vụ 1 active |
 | **SINH TỒN** | Vô tận ở Vùng Cách Ly, không có chuỗi nhiệm vụ |
+| **ĐẤU BOSS** | **Boss Rush**: 5 boss liên tiếp ở Vùng Cách Ly (xem mục 16) |
 | **CÀI ĐẶT** | Độ nhạy, âm lượng, EN/VI, độ khó, **trợ năng** (FOV, rung, tâm ngắm, số sát thương, giảm chuyển động) |
 | **HƯỚNG DẪN** | Sổ tay ba tab (như phím `H`) |
-| **THÀNH TỰU** | 12 thành tựu + thống kê trọn đời |
+| **ĐIỀU KHIỂN** | Mở thẳng tab ĐIỀU KHIỂN của sổ tay |
 | **HUẤN LUYỆN** | Chạy lại tutorial 9 bước |
+| **HỒ SƠ** | Mở thẳng tab HỒ SƠ (dossier) của sổ tay |
+| **THÀNH TỰU** | 12 thành tựu + thống kê trọn đời |
+| **DỮ LIỆU LƯU** | Xuất / nhập toàn bộ tiến trình bằng JSON cục bộ (xem 16.3) |
+
+Menu chính có **12 nút** (TIẾP TỤC ẩn khi chưa có save). Ở màn hình thấp **≤ 780 px** (720p), panel tự thu gọn padding / cỡ tiêu đề / khoảng cách nút để vừa một màn hình không cuộn.
 
 **Tutorial lần đầu** gồm 9 bước: di chuyển → chạy → bắn → nạp → đổi súng → nhảy → tương tác → cửa hàng → sổ tay. Bước chỉ tiến khi làm đúng và tự nhảy sau **20 s**; hoàn thành hoặc **BỎ QUA** ghi cờ `gungame.tutorial.v1`. Chạy lại bằng nút **HUẤN LUYỆN**.
 
@@ -48,6 +54,10 @@ Cần **Node.js** `^20.19.0` hoặc `>=22.12.0` (yêu cầu của Vite 8): `npm 
 | `M` | Bản đồ — chỉ khi đang chơi |
 | `H` | Sổ tay — **game không tạm dừng** khi mở giữa trận |
 | `Esc` hoặc `P` | Tạm dừng / tiếp tục |
+| `F2` | **Chế độ ảnh** — mở/đóng (chỉ khi đang chơi) |
+| `F4` | Trong chế độ ảnh: lưu khung hình **PNG** |
+| `F5` | **Xuất dữ liệu lưu** ra JSON (mọi trạng thái) |
+| `F9` | **Nhập dữ liệu lưu** từ JSON rồi tải lại trang |
 | `F3` | Bật/tắt FPS counter |
 | Chuột trái hoặc `E` (khi có thoại) | Bỏ qua nhanh dòng thoại |
 
@@ -57,6 +67,10 @@ Cần **Node.js** `^20.19.0` hoặc `>=22.12.0` (yêu cầu của Vite 8): `npm 
 - **`F` / `V`**: im lặng khi cửa hàng / sổ tay / Thương Lái / bảng hợp đồng đang mở hoặc khi con trỏ đang trong ô nhập.
 - **`H`**: ba tab ĐIỀU KHIỂN / ZOMBIE / HỒ SƠ; `←` `→` `Home` `End` chuyển tab; `H`/`Esc` đóng; cửa hàng mở thì `H` im lặng. Sổ tay chỉ là lớp tra cứu — zombie vẫn tiến khi bạn mở nó.
 - **`M`**: bản đồ chỉ xem, không chặn chuột; cửa hàng mở thì `M` im lặng.
+- **`F2`**: chỉ mở từ trạng thái **đang chơi** và không mở khi shop / sổ tay / Thương Lái / perk / hợp đồng đang hiện. Mở ảnh → game tạm dừng, HUD ẩn; `Esc` / `F2` / nút **ĐÓNG** để thoát.
+- **`F4`**: chỉ có tác dụng khi chế độ ảnh đang mở — lưu PNG `gun-game-photo-<timestamp>.png`.
+- **`F5` / `F9`**: hoạt động ở **mọi trạng thái**, kể cả menu; bị bỏ qua khi đang gõ trong ô nhập hoặc giữ Ctrl/Meta/Alt. `F5` xuất, `F9` mở hộp chọn file để nhập.
+- Nút menu **ĐẤU BOSS** mở Boss Rush; nút **DỮ LIỆU LƯU** mở bảng xuất/nhập (không cần đang chơi).
 
 ## 3. Vũ khí & nâng cấp
 
@@ -92,6 +106,8 @@ ID nội bộ: `pistol` · `shotgun` · `rifle` · `smg` · `sniper` · `minigun
 Tối đa **$1750**/nhánh. Ví dụ: Pistol sát thương cấp 3 = **40 dmg**; Sniper băng cấp 3 = **8 viên**; Pistol nạp cấp 3 = **~0.77 s**. Nâng cấp áp dụng cho **mọi súng đã sở hữu** — kể cả Sawn-off / Crossbow mua từ Thương Lái. Nâng cấp reset khi chơi lượt mới, nhưng **NG+ / chết-restart trong NG+ / TIẾP TỤC** khôi phục lại.
 
 **Ưu tiên gợi ý:** SMG ($400) sớm → DMR ($700) hoặc Sniper ($800) trước wave 5 → nâng sát thương khẩu dùng nhiều nhất → nâng băng cho Minigun/SMG, nạp cho Sniper/Magnum → Magnum/Grenade → Minigun/Railgun. Một khẩu được nâng thường tốt hơn ba khẩu stock.
+
+**Phụ tùng Thương Lái** (tab **PHỤ TÙNG**, xem bảng đầy đủ ở mục 9): 4 món gắn vào **súng đang cầm**, mỗi súng tối đa **1 bản/món**, kho **2 món/lượt/loại**. Kính ngắm `$450` (−35% spread), băng mở rộng `$400` (+50% băng sau nâng cấp), giảm thanh `$500` (−25% giật, −20% spread), laser `$350` (−25% spread + chấm đỏ). Hiệu ứng **nhân dồn** với nâng cấp và perk; kính + giảm thanh + laser = spread **×0.39**. Phụ tùng lưu trong save và khôi phục khi **TIẾP TỤC**; Sawn-off / Crossbow cũng gắn được.
 
 ## 4. Sinh vật
 
@@ -157,6 +173,23 @@ Zombie **thường** có thể biến thể; **boss, minion triệu hồi và de
 Ba mẹo: **né húc ngang** theo telegraph 0.7 s; **đứng ngoài vũng acid** (mép vũng an toàn); **P3 giữ 7–12 m** — ngoài sóng 6 m nhưng không quá xa để bị húc bất ngờ.
 
 Khi Origin sống, scheduler sự kiện **tạm dừng** (event đang chạy vẫn kết thúc tự nhiên); boss wave thường vẫn chạy nhưng Origin ưu tiên trên HUD/bản đồ. Origin chết thưởng **$2000** + 1 medkit + 1 ammo. Chết giữa trận rồi **PLAY AGAIN**: Origin hồi đầy máu và trồi lại; tiền + tiến trình nhiệm vụ giữ theo luật story-keep.
+
+### 4.5 Mai — đồng đội
+
+Cứu **người sống sót đầu tiên** trong lượt (sự kiện 🆘) thì Mai tham gia, xuất hiện tại điểm cứu và bám theo bạn tới hết lượt.
+
+| Chỉ số | Giá trị |
+|---|---|
+| Máu | **120 HP**, hồi **+2 HP/s** sau **8 s** không nhận sát thương |
+| Bám theo | slot **3.4 m bên phải**; gần hơn **3 m** thì lùi, xa hơn **8 m** thì sprint **7.8 m/s** — vùng hoạt động **3–6 m** |
+| Bắn yểm trợ | **25 dmg** mỗi **1.1 s**, tầm **20 m**, cần **line of sight**, ưu tiên zombie gần bạn nhất |
+| Tier 2 | **35 dmg** sau lần cứu thứ hai (kèm hồi đầy máu); các lần cứu sau hồi đầy máu |
+| Khi hết máu | quỳ **12 s** rồi tự hồi sinh **50% HP** (60) — không chết vĩnh viễn |
+| Sát thương nhận | chỉ **splash nổ** (4 m / 90); zombie không đánh cô |
+| Va chạm | **không collider** — không chặn người chơi, zombie hay đạn |
+
+- Tên **“MAI — ĐỒNG ĐỘI”** hiện trong **28 m**, mờ tới **40 m**. Model có áo cam, ba lô, súng trường, đèn pin + lồng đèn emissive (không thêm PointLight).
+- **Reset mỗi lượt**: run mới không có Mai cho tới lần cứu đầu tiên; Boss Rush không có sự kiện cứu nên cô không xuất hiện ở chế độ đó.
 
 ## 5. Cốt truyện 10 nhiệm vụ + màn kết
 
@@ -279,7 +312,7 @@ Sự kiện đầu nổ sau **40–80 s** chơi; giữa hai sự kiện nghỉ *
 
 - **Nguồn tiền**: hạ zombie (bảng mục 4), boss, thưởng nhiệm vụ ($300–$600), sự kiện, Trăng Máu ×2, headshot +50%, elite ×1.5–×2.0.
 - **Cửa hàng `B`**: 7 súng, **Nạp đạn $150** (đầy dự trữ **mọi súng đang sở hữu**, mua lại được), **Medkit $200** (hồi đầy 100 HP, mua lại được). Không mua trùng súng đã sở hữu.
-- **Thương Lái `G`**: 2 súng độc quyền (Sawn-off $650 · Crossbow $750), 3 gói bom, Tấm Giáp $300, Medkit $200, nạp đạn toàn phần $150, Mũi Nỏ $60, Thùng Bí Ẩn $250, Thuốc Kích Thích $180 — kho riêng mỗi lượt, DEAL −25% sau mỗi 5 đợt sạch.
+- **Thương Lái `G`**: 2 súng độc quyền (Sawn-off $650 · Crossbow $750), 3 gói bom, Tấm Giáp $300, Medkit $200, nạp đạn toàn phần $150, Mũi Nỏ $60, Thùng Bí Ẩn $250, Thuốc Kích Thích $180, **4 phụ tùng $350–$500** — kho riêng mỗi lượt, DEAL −25% sau mỗi 5 đợt sạch (phụ tùng không vào DEAL).
 - **Hợp đồng `T`**: 3 hợp đồng active, thưởng $450–$900 tự trả khi xong; nguồn tiền phụ không tốn đạn.
 - **Thứ tự ưu tiên**: SMG → DMR/Sniper → Magnum → nâng sát thương → Grenade → Minigun/Railgun. Ammo $150 thường rẻ hơn mất một wave vì hết đạn; medkit $200 rẻ hơn chết.
 
@@ -301,7 +334,7 @@ Quầy gỗ cố định ở **An Toàn Nhà**, quanh toạ độ **(−60, 4)**
 
 **Mở quầy:** đứng trong **4.5 m** → chip `G — THƯƠNG LƯỢNG` hiện ở đáy màn hình; bấm `G` mở overlay và **game tạm dừng**. `G` hoặc `Esc` đóng. Đứng xa hơn thì game nhắc *“Tìm Thương Lái ở An Toàn Nhà”*.
 
-**Ba tab:** VŨ KHÍ · CHẤT NỔ · TRANG BỊ. Mỗi thẻ hiện giá hiện tại, `CÒN n/max`, và lý do khoá nếu không mua được: `THIẾU TIỀN`, `HẾT HÀNG`, `ĐÃ SỞ HỮU`, `CẦN NỎ`, `BẠN ĐÃ CHẾT`.
+**Bốn tab:** VŨ KHÍ · CHẤT NỔ · TRANG BỊ · **PHỤ TÙNG**. Mỗi thẻ hiện giá hiện tại, `CÒN n/max`, và lý do khoá nếu không mua được: `THIẾU TIỀN`, `HẾT HÀNG`, `ĐÃ SỞ HỮU`, `CẦN NỎ`, `BẠN ĐÃ CHẾT`.
 
 | Mặt hàng | Giá | Stock / lượt | Tác dụng |
 |---|---|---:|---|
@@ -316,6 +349,17 @@ Quầy gỗ cố định ở **An Toàn Nhà**, quanh toạ độ **(−60, 4)**
 | Mũi Nỏ | $60 | 5 | +24 mũi nỏ; chỉ mua được khi **đã có Crossbow** |
 | Thùng Bí Ẩn | $250 | 2 | Ngẫu nhiên: $200–400 · +50 giáp · đầy đạn mọi súng · +2 frag |
 | Thuốc Kích Thích | $180 | 3 | +35 HP và +10% tốc độ trong 20 s |
+| **Kính Ngắm** (`scope`) | $450 | 2 | **−35% spread** (×0.65); 1 món/súng |
+| **Băng Mở Rộng** (`extmag`) | $400 | 2 | **+50% băng** sau nâng cấp, làm tròn lên; 1 món/súng |
+| **Giảm Thanh** (`suppressor`) | $500 | 2 | **−25% giật**, **−20% spread** (×0.8); 1 món/súng |
+| **Laser** (`laser`) | $350 | 2 | **−25% spread** (×0.75) + chấm đỏ; 1 món/súng |
+
+**Phụ tùng — luật gắn:**
+
+- Mua xong gắn ngay vào **súng đang cầm**; tab ghi `FITS: {tên súng}`. Mỗi súng tối đa **1 bản/món** — mua lại cùng món cho cùng súng bị khoá `ĐÃ SỞ HỮU`, nhưng vẫn gắn được cho súng khác.
+- Kho **2 món/lượt/loại** dùng chung giữa các súng; **không vào pool DEAL −25%**, giá cố định.
+- Hiệu ứng **nhân dồn** với nâng cấp và perk: kính + giảm thanh + laser = spread **×0.39**. Băng mở rộng tính **sau** nâng cấp băng rồi mới +50% và làm tròn lên; băng đang có tăng đúng phần thêm.
+- **Lưu / khôi phục**: `gungame.save.v1` ghi `attachments` của từng súng; **TIẾP TỤC** khôi phục đúng, lượt mới xoá sạch. **Sawn-off / Crossbow** gắn được như mọi súng đã sở hữu.
 
 **Kho và DEAL:**
 
@@ -477,7 +521,8 @@ Chu kỳ tự động; mọi thay đổi giá trị mờ dần trong **6–10 s*
 | Sương mù (`fog`) | 35–60 s | → quang; xuất hiện mỗi **150–260 s**, chen vào clear/rain, không chen Trăng Máu |
 
 - **Mưa**: 3.200 hạt trong hộp **50 × 30 × 50 m** bám theo người chơi, 1 draw call, cập nhật tại chỗ trong `Float32Array`.
-- **Bão**: mưa dày + gió mạnh; sét mỗi **6–18 s**, flash **0.08–0.25 s**, sấm synth trễ **0.35–1.85 s**.
+- **Bão**: mưa dày + gió mạnh; flash chân trời mỗi **6–18 s**, flash **0.08–0.25 s**, sấm synth trễ **0.35–1.85 s**.
+- **Sét đánh gần (chỉ bão)**: cú đầu sau **7–16 s** từ lúc bão bắt đầu, rồi lặp **7–16 s**; điểm đánh cách người chơi **8–30 m**, bán kính **3.2 m**, **160 dmg** lên zombie **sau 0.1 s** (kịp né). Chỉ zombie bị đánh — người chơi và Mai miễn nhiễm; mỗi zombie tối đa 1 lần/cú. Bolt + scorch dùng **pool sẵn**; `weatherState().strikes` (tức `state().strikes`) đếm tổng cú gần. Trăng Máu ép trời quang nên **không có sét**.
 - **Sương mù**: chỉ `scene.fog.density` lerp lên **0.04** trong ~8 s rồi trả về đúng nền; màu sương/nền trời không đổi.
 - **Trăng Máu ép trời quang**: mưa về 0, sương về nền, đồng hồ chu kỳ đóng băng, sét/sấm bị chặn; hết Trăng Máu chu kỳ chạy lại timer mới.
 - Tiếng mưa là noise synth WebAudio theo âm lượng Settings.
@@ -550,12 +595,12 @@ Mở **CÀI ĐẶT** ở menu chính hoặc menu tạm dừng. Mọi thay đổi
 - **WebGL 2** (Three.js r187), **Pointer Lock**, **WebAudio**, **localStorage**.
 - Khuyến nghị Chrome / Edge / Firefox bản mới.
 - Node.js `^20.19.0` hoặc `>=22.12.0` nếu chạy dev/build. Không cần backend hay tài khoản.
-- **55 module JS** trong `src/` (ES modules thuần): 7 `core`, 2 `player`, 17 `systems`, 14 `ui`, 10 `world`, 4 `zombies` + `main.js`.
-- **Build**: `npm run build` xuất `dist/index.html` + 1 CSS + 1 JS đã gộp. Bản đang có: HTML 611 B, CSS 10.419 B, JS **1.147.833 B (~1.12 MB chưa nén)**; hash/tên đổi theo nội dung.
+- **62 module JS** trong `src/` (ES modules thuần): 7 `core`, 2 `player`, 21 `systems`, 17 `ui`, 10 `world`, 4 `zombies` + `main.js`.
+- **Build**: `npm run build` xuất `dist/index.html` + 1 CSS + 1 JS đã gộp. Bản đang có: HTML **0.97 kB**, CSS **10.76 kB**, JS **1.218,94 kB (~1.22 MB chưa nén / ~342.8 kB gzip)**; hash/tên đổi theo nội dung. Vite cảnh báo chunk **> 500 kB** — cảnh báo kích thước, không phải lỗi build.
 
 ### 15.2 Save & TIẾP TỤC
 
-Tự động lưu (`gungame.save.v1`) khi: **xong nhiệm vụ**, **xong wave** (kể cả boss), **chết** (trước Game Over), **thoát về menu**, **bắt đầu story mới**. Nút **TIẾP TỤC** khôi phục tiền, súng sở hữu + đạn dự trữ + nâng cấp, nhiệm vụ đang tới, khu/cổng đã mở và điểm; hồi sinh tại **An Toàn Nhà**.
+Tự động lưu (`gungame.save.v1`) khi: **xong nhiệm vụ**, **xong wave** (kể cả boss), **chết** (trước Game Over), **thoát về menu**, **bắt đầu story mới**. Nút **TIẾP TỤC** khôi phục tiền, súng sở hữu + đạn dự trữ + nâng cấp + **phụ tùng đã gắn**, nhiệm vụ đang tới, khu/cổng đã mở và điểm; hồi sinh tại **An Toàn Nhà**.
 
 Hạn chế có chủ ý:
 
@@ -565,6 +610,8 @@ Hạn chế có chủ ý:
 - Độ khó lấy theo **Settings hiện tại**, không restore từ save.
 - Mua nâng cấp **không tự lưu ngay** — lần autosave kế (xong wave/nhiệm vụ) sẽ gom.
 - **Sinh Tồn không tạo save**; save hỏng (JSON/schema sai) tự xoá + cảnh báo console, nút TIẾP TỤC tự ẩn.
+- **Boss Rush không ghi save**: trong run và cả khi đã có kết quả, snapshot save trả `null` — save cốt truyện hiện có không bị đè.
+- **Sao lưu thủ công** (nút **DỮ LIỆU LƯU**, `F5`/`F9`) xuất **7 key** — tất cả key trong bảng 15.3 **trừ `gungame.tutorial.v1`** — thành một file JSON cục bộ; nhập xong tự tải lại trang.
 - **Súng Thương Lái đã mua nằm trong save** (ownership + reserve + upgrades) như mọi súng; **kho / DEAL / bộ đếm mua trong lượt không lưu** — TIẾP TỤC đổ đầy kho và xoá DEAL.
 - **XP / kỹ năng / hợp đồng / bom / giáp / HP không nằm trong save**: TIẾP TỤC chạy `freshRun` nên XP về 0, cấp 1, hợp đồng reroll, túi bom 2/1/0, giáp 0, HP đầy.
 
@@ -581,7 +628,7 @@ Hạn chế có chủ ý:
 | `gungame.codex.progress.v1` | Bộ đếm trigger tích luỹ: số survivor + 4 loại boss đã hạ |
 | `gungame.tutorial.v1` | Cờ `{done:true}` của tutorial lần đầu |
 
-Xoá một key sẽ reset đúng phần đó; **đừng xoá `gungame.profile.v1`** nếu muốn giữ thống kê trọn đời.
+Xoá một key sẽ reset đúng phần đó; **đừng xoá `gungame.profile.v1`** nếu muốn giữ thống kê trọn đời. Bundle **DỮ LIỆU LƯU** chứa **7 key** — tất cả key trên **trừ `gungame.tutorial.v1`**.
 
 ### 15.4 Debug API
 
@@ -601,6 +648,14 @@ Bổ sung cho thương lái / bom / XP / hợp đồng / thế giới:
 | `openContracts()` | Mở bảng hợp đồng → `{open}` |
 | `hazardsState()` | `{barrels, canisters, detonated, pending}` |
 | `detonateHazard(x, z)` | Kích nổ vật nổ gần nhất quanh `(x, z)` → `hazardsState()` |
+| `bossrushState()` | `{active, over, win, index, type, total, hp, maxHp, bossesDown, time, score, difficulty, waiting, aliveBosses}` |
+| `startBossRush()` | Bắt đầu Boss Rush ngay (tương đương nút ĐẤU BOSS) → `bossrushState()` |
+| `companionState()` | `{active, hp, maxHp, tier, x, z, shots}` — Mai đang hoạt động hay chưa |
+| `rescueCompanion()` | Bắn sự kiện cứu ngay cạnh người chơi để Mai tham gia → `companionState()` |
+| `weaponStats()` | `{name, damage, magSize, reloadTime, spread, headshotMult, interval, upgrades, attachments}` của súng đang cầm |
+| `photoState()` | `{open}` — chế độ ảnh đang mở hay không |
+| `togglePhoto()` | Bật/tắt chế độ ảnh (debug) → `{open}` |
+| `saveToolsState()` | `{lastExport, lastImport, keys}` — lần xuất/nhập gần nhất + key đang có |
 
 ```js
 __game.getState();            // nhiệm vụ, khu, sự kiện, Origin, NG+
@@ -610,6 +665,10 @@ __game.addXp(1000);           // thử overlay chọn kỹ năng
 __game.weatherState();        // chu kỳ thời tiết hiện tại
 __game.openContracts();       // mở bảng hợp đồng
 __game.detonateHazard(-60, 4);// thử dây chuyền barel
+__game.startBossRush();       // chuỗi 5 boss ở Vùng Cách Ly
+__game.rescueCompanion();     // Mai tham gia ngay
+__game.togglePhoto();         // bật/tắt chế độ ảnh
+__game.saveToolsState();      // lần xuất/nhập gần nhất
 ```
 
 Đây là công cụ debug — có thể làm hỏng tiến trình/save; chơi bình thường không cần dùng.
@@ -626,8 +685,77 @@ Tối đa **60 zombie sống đồng thời**; spawn dư xếp hàng chờ, khô
 - **XP hợp đồng:** thẻ ghi 90–320 XP và hệ thống kỹ năng cộng đúng lượng đó khi hợp đồng hoàn thành.
 - **Save lượt chơi**: nhiệm vụ đang làm chơi lại từ đầu, wave chạy lại từ 1, độ khó theo Settings hiện tại, Sinh Tồn không tạo save.
 - **Không có backend**: toàn bộ tiến trình nằm trong `localStorage`; xoá dữ liệu trang là mất sạch.
+- **Không có đồng bộ đám mây**: `F5`/`F9` chỉ xuất/nhập file JSON cục bộ; không tài khoản, không tự động sao lưu, không tải lên máy chủ.
+- **Boss Rush dùng chỉ số gốc**: HP 1200/800/600/2000/3000, không nhân wave, không NG+; độ khó chỉ nhân HP và `dmg` cận chiến, còn hằng số đòn đặc biệt trong `bosses.js`/`origin.js` giữ nguyên.
+- **Chế độ ảnh chỉ lưu PNG cục bộ**: không thư viện ảnh, không upload/chia sẻ; canvas bị chặn tải thì ảnh mất và không có thông báo.
+- **Sét vẫn chạy trong Boss Rush**: thời tiết không tắt ở chế độ này nên bão + sét gần có thể xen vào trận boss — đúng hành vi hiện tại, không phải lỗi.
+- **Chỉ có 1 đồng đội**: Mai; không có party, không có lệnh chỉ huy, và cô chỉ nhận sát thương từ splash nổ.
+- **Bundle lớn**: JS **~1.22 MB chưa nén** (gzip ~342.8 kB), Vite cảnh báo chunk > 500 kB; chưa code-split vì game tải một lần.
 
 
+
+## 16. Bổ sung Phase 4 — Boss Rush, chế độ ảnh & dữ liệu lưu
+
+### 16.1 Boss Rush — nút **ĐẤU BOSS**
+
+Bấm **ĐẤU BOSS** ở menu để chạy một lượt **mới tinh** trong **Vùng Cách Ly 60×60 m**: tiền $0, 3 súng khởi đầu, XP/perk reset, không intro, không nhiệm vụ, không wave thường. Đấu trường được dọn sạch trước boss đầu.
+
+| # | Boss | HP gốc | Điểm xuất hiện (x, z) | Thưởng |
+|---:|---|---:|---|---:|
+| 1 | **Đồ Tể** (`butcher`) | 1200 | (0, −12) | $1000 |
+| 2 | **Kẻ Phun Acid** (`spitter`) | 800 | (12, 0) | $1500 |
+| 3 | **Kẻ Gào Thét** (`screamer`) | 600 | (−12, 0) | $2000 |
+| 4 | **Người Đá** (`golem`) | 2000 | (0, 12) | $2500 |
+| 5 | **Nguồn Gốc** (`origin`) | 3000 | (0, 0) | $3000 |
+
+- **Một boss sống tại một thời điểm.** Boss kế xuất hiện sau **2.5 s** kể từ lúc boss trước gục; đồng hồ chạy bằng `dt` nên pause làm đóng băng khoảng nghỉ. Minion do boss triệu hồi vẫn tồn tại khi chuyển boss.
+- **Điểm** = `1000 × số boss đã hạ` + thưởng thời gian `round(max(0, 600 − giây) × 10)`. Thưởng tối đa **6000** ở 0:00, bằng **0** từ 10:00; thắng sạch 5 boss = **5000 + thưởng**, tối đa **11 000**.
+- **Độ khó** đọc từ Settings lúc bắt đầu, chỉ nhân **HP** và **`dmg` cận chiến**; không nhân wave, không NG+:
+
+  | Preset | HP | Sát thương |
+  |---|---|---|
+  | Dễ | ×0.75 | ×0.7 |
+  | Thường | ×1 | ×1 |
+  | Khó | ×1.35 | ×1.3 |
+
+- **Thắng** (hạ Nguồn Gốc) / **thua** (bạn chết) mở panel **BOSS RUSH HOÀN THÀNH / THẤT BẠI** với `THỜI GIAN` · `BOSS` · `ĐIỂM` và hai nút **CHƠI LẠI** (RETRY — run mới) / **MENU**. Panel modal, không đóng bằng click nền hay `Esc`.
+- **Không đè save cốt truyện**: snapshot save trả `null` trong suốt run và cả sau khi có kết quả, nên TIẾP TỤC vẫn là save story cũ.
+- **Perk có thể ngắt nhịp**: XP hạ boss có thể mở overlay chọn kỹ năng ngay sau khi boss gục; game tạm dừng nên khoảng nghỉ 2.5 s cũng đứng yên tới khi chọn xong.
+- **Thời tiết vẫn chạy**: mưa / bão / sương mù tiếp tục, nên **bão + sét gần vẫn có thể xảy ra**; event / mission / wave bị tắt.
+
+### 16.2 Chế độ ảnh — `F2` / `F4`
+
+| Phím / thao tác | Hành động |
+|---|---|
+| `F2` | Mở / đóng — chỉ từ trạng thái **đang chơi**, không mở khi overlay khác đang hiện |
+| `W` `A` `S` `D` | Bay theo trục camera (forward theo cả pitch) |
+| `Q` / `E` | Hạ / nâng theo trục thế giới |
+| `Shift` | Bay nhanh **×3** |
+| Kéo **chuột trái** | Xoay nhìn, pitch giới hạn ±85° (không cần pointer lock) |
+| `F4` | Lưu khung hình **PNG** |
+| `Esc` / `F2` / nút **ĐÓNG** | Thoát |
+
+- Mở ảnh → **game tạm dừng**, HUD + mọi lớp UI ẩn; đóng → khôi phục **đúng vị trí, quaternion, FOV, Euler order** của camera và hiện lại HUD.
+- Ảnh tải về `gun-game-photo-<timestamp>.png`; canvas bị chặn tải thì **im lặng**, không crash. Ảnh chỉ ở máy — **không upload/cloud**.
+- Đóng không tự khoá lại chuột; click canvas để vào pointer lock. Đổi sang menu / gameover / intro hoặc mở overlay khác sẽ tự đóng.
+
+### 16.3 Dữ liệu lưu — nút **DỮ LIỆU LƯU**, `F5` / `F9`
+
+Không tài khoản, không backend: **sao lưu = một file JSON cục bộ**. Mở bằng nút **DỮ LIỆU LƯU** ở menu; panel có **XUẤT** · **NHẬP** · **ĐÓNG**, mở khi đang chơi cũng **không tạm dừng game**. Phím tắt `F5` / `F9` hoạt động ở mọi trạng thái.
+
+| Key trong bundle | Nội dung |
+|---|---|
+| `gungame.save.v1` | Save lượt chơi: tiền, súng + nâng cấp + **phụ tùng**, nhiệm vụ, cổng, điểm, wave |
+| `gungame.profile.v1` | Thống kê trọn đời (kill, headshot, chết, giờ chơi, boss, tiền, kỷ lục) |
+| `gungame.achv.v1` | ID thành tựu đã mở |
+| `gungame.codex.v1` | Hồ sơ nhân vật `{chars, secrets}` |
+| `gungame.codex.progress.v1` | Bộ đếm tích luỹ: số survivor + 4 loại boss đã hạ |
+| `gungame.endless.v1` | Kỷ lục Sinh Tồn `{wave, score}` |
+| `gungame.settings` | Độ nhạy, âm lượng, ngôn ngữ, high score, độ khó, trợ năng |
+
+- Bundle: `{app:"gun-game", version:1, exportedAt, data:{…}}`; file `gun-game-save-YYYYMMDD-HHmm.json`. Chỉ key **đang có trên máy** được xuất; chuỗi JSON hỏng được giữ nguyên thay vì làm mất.
+- **Nhập** kiểm tra `app`, `version`, `data` object phẳng và **whitelist đúng 7 key**; key lạ (kể cả `__proto__`) bị bỏ qua. File hỏng / sai version / quá **5 MB** bị từ chối và **không ghi gì**.
+- Nhập thành công ghi đủ mục rồi **tự tải lại trang sau 300 ms**. **`gungame.tutorial.v1` không nằm trong bundle** — cờ tutorial theo từng máy. Không có đồng bộ đám mây.
 
 ## Tài liệu liên quan
 

@@ -18,12 +18,13 @@
  *   "G — THƯƠNG LƯỢNG" appears (above the weapon bar, z-index below every
  *   overlay). Pressing G there opens the trade overlay. Pressing G farther
  *   away shows a 2 s toast "Tìm Thương Lái ở An Toàn Nhà".
- * - The overlay: dark panel like the shop's, header THE TRADER + CASH, three
- *   tabs (WEAPONS / EXPLOSIVES / GEAR), responsive 2-column cards with a CSS
- *   glyph, localized name + description, price, stock/owned state, DEAL badge
- *   and a BUY button. Insufficient cash / stock / requirements show the exact
- *   reason and disable the button. The panel scrolls; max-height never
- *   exceeds the viewport.
+ * - The overlay: dark panel like the shop's, header THE TRADER + CASH, four
+ *   tabs (WEAPONS / EXPLOSIVES / GEAR / ATTACHMENTS), responsive 2-column
+ *   cards with a CSS glyph, localized name + description, price, stock/owned
+ *   state, DEAL badge and a BUY button. The ATTACHMENTS tab names the active
+ *   weapon it will fit and follows weapon switches while open. Insufficient
+ *   cash / stock / requirements show the exact reason and disable the button.
+ *   The panel scrolls; max-height never exceeds the viewport.
  * - Open choreography (the reason gamestate pauses): overlay opens ONLY from
  *   "playing", emits "merchant-open" FIRST, then releases pointer lock, then
  *   shows the panel. Close (G / Esc / backdrop / CLOSE) hides the panel, emits
@@ -34,7 +35,8 @@
  *
  * Bus consumed: "state-changed" (gate open to playing, force-close on
  *   menu/gameover/intro), "money-changed", "merchant-purchase",
- *   "shop-open"/"shop-closed", "help-open"/"help-closed", "settings-changed".
+ *   "weapon-switched", "attachment-bought", "shop-open"/"shop-closed",
+ *   "help-open"/"help-closed", "settings-changed".
  * Bus emitted: "merchant-open", "merchant-closed".
  *
  * @param {HTMLElement} uiRoot - the #ui element.
@@ -58,6 +60,9 @@ export const MERCHANT_BUNDLE = {
     merchantTabWeapons: "WEAPONS",
     merchantTabExplosives: "EXPLOSIVES",
     merchantTabGear: "GEAR",
+    merchantTabAttachments: "ATTACHMENTS",
+    merchantAttachFor: "FITS: {weapon}",
+    merchantAttachApplied: "FITTED: {name} · {weapon}",
     merchantClose: "CLOSE",
     merchantCloseHint: "G / ESC — close",
     merchantBuy: "BUY",
@@ -98,6 +103,26 @@ export const MERCHANT_BUNDLE = {
     merchantDescMysteryCrate: "A random haul: cash, armor, ammo or frags.",
     merchantItemStimShot: "Stim Shot",
     merchantDescStimShot: "+35 HP and +10% speed for 20 s.",
+    merchantItemScope: "Scope",
+    merchantDescScope: "−35% spread. Tightest groups on any gun.",
+    merchantItemExtmag: "Extended Mag",
+    merchantDescExtmag: "+50% magazine capacity, rounded up.",
+    merchantItemSuppressor: "Suppressor",
+    merchantDescSuppressor: "−25% recoil, −20% spread. Longer dark barrel.",
+    merchantItemLaser: "Laser Sight",
+    merchantDescLaser: "−25% spread. Adds a red dot.",
+    merchantWeaponPistol: "Pistol",
+    merchantWeaponShotgun: "Shotgun",
+    merchantWeaponRifle: "Rifle",
+    merchantWeaponSmg: "SMG",
+    merchantWeaponSniper: "Sniper",
+    merchantWeaponMinigun: "Minigun",
+    merchantWeaponGrenade: "Grenade Launcher",
+    merchantWeaponMagnum: "Magnum",
+    merchantWeaponDmr: "Marksman Rifle",
+    merchantWeaponRailgun: "Railgun",
+    merchantWeaponSawnoff: "Sawn-off",
+    merchantWeaponCrossbow: "Crossbow",
   },
   vi: {
     merchantTitle: "THƯƠNG LÁI",
@@ -105,6 +130,9 @@ export const MERCHANT_BUNDLE = {
     merchantTabWeapons: "VŨ KHÍ",
     merchantTabExplosives: "CHẤT NỔ",
     merchantTabGear: "TRANG BỊ",
+    merchantTabAttachments: "PHỤ TÙNG",
+    merchantAttachFor: "LẮP CHO: {weapon}",
+    merchantAttachApplied: "ĐÃ LẮP: {name} · {weapon}",
     merchantClose: "ĐÓNG",
     merchantCloseHint: "G / ESC — đóng",
     merchantBuy: "MUA",
@@ -145,6 +173,26 @@ export const MERCHANT_BUNDLE = {
     merchantDescMysteryCrate: "Hàng ngẫu nhiên: tiền, giáp, đạn hoặc lựu đạn.",
     merchantItemStimShot: "Thuốc Kích Thích",
     merchantDescStimShot: "+35 máu và +10% tốc độ trong 20 giây.",
+    merchantItemScope: "Ống Ngắm",
+    merchantDescScope: "−35% độ tản. Bắn chụm nhất trên mọi súng.",
+    merchantItemExtmag: "Băng Đạn Mở Rộng",
+    merchantDescExtmag: "+50% sức chứa băng đạn, làm tròn lên.",
+    merchantItemSuppressor: "Giảm Thanh",
+    merchantDescSuppressor: "−25% giật, −20% độ tản. Nòng dài màu tối.",
+    merchantItemLaser: "Đèn Laser",
+    merchantDescLaser: "−25% độ tản. Thêm chấm đỏ.",
+    merchantWeaponPistol: "Súng ngắn",
+    merchantWeaponShotgun: "Shotgun",
+    merchantWeaponRifle: "Súng trường",
+    merchantWeaponSmg: "SMG",
+    merchantWeaponSniper: "Súng bắn tỉa",
+    merchantWeaponMinigun: "Minigun",
+    merchantWeaponGrenade: "Súng phóng lựu",
+    merchantWeaponMagnum: "Súng Lục Magnum",
+    merchantWeaponDmr: "Súng Bắn Tỉa DMR",
+    merchantWeaponRailgun: "Súng Điện Từ",
+    merchantWeaponSawnoff: "Súng Cưa Đôi",
+    merchantWeaponCrossbow: "Nỏ Săn",
   },
 };
 
@@ -160,6 +208,10 @@ const ITEM_ICONS = {
   bolts: "⇉",
   mystery_crate: "▤",
   stim_shot: "⚡",
+  scope: "⌖",
+  extmag: "▥",
+  suppressor: "▬",
+  laser: "•",
 };
 
 const MERCHANT_CSS = `
@@ -267,6 +319,15 @@ const MERCHANT_CSS = `
 .gg-merchant-tab.active {
   color: var(--gg-gold, #ffd35e);
   border-bottom-color: var(--gg-gold, #ffd35e);
+}
+.gg-merchant-attach {
+  display: none;
+  margin: -2px 0 10px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #ffc87a;
 }
 .gg-merchant-scroll {
   overflow-y: auto;
@@ -771,6 +832,7 @@ export function createMerchantUI(uiRoot, bus, merchant, i18n, camera, player, sc
     { id: "weapons", kind: "weapon", labelKey: "merchantTabWeapons" },
     { id: "explosives", kind: "explosive", labelKey: "merchantTabExplosives" },
     { id: "gear", kind: "gear", labelKey: "merchantTabGear" },
+    { id: "attachments", kind: "attachment", labelKey: "merchantTabAttachments" },
   ];
   /** @type {Record<string, HTMLElement>} */
   const tabButtons = {};
@@ -787,6 +849,7 @@ export function createMerchantUI(uiRoot, bus, merchant, i18n, camera, player, sc
     tabButtons[t.id] = btn;
   }
 
+  const attachFor = make("div", "gg-merchant-attach", panel);
   const scroll = make("div", "gg-merchant-scroll", panel);
   const grid = make("div", "gg-merchant-grid", scroll);
   const status = make("div", "gg-merchant-status", panel);
@@ -797,16 +860,57 @@ export function createMerchantUI(uiRoot, bus, merchant, i18n, camera, player, sc
   /** @type {Array<{entry: Object, root: HTMLElement, name: HTMLElement, desc: HTMLElement, badge: HTMLElement, stock: HTMLElement, price: HTMLElement, btn: HTMLButtonElement}>} */
   const cards = [];
 
-  function cap(s) {
-    return s.charAt(0).toUpperCase() + s.slice(1);
+  /** "frag_pack" → "FragPack", "scope" → "Scope" (bundle key stem). */
+  function pascal(s) {
+    const parts = String(s).split(/[^A-Za-z0-9]+/).filter(Boolean);
+    let out = "";
+    for (let i = 0; i < parts.length; i++) {
+      out += parts[i].charAt(0).toUpperCase() + parts[i].slice(1);
+    }
+    return out;
+  }
+
+  const WEAPON_NAME_KEYS = {
+    pistol: "merchantWeaponPistol",
+    shotgun: "merchantWeaponShotgun",
+    rifle: "merchantWeaponRifle",
+    smg: "merchantWeaponSmg",
+    sniper: "merchantWeaponSniper",
+    minigun: "merchantWeaponMinigun",
+    grenade: "merchantWeaponGrenade",
+    magnum: "merchantWeaponMagnum",
+    dmr: "merchantWeaponDmr",
+    railgun: "merchantWeaponRailgun",
+    sawnoff: "merchantWeaponSawnoff",
+    crossbow: "merchantWeaponCrossbow",
+  };
+
+  /** Localized weapon name (falls back to the raw id). */
+  function weaponName(name) {
+    const key = WEAPON_NAME_KEYS[name];
+    return key ? tr(key) : String(name || "");
+  }
+
+  /** Bundle key stem: attachment entries use entry.attachment, not "att:x". */
+  function stemOf(entry) {
+    return entry && entry.kind === "attachment" && entry.attachment
+      ? entry.attachment
+      : entry.id;
+  }
+
+  function itemKey(entry) {
+    return "merchantItem" + pascal(stemOf(entry));
+  }
+
+  function descKey(entry) {
+    return "merchantDesc" + pascal(stemOf(entry));
   }
 
   function tabOfKind(kind) {
-    return kind === "weapon"
-      ? "weapons"
-      : kind === "explosive"
-        ? "explosives"
-        : "gear";
+    if (kind === "weapon") return "weapons";
+    if (kind === "explosive") return "explosives";
+    if (kind === "attachment") return "attachments";
+    return "gear";
   }
 
   for (let i = 0; i < catalog.length; i++) {
@@ -815,7 +919,7 @@ export function createMerchantUI(uiRoot, bus, merchant, i18n, camera, player, sc
     const root = make("div", "gg-merchant-card", grid);
     const top = make("div", "gg-merchant-card-top", root);
     const icon = make("span", "gg-merchant-icon", top);
-    icon.textContent = ITEM_ICONS[entry.id] || "•";
+    icon.textContent = ITEM_ICONS[entry.attachment || entry.id] || "•";
     const name = make("span", "gg-merchant-name", top);
     const badge = make("span", "gg-merchant-badge", top);
     const desc = make("div", "gg-merchant-desc", root);
@@ -843,8 +947,8 @@ export function createMerchantUI(uiRoot, bus, merchant, i18n, camera, player, sc
     const card = { entry, root, name, desc, badge, stock, price, btn };
     cards.push(card);
     // Name/desc text (live language switch re-runs applyTexts).
-    name.textContent = tr("merchantItem" + cap(entry.id));
-    desc.textContent = tr("merchantDesc" + cap(entry.id));
+    name.textContent = tr(itemKey(entry));
+    desc.textContent = tr(descKey(entry));
   }
 
   // --- state ------------------------------------------------------------------
@@ -860,7 +964,15 @@ export function createMerchantUI(uiRoot, bus, merchant, i18n, camera, player, sc
   function stateNow() {
     return merchant && typeof merchant.state === "function"
       ? merchant.state()
-      : { money: 0, wave: 0, entries: [] };
+      : { money: 0, wave: 0, activeWeapon: null, entries: [] };
+  }
+
+  /** Attachment target line ("FITS: <active gun>"), visible on its tab only. */
+  function refreshAttachFor(st) {
+    const state = st || stateNow();
+    const name = state.activeWeapon ? weaponName(state.activeWeapon) : "—";
+    attachFor.textContent = tr("merchantAttachFor", { weapon: name });
+    attachFor.style.display = activeTab === "attachments" ? "block" : "none";
   }
 
   function setTab(id) {
@@ -878,6 +990,7 @@ export function createMerchantUI(uiRoot, bus, merchant, i18n, camera, player, sc
       const show = tabOfKind(card.entry.kind) === id;
       card.root.style.display = show ? "flex" : "none";
     }
+    refreshAttachFor();
   }
 
   function reasonLabel(reason) {
@@ -912,8 +1025,14 @@ export function createMerchantUI(uiRoot, bus, merchant, i18n, camera, player, sc
         time: fmtInt(effect.time),
       });
     }
+    if (effect.type === "attachment") {
+      return tr("merchantAttachApplied", {
+        name: tr(itemKey(entry)),
+        weapon: weaponName(effect.weapon),
+      });
+    }
     return tr("merchantPurchased", {
-      name: tr("merchantItem" + cap(entry.id)),
+      name: tr(itemKey(entry)),
     });
   }
 
@@ -921,6 +1040,7 @@ export function createMerchantUI(uiRoot, bus, merchant, i18n, camera, player, sc
   function refresh() {
     const st = stateNow();
     balanceVal.textContent = "$" + fmtInt(st.money);
+    refreshAttachFor(st);
     const byId = Object.create(null);
     for (let i = 0; i < st.entries.length; i++) byId[st.entries[i].id] = st.entries[i];
     for (let i = 0; i < cards.length; i++) {
@@ -960,8 +1080,8 @@ export function createMerchantUI(uiRoot, bus, merchant, i18n, camera, player, sc
     }
     for (let i = 0; i < cards.length; i++) {
       const card = cards[i];
-      card.name.textContent = tr("merchantItem" + cap(card.entry.id));
-      card.desc.textContent = tr("merchantDesc" + cap(card.entry.id));
+      card.name.textContent = tr(itemKey(card.entry));
+      card.desc.textContent = tr(descKey(card.entry));
     }
     refresh();
   }
@@ -1086,6 +1206,14 @@ export function createMerchantUI(uiRoot, bus, merchant, i18n, camera, player, sc
     if (openFlag) refresh();
   });
   bus.addEventListener("merchant-purchase", () => {
+    if (openFlag) refresh();
+  });
+  // Attachments are per active weapon: refresh the OWNED state when the gun
+  // changes (or a part is fitted outside the buy flow) while the overlay is up.
+  bus.addEventListener("weapon-switched", () => {
+    if (openFlag) refresh();
+  });
+  bus.addEventListener("attachment-bought", () => {
     if (openFlag) refresh();
   });
   bus.addEventListener("settings-changed", (e) => {

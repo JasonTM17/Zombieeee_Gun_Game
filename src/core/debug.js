@@ -166,6 +166,14 @@ const DEBUG_KEYS = [
   "openContracts",
   "hazardsState",
   "detonateHazard",
+  "bossrushState",
+  "startBossRush",
+  "companionState",
+  "rescueCompanion",
+  "weaponStats",
+  "photoState",
+  "togglePhoto",
+  "saveToolsState",
 ];
 
 export function createDebugHook() {

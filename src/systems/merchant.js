@@ -6,10 +6,11 @@
  *
  * The merchant is the COUNTERPART of systems/shop.js (the B-key armory
  * overlay): same money rules (every purchase flows through economy.spend()),
- * but a separate, FROZEN 11-entry catalog, per-run stock, and a restock every
- * 5 cleared waves with ONE random "DEAL −25 %" item. The two weapon entries
- * are merchant-exclusive: they unlock by name through weapons.list (`owned`),
- * exactly like the shop's B4 guns.
+ * but a separate catalog (11 original entries + 4 TRADER ATTACHMENTS), per-run
+ * stock, and a restock every 5 cleared waves with ONE random "DEAL −25 %" item
+ * (attachments never enter the deal pool — their prices are frozen). The two
+ * weapon entries are merchant-exclusive: they unlock by name through
+ * weapons.list (`owned`), exactly like the shop's B4 guns.
  *
  * CATALOG (FROZEN — ids/prices/stock):
  *   WEAPONS     sawnoff       $650  stock 1  double-barrel, close range
@@ -23,6 +24,10 @@
  *               bolts          $60  stock 5  +24 crossbow reserve (owned only)
  *               mystery_crate $250  stock 2  random cash/armor/ammo/frags
  *               stim_shot     $180  stock 3  +35 HP + 10 % speed for 20 s
+ *   ATTACHMENTS att:scope       $450  stock 2  −35 % spread, max 1/gun
+ *               att:extmag      $400  stock 2  +50 % mag, max 1/gun
+ *               att:suppressor  $500  stock 2  −25 % recoil, −20 % spread
+ *               att:laser       $350  stock 2  −25 % spread + red dot
  *
  * RULES
  * - One shared reason vocabulary: "unknown" | "owned" | "no-stock" |
@@ -31,6 +36,12 @@
  *   button without re-deriving the rules.
  * - Stock decrements ONLY after economy.spend() succeeds; an owned weapon is
  *   never charged twice (idempotent unlock).
+ * - Attachment purchases use the "att:<id>" id and apply to the ACTIVE
+ *   weapon via weapons.applyAttachment(id); ownership is per weapon, so the
+ *   card is "owned" only while that gun holds the part. Stock is shared
+ *   across weapons (2 per run). Success emits "attachment-bought"
+ *   {weapon, attachment}; every success (attachments included) also emits
+ *   "merchant-purchase" {id: "att:<id>", kind: "attachment", price}.
  * - Weapon purchase: weapons.unlock(name) when present (full mag + reserve +
  *   stock upgrades), then the runtime entry is forced to owned = true,
  *   mag = magSize, reserve = startReserve. A weapons build without the entry
@@ -65,21 +76,25 @@
 /**
  * @typedef {Object} MerchantEntry
  * @property {string} id
- * @property {"weapon"|"explosive"|"gear"} kind
+ * @property {"weapon"|"explosive"|"gear"|"attachment"} kind
  * @property {number} price - base price (the DEAL discount is applied on top).
  * @property {number} maxStock - per-run stock cap.
+ * @property {string} [attachment] - attachment id ("scope"|"extmag"|…).
  */
 
 /**
  * @typedef {Object} MerchantStateEntry
  * @property {string} id
- * @property {"weapon"|"explosive"|"gear"} kind
+ * @property {"weapon"|"explosive"|"gear"|"attachment"} kind
  * @property {number} price - the price RIGHT NOW (deal applied).
  * @property {number} basePrice
  * @property {number} stock
  * @property {number} maxStock
  * @property {boolean} deal
- * @property {boolean} owned - weapon already owned (always false for gear).
+ * @property {boolean} owned - weapon already owned / attachment already on
+ *   the ACTIVE gun (always false for gear).
+ * @property {string|null} weapon - the active weapon an attachment would fit
+ *   (null for every other kind).
  * @property {string|null} reason - null when buyable, else a buy() reason.
  */
 
@@ -87,6 +102,7 @@
  * @typedef {Object} MerchantState
  * @property {number} money
  * @property {number} wave - wave number of the last restock (0 = initial).
+ * @property {string|null} activeWeapon - current gun name (attachment target).
  * @property {MerchantStateEntry[]} entries
  */
 
@@ -101,6 +117,7 @@
  */
 
 import { bus as sharedBus } from "./gamestate.js";
+import { ATTACHMENTS } from "../player/weapons.js";
 
 const DEAL_MULT = 0.75;
 
@@ -141,7 +158,21 @@ export const MERCHANT_CATALOG = Object.freeze([
   { id: "bolts", kind: "gear", price: 60, maxStock: 5, effect: "bolts" },
   { id: "mystery_crate", kind: "gear", price: 250, maxStock: 2, effect: "crate" },
   { id: "stim_shot", kind: "gear", price: 180, maxStock: 3, effect: "stim" },
+  // --- ATTACHMENTS (TRADER ATTACHMENTS — applied to the ACTIVE weapon) ------
+  // Prices come from weapons.js's frozen ATTACHMENTS table (one source of
+  // truth). Per-run stock 2 each; never part of the random DEAL pool.
+  ...ATTACHMENTS.map((a) => ({
+    id: "att:" + a.id,
+    kind: "attachment",
+    price: a.price,
+    maxStock: 2,
+    effect: "attachment",
+    attachment: a.id,
+  })),
 ]);
+
+/** Deal candidates: the original shop goods only (attachment prices frozen). */
+const DEAL_POOL = MERCHANT_CATALOG.filter((e) => e.kind !== "attachment");
 
 /** Small deterministic PRNG so a restock's deal is reproducible per wave. */
 function makeRng(seed) {
@@ -184,6 +215,35 @@ export function createMerchant(bus, economy, weapons, player) {
       if (list[i] && list[i].name === name) return list[i];
     }
     return null;
+  }
+
+  /** The gun attachments apply to (the always-present ACTIVE weapon). */
+  function activeWeapon() {
+    if (!weapons) return null;
+    const idx = Number(weapons.current);
+    if (Number.isInteger(idx) && list[idx]) return list[idx];
+    if (typeof weapons.getState === "function") {
+      try {
+        return weapons.getState();
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  /** Catalog entry → attachment id (entry.attachment, "att:<id>" fallback). */
+  function attachmentIdOf(entry) {
+    if (entry && typeof entry.attachment === "string") return entry.attachment;
+    const id = entry && typeof entry.id === "string" ? entry.id : "";
+    return id.indexOf("att:") === 0 ? id.slice(4) : id;
+  }
+
+  /** True when the ACTIVE weapon already holds this attachment. */
+  function isAttachmentOwned(entry) {
+    const w = activeWeapon();
+    if (!w || !w.attachments) return false;
+    return w.attachments[attachmentIdOf(entry)] === true;
   }
 
   function isWeaponOwned(name) {
@@ -239,6 +299,32 @@ export function createMerchant(bus, economy, weapons, player) {
 
   /** Apply one bought entry's effect (called AFTER a successful spend). */
   function applyEffect(entry) {
+    if (entry.effect === "attachment") {
+      const id = attachmentIdOf(entry);
+      let applied = false;
+      if (weapons && typeof weapons.applyAttachment === "function") {
+        try {
+          applied = weapons.applyAttachment(id) === true;
+        } catch {
+          applied = false;
+        }
+      }
+      const w = activeWeapon();
+      if (applied && w) {
+        B.dispatchEvent(
+          new CustomEvent("attachment-bought", {
+            detail: { weapon: w.name, attachment: id },
+          })
+        );
+      }
+      return {
+        type: "attachment",
+        attachment: id,
+        weapon: w ? w.name : null,
+        applied,
+      };
+    }
+
     if (entry.effect === "weapon") {
       boughtWeapons.add(entry.id);
       if (weapons && typeof weapons.unlock === "function") {
@@ -320,7 +406,11 @@ export function createMerchant(bus, economy, weapons, player) {
 
   /** Why the entry cannot be bought right now (null = buyable). */
   function reasonFor(entry) {
-    if (entry.kind === "weapon" && isWeaponOwned(entry.id)) return "owned";
+    if (entry.kind === "attachment") {
+      if (isAttachmentOwned(entry)) return "owned";
+    } else if (entry.kind === "weapon" && isWeaponOwned(entry.id)) {
+      return "owned";
+    }
     if ((stock[entry.id] | 0) <= 0) return "no-stock";
     if (entry.id === "bolts" && !isWeaponOwned("crossbow")) {
       return "need-crossbow";
@@ -360,6 +450,13 @@ export function createMerchant(bus, economy, weapons, player) {
 
     stock[id] = Math.max(0, (stock[id] | 0) - 1);
     const effect = applyEffect(entry);
+    // Defensive: applyAttachment can only fail on a race/duplicate. Never
+    // charge for a part that was not fitted — restore stock and refund.
+    if (entry.kind === "attachment" && (!effect || effect.applied !== true)) {
+      stock[id] = Math.min(entry.maxStock, (stock[id] | 0) + 1);
+      if (economy && typeof economy.add === "function") economy.add(price);
+      return { ok: false, reason: "owned" };
+    }
     B.dispatchEvent(
       new CustomEvent("merchant-purchase", {
         detail: { id: entry.id, kind: entry.kind, price },
@@ -380,8 +477,8 @@ export function createMerchant(bus, economy, weapons, player) {
     const rng = makeRng(
       (0x9e3779b9 ^ Math.imul(wave | 0, 2654435761) ^ refreshSeq) >>> 0
     );
-    const idx = Math.floor(rng() * MERCHANT_CATALOG.length);
-    dealId = MERCHANT_CATALOG[idx] ? MERCHANT_CATALOG[idx].id : null;
+    const idx = Math.floor(rng() * DEAL_POOL.length);
+    dealId = DEAL_POOL[idx] ? DEAL_POOL[idx].id : null;
   }
 
   /** Fresh run: stock back to full, deal + merchant guns forgotten. */
@@ -397,42 +494,36 @@ export function createMerchant(bus, economy, weapons, player) {
     clearCounter = 0;
   }
 
-  /** Fresh {money, wave, entries} snapshot for the overlay. */
+  /** Fresh {money, wave, activeWeapon, entries} snapshot for the overlay. */
   function state() {
     const cash = money();
+    const w = activeWeapon();
+    const activeName = w ? w.name : null;
     const entries = [];
     for (let i = 0; i < MERCHANT_CATALOG.length; i++) {
       const e = MERCHANT_CATALOG[i];
       const deal = dealId === e.id;
       const price = deal ? Math.round(e.price * DEAL_MULT) : e.price;
-      const owned = e.kind === "weapon" ? isWeaponOwned(e.id) : false;
-      const s = stock[e.id] | 0;
-      let reason = null;
-      if (owned) reason = "owned";
-      else if (s <= 0) reason = "no-stock";
-      else if (e.id === "bolts" && !isWeaponOwned("crossbow")) {
-        reason = "need-crossbow";
-      } else if (
-        (e.id === "medkit" || e.id === "stim_shot") &&
-        player &&
-        player.alive === false
-      ) {
-        reason = "dead";
-      } else if (cash < price) reason = "no-money";
-
+      const owned =
+        e.kind === "weapon"
+          ? isWeaponOwned(e.id)
+          : e.kind === "attachment"
+            ? isAttachmentOwned(e)
+            : false;
       entries.push({
         id: e.id,
         kind: e.kind,
         price,
         basePrice: e.price,
-        stock: s,
+        stock: stock[e.id] | 0,
         maxStock: e.maxStock,
         deal,
         owned,
-        reason,
+        weapon: e.kind === "attachment" ? activeName : null,
+        reason: reasonFor(e),
       });
     }
-    return { money: cash, wave, entries };
+    return { money: cash, wave, activeWeapon: activeName, entries };
   }
 
   // Restock on every 5th cleared wave (internal counter — the merchant holds
