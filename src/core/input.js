@@ -273,6 +273,14 @@ export function createInput(canvas, settings) {
     down.delete("Mouse" + e.button);
   });
 
+  // The right button is aim-down-sights; the OS context menu must never
+  // interrupt it (or steal the pointer-lock click that follows).
+  document.addEventListener("contextmenu", (e) => {
+    if (isLockedNow() && typeof e.preventDefault === "function") {
+      e.preventDefault();
+    }
+  });
+
   window.addEventListener(
     "wheel",
     (e) => {
@@ -368,13 +376,18 @@ export function createInput(canvas, settings) {
     return down.has(code);
   }
 
+  // Aim-down-sights slows the look: main.js calls setLookScale(<1) while the
+  // right button zooms a scoped weapon, back to 1 the frame it releases.
+  let lookScale = 1;
+
   function consumeMouseDelta() {
     const s =
       settings && typeof settings.get === "function"
         ? settings.get().sensitivity
         : 1;
     const sens = Number.isFinite(s) && s > 0 ? s : 1;
-    const out = { dx: accX * sens, dy: accY * sens };
+    const k = sens * lookScale;
+    const out = { dx: accX * k, dy: accY * k };
     accX = 0;
     accY = 0;
     return out;
@@ -424,6 +437,10 @@ export function createInput(canvas, settings) {
   return {
     isDown,
     consumeMouseDelta,
+    /** Aim-zoom look multiplier; main.js drives it while RMB is held. */
+    setLookScale(v) {
+      lookScale = Number.isFinite(v) && v > 0 ? v : 1;
+    },
     consumeClick,
     wheelDir,
     wasPressed,

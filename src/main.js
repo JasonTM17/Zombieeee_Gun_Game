@@ -213,7 +213,7 @@
  */
 
 import * as THREE from "three";
-import { createEngine } from "./core/engine.js";
+import { createEngine, sanitizeFov } from "./core/engine.js";
 import { createSettings } from "./core/settings.js";
 import * as i18n from "./core/i18n.js";
 import { createAudio } from "./core/audio.js";
@@ -1599,6 +1599,16 @@ const musicState = { state: "menu", hp: 100, wave: 0, boss: null };
  * @returns {{x: number, z: number}|null}
  */
 function missionMarker() {
+  // Single source of truth: the missions beacon already resolves the first
+  // unfinished objective to a concrete point (POI for activate/collect,
+  // district center for quota/survive, reach coords) and refreshes only on
+  // progress changes — reading it here is free and can't drift out of sync.
+  const b = missions.beacon;
+  if (b && b.visible === true) {
+    hudMissionScratch.x = b.position.x;
+    hudMissionScratch.z = b.position.z;
+    return hudMissionScratch;
+  }
   const objs = missions.objectives;
   if (!Array.isArray(objs) || objs.length === 0) return null;
   let o = null;
@@ -1878,6 +1888,33 @@ const SHARED_STEPS = [
 
 // --- main loop ---------------------------------------------------------------------
 
+// --- aim-down-sights -------------------------------------------------------------
+// Holding the right mouse button while playing zooms the camera for weapons
+// that can aim: inherent scopes (sniper / dmr / railgun / crossbow via the
+// def's adsFov) or any gun with the trader "scope" attachment fitted (fov
+// 55). The FOV eases toward its target so there is no pop, the look
+// sensitivity scales down with the zoom, and the base FOV always comes from
+// the settings value (applyFov keeps writing it — we overwrite per-frame).
+let adsBlend = 0;
+
+function updateAds(dt) {
+  const w = weapons && weapons.list ? weapons.list[weapons.current] : null;
+  const scoped = !!(w && (w.adsFov > 0 || (w.attachments && w.attachments.scope)));
+  const aiming =
+    gamestate.state === "playing" && scoped && input.isDown("Mouse2");
+  const base = sanitizeFov(settings.get().fov);
+  const target = aiming ? Math.min(w.adsFov || 55, base) : base;
+  // ~90 ms ease in/out; snap the last sliver so updateProjectionMatrix stops.
+  adsBlend += ((aiming ? 1 : 0) - adsBlend) * Math.min(1, dt * 12);
+  if (Math.abs((aiming ? 1 : 0) - adsBlend) < 0.01) adsBlend = aiming ? 1 : 0;
+  const fov = base + (target - base) * adsBlend;
+  if (Math.abs(camera.fov - fov) > 0.01) {
+    camera.fov = fov;
+    camera.updateProjectionMatrix();
+  }
+  input.setLookScale(1 - adsBlend * 0.45);
+}
+
 function frame() {
   requestAnimationFrame(frame);
 
@@ -1898,6 +1935,7 @@ function frame() {
   }
   // paused: render only.
 
+  updateAds(dt); // RMB scope zoom — eases FOV, scales look sensitivity
   runSteps(SHARED_STEPS, dt);
   if (profOn) profAdd("__frame", performance.now() - f0);
 }

@@ -380,6 +380,7 @@ const WEAPONS = [
     startReserve: 25,
     reloadTime: 2.4,         // not spec-fixed — see table note
     headshotMult: 3,         // B6: combat.js reads this from the state
+    adsFov: 30,              // inherent scope → RMB aims (main.js updateAds)
     kick: 0.05,
     yawKick: 0.004,
     vmKick: 0.12,
@@ -450,6 +451,7 @@ const WEAPONS = [
     startReserve: 70,
     reloadTime: 2.0,
     headshotMult: 2.5,
+    adsFov: 42,
     kick: 0.028,
     yawKick: 0.003,
     vmKick: 0.07,
@@ -468,6 +470,7 @@ const WEAPONS = [
     startReserve: 12,
     reloadTime: 3.0,
     headshotMult: 2,
+    adsFov: 28,
     kick: 0.07,
     yawKick: 0,
     vmKick: 0.14,
@@ -510,6 +513,7 @@ const WEAPONS = [
     startReserve: 24,
     reloadTime: 1.7,
     headshotMult: 3,
+    adsFov: 50,
     kick: 0.025,
     yawKick: 0,
     vmKick: 0.06,
@@ -818,6 +822,7 @@ export function createWeapons(camera, input, audio, bus) {
     startReserve: w.startReserve,
     headshotMult: w.headshotMult || 2,
     explosive: w.explosive === true,
+    adsFov: w.adsFov || 0,
     // Merchant-exclusive metadata (additive; ignored by combat/HUD). The
     // physical merchant reads these to price its two guns; the standard shop
     // catalog deliberately never lists them.

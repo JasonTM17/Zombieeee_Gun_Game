@@ -818,6 +818,24 @@ export function createHud(container, bus, audio, i18n) {
   compassWrap.appendChild(compassCanvas);
   const compassCtx = compassCanvas.getContext("2d");
 
+  // P2+ mission waypoint: a floating ◆ + distance tag projected onto the
+  // objective through extras.cam — pins to the screen edge when the target
+  // sits behind the camera, so the player always knows which way to run.
+  const mMarker = make("div", "mission-marker", root);
+  css(mMarker, {
+    position: "absolute",
+    left: "0",
+    top: "0",
+    display: "none",
+    pointerEvents: "none",
+    color: "#ffd257",
+    fontWeight: "800",
+    fontSize: "15px",
+    textShadow: "0 0 6px rgba(0,0,0,0.9), 0 0 14px rgba(255,210,87,0.45)",
+    whiteSpace: "nowrap",
+    zIndex: "6",
+  });
+
   // P2 event banner — its OWN node (§4.3: never reuse the wave banner node),
   // animated with WAAPI (style.css is frozen — no new keyframes).
   const eventBanner = make("div", "event-banner", root);
@@ -1560,6 +1578,10 @@ export function createHud(container, bus, audio, i18n) {
   let wbarRes = ""; // last painted reserve text
   let wbarAmmoTxt = ""; // "mag/reserve" — rebuilt only when either changes
 
+  // Mission waypoint widget state (painted each frame while a target exists).
+  let mShown = false;
+  let prevMText = "";
+
   // Per-frame scratch for the optional extras argument (zero allocation).
   const bossScratch = {
     has: false,
@@ -2173,6 +2195,10 @@ export function createHud(container, bus, audio, i18n) {
       evBannerAnim = null;
     }
     hideCompass();
+    if (mShown) {
+      mShown = false;
+      mMarker.style.display = "none";
+    }
     hideDmgNumbers(); // GUN GAME 2.0 P4: no floating numbers survive a run end
     mapOpen = false; // the map closes itself on the same states — stay in sync
   }
@@ -2977,6 +3003,53 @@ export function createHud(container, bus, audio, i18n) {
       }
     } else {
       hideCompass();
+    }
+
+    // --- mission waypoint marker (◆ + distance, pinned to edge when behind) --
+    const mCam = extras ? extras.cam : null;
+    const mOn =
+      s.hasMission &&
+      s.hasYaw &&
+      !mapOpen &&
+      mCam &&
+      mCam.projectionMatrix &&
+      mCam.matrixWorldInverse;
+    if (mOn) {
+      const dxm = s.mx - player.position.x;
+      const dzm = s.mz - player.position.z;
+      const dist = Math.sqrt(dxm * dxm + dzm * dzm);
+      const cosY = Math.cos(s.yaw);
+      const sinY = Math.sin(s.yaw);
+      const rightD = dxm * cosY - dzm * sinY;
+      const fwdD = -dxm * sinY - dzm * cosY;
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      let px;
+      let py;
+      if (fwdD > 0.3) {
+        // In front: project the 2.4 m float height for a true world anchor.
+        dmgV.set(s.mx, 2.4, s.mz).project(mCam);
+        px = clamp((dmgV.x * 0.5 + 0.5) * w, 24, w - 24);
+        py = clamp((-dmgV.y * 0.5 + 0.5) * h, 44, h - 44);
+      } else {
+        // Behind / hard-side: pin to the edge on the target's side.
+        px = rightD >= 0 ? w - 30 : 30;
+        py = h * 0.45;
+      }
+      mMarker.style.transform =
+        "translate(" + Math.round(px) + "px," + Math.round(py) + "px) translateX(-50%)";
+      const label = "◆ " + Math.round(dist) + "m";
+      if (label !== prevMText) {
+        prevMText = label;
+        mMarker.textContent = label;
+      }
+      if (!mShown) {
+        mShown = true;
+        mMarker.style.display = "block";
+      }
+    } else if (mShown) {
+      mShown = false;
+      mMarker.style.display = "none";
     }
   }
 

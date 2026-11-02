@@ -1396,6 +1396,9 @@ export function createMissions(busArg, city, economy, sceneArg, levelArg) {
     get objectives() {
       return currentObjectives();
     },
+    get beacon() {
+      return beacon;
+    },
     update,
     reset,
     begin,
