@@ -245,6 +245,7 @@ import { createLeaderboard } from "./systems/leaderboard.js";
 import { createDaily } from "./systems/daily.js";
 import { createSaveTools } from "./systems/save-tools.js";
 import { createCloudSave } from "./systems/cloud-save.js";
+import { createAuth } from "./systems/auth.js";
 import { createMissions, STORY_DIALOGUE } from "./systems/missions.js";
 import { createEvents } from "./systems/events.js"; // NIGHT 30 P2 §8.1
 import { createPlayer } from "./player/controller.js";
@@ -553,8 +554,12 @@ const tutorial = createTutorial(uiRoot, bus, i18n);
 const photo = createPhotoMode(uiRoot, bus, camera, i18n);
 const saveTools = createSaveTools(bus, i18n);
 const saveToolsUI = createSaveToolsUI(uiRoot, bus, saveTools, i18n);
-const cloudSave = createCloudSave(bus);
-const cloudSaveUI = createCloudSaveUI(uiRoot, bus, cloudSave, i18n);
+const auth = createAuth(bus);
+const cloudSave = createCloudSave(bus, auth);
+const cloudSaveUI = createCloudSaveUI(uiRoot, bus, cloudSave, i18n, auth);
+// Revalidate any cached session once on boot: a live session flips cloud
+// saves into account mode; a dead one is dropped instead of failing later.
+auth.refresh();
 bus.addEventListener("photo-open", () => gamestate.addPause("photo"));
 bus.addEventListener("photo-closed", () => gamestate.removePause("photo"));
 

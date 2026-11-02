@@ -5,11 +5,18 @@
  * createCloudSave(bus) → { code(), save(code?), load(code), remove(code),
  *                          state(), resetLocal() }
  *
- * There is no account and no auth: the save CODE is the capability. Anyone who
- * knows a code can read or overwrite that cloud save, so the UI warns players
- * not to store personal data. Codes are 10 characters from a 31-symbol
- * alphabet (no 0/O/1/I/L), ~49.5 bits, generated with crypto.getRandomValues
- * and cached in localStorage under "gungame.cloud.code.v1".
+ * Two modes:
+ * - ACCOUNT (when an auth session exists): save/load/delete hit
+ *   /api/cloud-save with `Authorization: Bearer <token>` and no code — the
+ *   server binds the save to the account's user_id in Postgres. Only the
+ *   owner can reach it.
+ * - LEGACY CODE (anonymous fallback + migration source): the save CODE is
+ *   the capability. Anyone who knows a code can read or overwrite that
+ *   cloud save, so the UI warns players not to store personal data. Codes
+ *   are 10 characters from a 31-symbol alphabet (no 0/O/1/I/L), ~49.5 bits,
+ *   generated with crypto.getRandomValues and cached in localStorage under
+ *   "gungame.cloud.code.v1". A logged-in player can still load a code save
+ *   on purpose (that is how old code saves migrate into the account).
  *
  * The transport reuses the local backup contract exactly:
  * - KNOWN_KEYS / collectBundle() come from src/systems/save-tools.js, so cloud
@@ -128,8 +135,11 @@ function generateCode() {
 
 /**
  * @param {EventTarget} [bus]
+ * @param {{token?: () => string|null, user?: () => {email:string}|null}} [auth]
+ *   Optional account session — when auth.token() returns a token, save/load/
+ *   delete run in account mode unless an explicit code is passed.
  */
-export function createCloudSave(bus) {
+export function createCloudSave(bus, auth) {
   const B = bus && typeof bus.dispatchEvent === "function" ? bus : null;
 
   /** @type {string|null} */
@@ -163,6 +173,17 @@ export function createCloudSave(bus) {
   function errorResult(error, op) {
     emit("cloud-save-error", { op, code: error });
     return { ok: false, error };
+  }
+
+  /** Bearer header when a session exists, else {}. */
+  function authHeaders() {
+    const t = auth && typeof auth.token === "function" ? auth.token() : null;
+    return t ? { Authorization: "Bearer " + t } : {};
+  }
+
+  /** True when an account session is live (account mode available). */
+  function loggedIn() {
+    return !!(auth && typeof auth.token === "function" && auth.token());
   }
 
   function readStoredCode() {
@@ -250,17 +271,27 @@ export function createCloudSave(bus) {
   // --- save -----------------------------------------------------------------
   async function save(requestedCode) {
     if (busy) return errorResult("busy", "save");
-    const target = normalizeCode(
-      typeof requestedCode === "string" && requestedCode ? requestedCode : code()
-    );
-    if (!CLOUD_SAVE_CODE_RE.test(target)) return errorResult("bad-code", "save");
+    // Account mode: logged in and no explicit code → server binds by user.
+    const accountMode = loggedIn() && !normalizeCode(requestedCode);
+    const target = accountMode
+      ? ""
+      : normalizeCode(
+          typeof requestedCode === "string" && requestedCode ? requestedCode : code()
+        );
+    if (!accountMode && !CLOUD_SAVE_CODE_RE.test(target)) {
+      return errorResult("bad-code", "save");
+    }
 
     const collected = collectBundle();
     if (!collected.ok) return errorResult(collected.error, "save");
 
     let body;
     try {
-      body = JSON.stringify({ code: target, data: collected.bundle.data });
+      body = JSON.stringify(
+        accountMode
+          ? { data: collected.bundle.data }
+          : { code: target, data: collected.bundle.data }
+      );
     } catch {
       return errorResult("storage-unavailable", "save");
     }
@@ -274,7 +305,7 @@ export function createCloudSave(bus) {
       try {
         response = await fetch("/api/cloud-save", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...authHeaders() },
           body,
           cache: "no-store",
         });
@@ -291,10 +322,15 @@ export function createCloudSave(bus) {
       }
 
       const at = typeof payload.savedAt === "string" ? payload.savedAt : new Date().toISOString();
-      persistCode(target);
+      if (!accountMode) persistCode(target);
       lastSaveAt = at;
-      emit("cloud-save-saved", { code: target, at, keys: collected.keys.length });
-      return { ok: true, code: target };
+      emit("cloud-save-saved", {
+        code: target || null,
+        scope: accountMode ? "account" : "code",
+        at,
+        keys: collected.keys.length,
+      });
+      return { ok: true, code: target, scope: accountMode ? "account" : "code" };
     } catch (err) {
       console.warn("[cloud-save] save failed", err);
       return errorResult("server-error", "save");
@@ -373,17 +409,27 @@ export function createCloudSave(bus) {
 
   async function load(requestedCode) {
     if (busy) return errorResult("busy", "load");
+    // Account mode: logged in and no explicit code → the account's own save.
+    const accountMode = loggedIn() && !normalizeCode(requestedCode);
     const target = normalizeCode(requestedCode);
-    if (!CLOUD_SAVE_CODE_RE.test(target)) return errorResult("bad-code", "load");
+    if (!accountMode && !CLOUD_SAVE_CODE_RE.test(target)) {
+      return errorResult("bad-code", "load");
+    }
 
     busy = true;
     try {
       let response;
       try {
-        response = await fetch(
-          "/api/cloud-save?code=" + encodeURIComponent(target),
-          { method: "GET", cache: "no-store" }
-        );
+        response = accountMode
+          ? await fetch("/api/cloud-save", {
+              method: "GET",
+              headers: authHeaders(),
+              cache: "no-store",
+            })
+          : await fetch(
+              "/api/cloud-save?code=" + encodeURIComponent(target),
+              { method: "GET", cache: "no-store" }
+            );
       } catch {
         return errorResult("unavailable", "load");
       }
@@ -436,18 +482,26 @@ export function createCloudSave(bus) {
       if (!written.ok) return errorResult(written.error, "load");
 
       const at = new Date().toISOString();
-      persistCode(target);
+      if (!accountMode) persistCode(target);
       lastLoadAt = at;
       const reloadScheduled = scheduleReload();
       const keys = entries.map((entry) => entry.key);
       emit("cloud-save-loaded", {
-        code: target,
+        code: target || null,
+        scope: accountMode ? "account" : "code",
         keys,
         ignored,
         reloadScheduled,
         at,
       });
-      return { ok: true, code: target, keys, ignored, reloadScheduled };
+      return {
+        ok: true,
+        code: target,
+        scope: accountMode ? "account" : "code",
+        keys,
+        ignored,
+        reloadScheduled,
+      };
     } catch (err) {
       console.warn("[cloud-save] load failed", err);
       return errorResult("server-error", "load");
@@ -459,17 +513,26 @@ export function createCloudSave(bus) {
   // --- delete (optional) -----------------------------------------------------
   async function remove(requestedCode) {
     if (busy) return errorResult("busy", "delete");
+    const accountMode = loggedIn() && !normalizeCode(requestedCode);
     const target = normalizeCode(requestedCode);
-    if (!CLOUD_SAVE_CODE_RE.test(target)) return errorResult("bad-code", "delete");
+    if (!accountMode && !CLOUD_SAVE_CODE_RE.test(target)) {
+      return errorResult("bad-code", "delete");
+    }
 
     busy = true;
     try {
       let response;
       try {
-        response = await fetch(
-          "/api/cloud-save?code=" + encodeURIComponent(target),
-          { method: "DELETE", cache: "no-store" }
-        );
+        response = accountMode
+          ? await fetch("/api/cloud-save", {
+              method: "DELETE",
+              headers: authHeaders(),
+              cache: "no-store",
+            })
+          : await fetch(
+              "/api/cloud-save?code=" + encodeURIComponent(target),
+              { method: "DELETE", cache: "no-store" }
+            );
       } catch {
         return errorResult("unavailable", "delete");
       }
@@ -481,8 +544,12 @@ export function createCloudSave(bus) {
       if (!response.ok || !payload || payload.ok !== true) {
         return errorResult(mapHttpError(response.status, payload, "not-found"), "delete");
       }
-      emit("cloud-save-deleted", { code: target, at: new Date().toISOString() });
-      return { ok: true, code: target };
+      emit("cloud-save-deleted", {
+        code: target || null,
+        scope: accountMode ? "account" : "code",
+        at: new Date().toISOString(),
+      });
+      return { ok: true, code: target, scope: accountMode ? "account" : "code" };
     } catch (err) {
       console.warn("[cloud-save] delete failed", err);
       return errorResult("server-error", "delete");
@@ -510,6 +577,9 @@ export function createCloudSave(bus) {
   function state() {
     return {
       code: code(),
+      scope: loggedIn() ? "account" : "code",
+      account:
+        auth && typeof auth.user === "function" ? auth.user() : null,
       lastSave: lastSaveAt,
       lastLoad: lastLoadAt,
       busy,

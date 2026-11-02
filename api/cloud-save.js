@@ -17,9 +17,14 @@
  * The document stored in the blob is:
  *   { app:"gun-game", version:1, savedAt:"<ISO>", data:{...} }
  *
- * Auth model: there is none. The code IS the capability — anyone who knows it
- * can read or overwrite that save, so the UI warns players not to put personal
- * data in a save. Codes are generated client-side (10 chars, ~49.5 bits).
+ * Auth model — two modes:
+ * - ACCOUNT mode (preferred): `Authorization: Bearer <session>` with no
+ *   `code` → the save lives in Postgres keyed by user_id (api/_db.js). Only
+ *   the owning session can read/write/delete it.
+ * - LEGACY CODE mode (anonymous fallback + migration source): the code IS
+ *   the capability — anyone who knows it can read or overwrite that save,
+ *   so the UI warns players not to put personal data in one. Codes are
+ *   generated client-side (10 chars, ~49.5 bits).
  *
  * Security notes:
  * - Only whitelisted, bounded inputs are used to build the blob path.
@@ -34,6 +39,13 @@
  */
 
 import { put, list, del } from "@vercel/blob";
+import {
+  accountsAvailable,
+  defaultDb,
+  ensureSchema,
+  bearerToken,
+  userFromRequest,
+} from "./_db.js";
 
 export const CLOUD_SAVE_APP = "gun-game";
 export const CLOUD_SAVE_VERSION = 1;
@@ -156,7 +168,8 @@ async function findBlob(blob, pathname) {
 /**
  * Build a handler with injectable dependencies (tests) or the real ones.
  * @param {{
- *   put?: Function, list?: Function, del?: Function, fetch?: Function
+ *   put?: Function, list?: Function, del?: Function, fetch?: Function,
+ *   db?: {query: Function}, accountsAvailable?: () => boolean
  * }} [overrides]
  */
 export function createCloudSaveHandler(overrides = {}) {
@@ -167,6 +180,25 @@ export function createCloudSaveHandler(overrides = {}) {
   };
   const fetchImpl =
     overrides.fetch || (typeof fetch === "function" ? fetch : null);
+  const dbOverride = overrides.db || null;
+  const accountsOn = overrides.accountsAvailable || accountsAvailable;
+
+  /**
+   * Resolve the request to an account user, or null for the legacy path.
+   * A malformed/expired token is NOT anonymous — it is a 401 so a logged-in
+   * client never silently writes a public code save.
+   * @returns {Promise<{user?: {id:string,email:string}, error?: string}>}
+   */
+  async function resolveUser(req) {
+    if (!bearerToken(req)) return {};
+    if (!accountsOn()) return { error: "accounts-unavailable" };
+    const db = dbOverride || (await defaultDb());
+    if (!db) return { error: "accounts-unavailable" };
+    await ensureSchema(db);
+    const user = await userFromRequest(req, db);
+    if (!user) return { error: "not-authenticated" };
+    return { user };
+  }
 
   async function handlePost(req, res) {
     const body = await readBody(req);
@@ -184,11 +216,6 @@ export function createCloudSaveHandler(overrides = {}) {
       }
     }
     if (!isObject(parsed)) return fail(res, 400, "bad-body");
-
-    const code = parsed.code;
-    if (typeof code !== "string" || !CLOUD_SAVE_CODE_RE.test(code)) {
-      return fail(res, 400, "bad-code");
-    }
     if (!isObject(parsed.data)) return fail(res, 400, "bad-body");
 
     const savedAt = new Date().toISOString();
@@ -206,6 +233,36 @@ export function createCloudSaveHandler(overrides = {}) {
     }
     const size = byteLength(serialized);
     if (size > CLOUD_SAVE_MAX_BYTES) return fail(res, 413, "too-large");
+
+    // Account mode: Bearer token + no code → row keyed by the user.
+    if (parsed.code === undefined && bearerToken(req)) {
+      const resolved = await resolveUser(req);
+      if (resolved.error === "accounts-unavailable") {
+        return fail(res, 503, "accounts-unavailable");
+      }
+      if (resolved.error) return fail(res, 401, "not-authenticated");
+      try {
+        await (dbOverride || (await defaultDb())).query(
+          `INSERT INTO saves (user_id, payload, updated_at)
+           VALUES ($1, $2::jsonb, now())
+           ON CONFLICT (user_id)
+           DO UPDATE SET payload = EXCLUDED.payload, updated_at = now()`,
+          [resolved.user.id, serialized]
+        );
+      } catch (err) {
+        console.error(
+          "[cloud-save] account put failed:",
+          err && err.name ? err.name : "error"
+        );
+        return fail(res, 500, "server-error");
+      }
+      return send(res, 200, { ok: true, scope: "account", savedAt, size });
+    }
+
+    const code = parsed.code;
+    if (typeof code !== "string" || !CLOUD_SAVE_CODE_RE.test(code)) {
+      return fail(res, 400, "bad-code");
+    }
 
     try {
       await blob.put(codePath(code), serialized, {
@@ -230,6 +287,58 @@ export function createCloudSaveHandler(overrides = {}) {
 
   async function handleGet(req, res) {
     const code = queryCode(req);
+
+    // Account mode: Bearer token + no code → the caller's own save row.
+    if (!code && bearerToken(req)) {
+      const resolved = await resolveUser(req);
+      if (resolved.error === "accounts-unavailable") {
+        return fail(res, 503, "accounts-unavailable");
+      }
+      if (resolved.error) return fail(res, 401, "not-authenticated");
+      let rows;
+      try {
+        rows = await (dbOverride || (await defaultDb())).query(
+          `SELECT payload, updated_at FROM saves WHERE user_id = $1`,
+          [resolved.user.id]
+        );
+      } catch (err) {
+        console.error(
+          "[cloud-save] account get failed:",
+          err && err.name ? err.name : "error"
+        );
+        return fail(res, 500, "server-error");
+      }
+      const row = Array.isArray(rows) ? rows[0] : null;
+      if (!row) return fail(res, 404, "not-found");
+      let stored = row.payload;
+      if (typeof stored === "string") {
+        try {
+          stored = JSON.parse(stored);
+        } catch {
+          return fail(res, 502, "corrupt-save");
+        }
+      }
+      if (
+        !isObject(stored) ||
+        stored.app !== CLOUD_SAVE_APP ||
+        stored.version !== CLOUD_SAVE_VERSION ||
+        !isObject(stored.data)
+      ) {
+        return fail(res, 502, "corrupt-save");
+      }
+      return send(res, 200, {
+        ok: true,
+        scope: "account",
+        app: CLOUD_SAVE_APP,
+        version: CLOUD_SAVE_VERSION,
+        savedAt:
+          typeof stored.savedAt === "string"
+            ? stored.savedAt
+            : new Date(row.updated_at).toISOString(),
+        data: stored.data,
+      });
+    }
+
     if (!CLOUD_SAVE_CODE_RE.test(code)) return fail(res, 400, "bad-code");
 
     const pathname = codePath(code);
@@ -294,6 +403,33 @@ export function createCloudSaveHandler(overrides = {}) {
 
   async function handleDelete(req, res) {
     const code = queryCode(req);
+
+    // Account mode: Bearer token + no code → delete the caller's save row.
+    if (!code && bearerToken(req)) {
+      const resolved = await resolveUser(req);
+      if (resolved.error === "accounts-unavailable") {
+        return fail(res, 503, "accounts-unavailable");
+      }
+      if (resolved.error) return fail(res, 401, "not-authenticated");
+      let rows;
+      try {
+        rows = await (dbOverride || (await defaultDb())).query(
+          `DELETE FROM saves WHERE user_id = $1 RETURNING user_id`,
+          [resolved.user.id]
+        );
+      } catch (err) {
+        console.error(
+          "[cloud-save] account delete failed:",
+          err && err.name ? err.name : "error"
+        );
+        return fail(res, 500, "server-error");
+      }
+      if (!Array.isArray(rows) || rows.length === 0) {
+        return fail(res, 404, "not-found");
+      }
+      return send(res, 200, { ok: true, scope: "account", deleted: true });
+    }
+
     if (!CLOUD_SAVE_CODE_RE.test(code)) return fail(res, 400, "bad-code");
 
     const pathname = codePath(code);

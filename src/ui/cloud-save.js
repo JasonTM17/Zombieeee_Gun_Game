@@ -40,7 +40,15 @@ export const CLOUD_SAVE_UI_BUNDLE = {
   en: {
     cloudSaveTitle: "CLOUD SAVE",
     cloudSaveIntro:
-      "Keep one cloud copy of your progress. No account — the code is the key.",
+      "Keep one cloud copy of your progress. Sign in to bind it to your account.",
+    cloudAccountTitle: "ACCOUNT",
+    cloudEmailLabel: "EMAIL",
+    cloudPasswordLabel: "PASSWORD (8+ CHARS)",
+    cloudLoginBtn: "SIGN IN",
+    cloudRegisterBtn: "CREATE ACCOUNT",
+    cloudLogoutBtn: "SIGN OUT",
+    cloudSignedIn: "Signed in as {email}.",
+    cloudCodeOptional: "LEGACY CODE (OPTIONAL)",
     cloudLocalTitle: "LOCAL BACKUP",
     cloudLocalText: "Export or import a JSON file on this device.",
     cloudLocalOpen: "OPEN LOCAL BACKUP",
@@ -76,11 +84,25 @@ export const CLOUD_SAVE_UI_BUNDLE = {
     cloudErrServer: "Cloud server error. Try again.",
     cloudErrBusy: "Please wait…",
     cloudErrGeneric: "Cloud save failed.",
+    cloudErrBadEmail: "Enter a valid email.",
+    cloudErrBadPassword: "Password needs 8+ characters.",
+    cloudErrInvalidCredentials: "Wrong email or password.",
+    cloudErrEmailInUse: "That email already has an account.",
+    cloudErrNotAuthenticated: "Session expired — sign in again.",
+    cloudErrAccountsUnavailable: "Accounts are not set up on this deployment.",
   },
   vi: {
     cloudSaveTitle: "LƯU ĐÁM MÂY",
     cloudSaveIntro:
-      "Giữ một bản tiến trình trên đám mây. Không cần tài khoản — mã là chìa khóa.",
+      "Giữ một bản tiến trình trên đám mây. Đăng nhập để gắn với tài khoản của bạn.",
+    cloudAccountTitle: "TÀI KHOẢN",
+    cloudEmailLabel: "EMAIL",
+    cloudPasswordLabel: "MẬT KHẨU (8+ KÝ TỰ)",
+    cloudLoginBtn: "ĐĂNG NHẬP",
+    cloudRegisterBtn: "TẠO TÀI KHOẢN",
+    cloudLogoutBtn: "ĐĂNG XUẤT",
+    cloudSignedIn: "Đã đăng nhập: {email}.",
+    cloudCodeOptional: "MÃ CŨ (TÙY CHỌN)",
     cloudLocalTitle: "SAO LƯU CỤC BỘ",
     cloudLocalText: "Xuất hoặc nhập tệp JSON trên thiết bị này.",
     cloudLocalOpen: "MỞ SAO LƯU CỤC BỘ",
@@ -116,6 +138,12 @@ export const CLOUD_SAVE_UI_BUNDLE = {
     cloudErrServer: "Máy chủ đám mây lỗi. Hãy thử lại.",
     cloudErrBusy: "Vui lòng chờ…",
     cloudErrGeneric: "Lưu đám mây thất bại.",
+    cloudErrBadEmail: "Email không hợp lệ.",
+    cloudErrBadPassword: "Mật khẩu cần ít nhất 8 ký tự.",
+    cloudErrInvalidCredentials: "Sai email hoặc mật khẩu.",
+    cloudErrEmailInUse: "Email này đã có tài khoản.",
+    cloudErrNotAuthenticated: "Phiên đã hết hạn — đăng nhập lại.",
+    cloudErrAccountsUnavailable: "Bản triển khai này chưa cấu hình tài khoản.",
   },
 };
 
@@ -133,6 +161,12 @@ const ERROR_KEYS = {
   empty: "cloudErrEmpty",
   "server-error": "cloudErrServer",
   busy: "cloudErrBusy",
+  "bad-email": "cloudErrBadEmail",
+  "bad-password": "cloudErrBadPassword",
+  "invalid-credentials": "cloudErrInvalidCredentials",
+  "email-in-use": "cloudErrEmailInUse",
+  "not-authenticated": "cloudErrNotAuthenticated",
+  "accounts-unavailable": "cloudErrAccountsUnavailable",
 };
 
 const CLOUD_SAVE_CSS = `
@@ -333,9 +367,11 @@ let cloudSaveUid = 0;
  * @param {{code: Function, save: Function, load: Function,
  *          remove?: Function, state?: Function}} cloudSave
  * @param {{t: Function, registerBundle?: Function}} i18n
+ * @param {{user?: Function, login?: Function, register?: Function,
+ *          logout?: Function}} [auth] - optional account session system.
  * @returns {{open: () => void, close: () => void, isOpen: () => boolean}}
  */
-export function createCloudSaveUI(uiRoot, bus, cloudSave, i18n) {
+export function createCloudSaveUI(uiRoot, bus, cloudSave, i18n, auth) {
   if (typeof document === "undefined") {
     return { open() {}, close() {}, isOpen() { return false; } };
   }
@@ -401,6 +437,61 @@ export function createCloudSaveUI(uiRoot, bus, cloudSave, i18n) {
   // CLOUD
   const cloudSection = make("section", "gg-cloud-save-section", panel);
   const cloudTitle = make("h3", "gg-cloud-save-label", cloudSection);
+
+  // ACCOUNT — login/logout row; the cloud save binds to the account when a
+  // session is live. Hidden entirely when no auth system was injected.
+  const hasAuth = !!(
+    auth &&
+    typeof auth.login === "function" &&
+    typeof auth.logout === "function"
+  );
+  const accountTitle = hasAuth
+    ? make("h3", "gg-cloud-save-label", cloudSection)
+    : null;
+  const accountForm = hasAuth
+    ? make("div", "", cloudSection)
+    : null;
+  const emailLabel = accountForm ? make("label", "gg-cloud-save-text", accountForm) : null;
+  const emailId = "gg-cloud-save-email-" + uid;
+  if (emailLabel) emailLabel.setAttribute("for", emailId);
+  const emailInput = accountForm
+    ? /** @type {HTMLInputElement} */ (make("input", "gg-cloud-save-input", accountForm))
+    : null;
+  if (emailInput) {
+    emailInput.id = emailId;
+    emailInput.type = "email";
+    emailInput.autocomplete = "email";
+    emailInput.spellcheck = false;
+  }
+  const passwordLabel = accountForm ? make("label", "gg-cloud-save-text", accountForm) : null;
+  const passwordId = "gg-cloud-save-password-" + uid;
+  if (passwordLabel) passwordLabel.setAttribute("for", passwordId);
+  const passwordInput = accountForm
+    ? /** @type {HTMLInputElement} */ (make("input", "gg-cloud-save-input", accountForm))
+    : null;
+  if (passwordInput) {
+    passwordInput.id = passwordId;
+    passwordInput.type = "password";
+    passwordInput.autocomplete = "current-password";
+  }
+  const accountRow = accountForm ? make("div", "gg-cloud-save-row", accountForm) : null;
+  const loginBtn = accountRow
+    ? make("button", "gg-cloud-save-btn primary", accountRow)
+    : null;
+  if (loginBtn) loginBtn.type = "button";
+  const registerBtn = accountRow
+    ? make("button", "gg-cloud-save-btn", accountRow)
+    : null;
+  if (registerBtn) registerBtn.type = "button";
+  const accountInfo = hasAuth
+    ? make("div", "gg-cloud-save-row hidden", cloudSection)
+    : null;
+  const signedInText = accountInfo ? make("p", "gg-cloud-save-text", accountInfo) : null;
+  const logoutBtn = accountInfo
+    ? make("button", "gg-cloud-save-btn quiet", accountInfo)
+    : null;
+  if (logoutBtn) logoutBtn.type = "button";
+
   const codeLabel = make("label", "gg-cloud-save-text", cloudSection);
   const inputId = "gg-cloud-save-code-" + uid;
   codeLabel.setAttribute("for", inputId);
@@ -506,6 +597,35 @@ export function createCloudSaveUI(uiRoot, bus, cloudSave, i18n) {
     renderStatus();
   }
 
+  /** True while an account session is live. */
+  function loggedIn() {
+    return !!(hasAuth && auth.user && auth.user());
+  }
+
+  /**
+   * Swap the account block between the credential form and the signed-in
+   * strip, and relabel the code field (legacy/optional once signed in).
+   */
+  function renderAccount() {
+    if (!hasAuth) return;
+    const user = loggedIn() ? auth.user() : null;
+    if (accountForm) accountForm.classList.toggle("hidden", !!user);
+    if (accountInfo) accountInfo.classList.toggle("hidden", !user);
+    if (signedInText) {
+      signedInText.textContent = user
+        ? tr("cloudSignedIn", { email: user.email })
+        : "";
+    }
+    codeLabel.textContent = tr(user ? "cloudCodeOptional" : "cloudCodeLabel");
+    codeInput.setAttribute(
+      "aria-label",
+      tr(user ? "cloudCodeOptional" : "cloudCodeLabel")
+    );
+    // The "code is the capability" warning only applies to anonymous code
+    // saves; account saves are private by definition.
+    warning.classList.toggle("hidden", !!user);
+  }
+
   function applyTexts() {
     title.textContent = tr("cloudSaveTitle");
     intro.textContent = tr("cloudSaveIntro");
@@ -513,14 +633,19 @@ export function createCloudSaveUI(uiRoot, bus, cloudSave, i18n) {
     localText.textContent = tr("cloudLocalText");
     localBtn.textContent = tr("cloudLocalOpen");
     cloudTitle.textContent = tr("cloudCloudTitle");
-    codeLabel.textContent = tr("cloudCodeLabel");
+    if (accountTitle) accountTitle.textContent = tr("cloudAccountTitle");
+    if (emailLabel) emailLabel.textContent = tr("cloudEmailLabel");
+    if (passwordLabel) passwordLabel.textContent = tr("cloudPasswordLabel");
+    if (loginBtn) loginBtn.textContent = tr("cloudLoginBtn");
+    if (registerBtn) registerBtn.textContent = tr("cloudRegisterBtn");
+    if (logoutBtn) logoutBtn.textContent = tr("cloudLogoutBtn");
     copyBtn.textContent = tr("cloudCopy");
     saveBtn.textContent = tr("cloudSaveBtn");
     loadBtn.textContent = tr("cloudLoadBtn");
     deleteBtn.textContent = tr(deleteConfirm ? "cloudDeleteConfirm" : "cloudDeleteBtn");
     closeBtn.textContent = tr("cloudClose");
     warning.textContent = tr("cloudWarning");
-    codeInput.setAttribute("aria-label", tr("cloudCodeLabel"));
+    renderAccount();
     renderStatus();
   }
 
@@ -531,6 +656,11 @@ export function createCloudSaveUI(uiRoot, bus, cloudSave, i18n) {
     loadBtn.disabled = next;
     deleteBtn.disabled = next;
     copyBtn.disabled = next;
+    if (loginBtn) loginBtn.disabled = next;
+    if (registerBtn) registerBtn.disabled = next;
+    if (logoutBtn) logoutBtn.disabled = next;
+    if (emailInput) emailInput.disabled = next;
+    if (passwordInput) passwordInput.disabled = next;
   }
 
   function resetDeleteConfirm() {
@@ -634,10 +764,45 @@ export function createCloudSaveUI(uiRoot, bus, cloudSave, i18n) {
     applyResult(result, "save");
   }
 
+  async function runAuth(action) {
+    if (pending || !hasAuth) return;
+    const email = emailInput ? String(emailInput.value || "") : "";
+    const password = passwordInput ? String(passwordInput.value || "") : "";
+    setPending(true);
+    setStatus({ type: "loading" });
+    let result;
+    try {
+      result = await auth[action](email, password);
+    } catch {
+      result = { ok: false, error: "server-error" };
+    }
+    setPending(false);
+    if (result && result.ok === true) {
+      if (passwordInput) passwordInput.value = "";
+      setStatus({ type: "idle" });
+      renderAccount();
+      return;
+    }
+    setStatus({ type: "error", code: result && result.error ? result.error : "server-error" });
+  }
+
+  async function runLogout() {
+    if (pending || !hasAuth) return;
+    setPending(true);
+    try {
+      await auth.logout();
+    } catch {
+      /* local state already dropped by the system */
+    }
+    setPending(false);
+    renderAccount();
+    setStatus({ type: "idle" });
+  }
+
   async function runLoad() {
     if (pending) return;
     const requested = await readCodeInput();
-    if (!requested) {
+    if (!requested && !loggedIn()) {
       setStatus({ type: "error", code: "bad-code" });
       focusInput();
       return;
@@ -657,7 +822,7 @@ export function createCloudSaveUI(uiRoot, bus, cloudSave, i18n) {
   async function runDelete() {
     if (pending) return;
     const requested = await readCodeInput();
-    if (!requested) {
+    if (!requested && !loggedIn()) {
       setStatus({ type: "error", code: "bad-code" });
       focusInput();
       return;
@@ -710,6 +875,16 @@ export function createCloudSaveUI(uiRoot, bus, cloudSave, i18n) {
 
   // --- listeners --------------------------------------------------------------
   saveBtn.addEventListener("click", runSave);
+  if (loginBtn) loginBtn.addEventListener("click", () => runAuth("login"));
+  if (registerBtn) registerBtn.addEventListener("click", () => runAuth("register"));
+  if (logoutBtn) logoutBtn.addEventListener("click", runLogout);
+  if (passwordInput) {
+    passwordInput.addEventListener("keydown", (e) => {
+      if (!e || e.key !== "Enter") return;
+      if (typeof e.preventDefault === "function") e.preventDefault();
+      runAuth("login");
+    });
+  }
   loadBtn.addEventListener("click", runLoad);
   copyBtn.addEventListener("click", copyCode);
 
@@ -786,6 +961,12 @@ export function createCloudSaveUI(uiRoot, bus, cloudSave, i18n) {
   bus.addEventListener("cloud-save-error", (e) => {
     const d = e && e.detail ? e.detail : {};
     setStatus({ type: "error", code: d.code || "server-error" });
+  });
+
+  bus.addEventListener("auth-changed", () => {
+    renderAccount();
+    if (!openFlag) return;
+    setStatus({ type: "idle" });
   });
 
   bus.addEventListener("settings-changed", (e) => {
