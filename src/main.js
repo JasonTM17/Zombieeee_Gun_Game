@@ -222,6 +222,7 @@ import { createInput } from "./core/input.js";
 import { createLevel } from "./world/level.js";
 import { createCity } from "./world/city.js";
 import { createVegetation } from "./world/vegetation.js";
+import { createGroundDetail } from "./world/ground-detail.js";
 import { createScenery } from "./world/scenery.js";
 import { createHazards } from "./world/hazards.js";
 import { createWeather } from "./world/weather.js";
@@ -329,6 +330,7 @@ const city = createCity(scene, level);
 // Vegetation: 54 extra trees (live + dead) spread across all 7 districts,
 // with trunk colliders. Static geometry, deterministic seed, no per-frame cost.
 const vegetation = createVegetation(scene, level, city);
+const groundDetail = createGroundDetail(scene, level, city);
 // Set dressing: moon disc, skyline, lamp shafts, fire barrels, rubble,
 // sandbags, puddles, fireflies. Static except a cheap per-frame drift/flicker.
 const scenery = createScenery(scene, level, city);
@@ -1796,6 +1798,7 @@ const PLAYING_STEPS = [
   ["perksUI", (dt) => perksUI.update(dt)], // perk choice overlay timers
   ["atmosphere", (dt) => atmosphere.update(dt, player.position)], // P1 §5.7: moon shadow follows
   ["scenery", (dt) => scenery.update(dt, player.position)], // flames + fireflies drift
+  ["groundDetail", (dt) => groundDetail.update(dt)], // instanced cover: firefly drift only
   ["weather", (dt) => weather.update(dt, player.position)], // rain / storm / fog cycle
   ["weatherEffects", (dt) => weatherEffects.update(dt)], // live zombie speed multipliers
   ["forcedWeather", () => {
@@ -1836,6 +1839,7 @@ const GAMEOVER_STEPS = [
   ["combat", (dt) => combat.update(dt)], // let casings finish falling behind the death panel
   ["atmosphere", (dt) => atmosphere.update(dt, player.position)],
   ["scenery", (dt) => scenery.update(dt, player.position)],
+  ["groundDetail", (dt) => groundDetail.update(dt)],
   ["weather", (dt) => weather.update(dt, player.position)],
   ["wildlife", (dt) => wildlife.update(dt, player.position)],
 ];
@@ -1845,6 +1849,7 @@ const MENU_STEPS = [
   // atmosphere only (the story slides render over the parked spawn view).
   ["atmosphere", (dt) => atmosphere.update(dt, player.position)], // zombies deliberately do NOT update
   ["scenery", (dt) => scenery.update(dt, player.position)],
+  ["groundDetail", (dt) => groundDetail.update(dt)],
   ["weather", (dt) => weather.update(dt, player.position)],
   ["wildlife", (dt) => wildlife.update(dt, player.position)],
 ];
