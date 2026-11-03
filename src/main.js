@@ -1907,13 +1907,24 @@ const SHARED_STEPS = [
 let adsBlend = 0;
 let adsDeep = false; // deep-zoom gun (adsFov ≤ 32) → HUD scope overlay
 let adsTarget = 75; // last aimed FOV — kept so the ease-out has somewhere to go
+let adsToggled = false; // toggle mode: RMB click latches the aim on/off
 
 function updateAds(dt) {
   const w = weapons && weapons.list ? weapons.list[weapons.current] : null;
   const scoped = !!(w && (w.adsFov > 0 || (w.attachments && w.attachments.scope)));
   adsDeep = scoped && (w.adsFov || 55) <= 32;
-  const aiming =
-    gamestate.state === "playing" && scoped && input.isDown("Mouse2");
+  const playing = gamestate.state === "playing";
+  let aiming;
+  if (settings.get().adsToggle === true) {
+    // Click latches. The edge comes from wasPressed("Mouse2") — input.js
+    // registers the button into `pressed` while pointer-locked.
+    if (playing && input.wasPressed("Mouse2")) adsToggled = !adsToggled;
+    if (!scoped || !playing) adsToggled = false;
+    aiming = playing && scoped && adsToggled;
+  } else {
+    adsToggled = false;
+    aiming = playing && scoped && input.isDown("Mouse2");
+  }
   const base = sanitizeFov(settings.get().fov);
   if (aiming) adsTarget = Math.min(w.adsFov || 55, base);
   // ~90 ms ease in AND out; snap the last sliver so updateProjectionMatrix
@@ -1926,6 +1937,9 @@ function updateAds(dt) {
     camera.updateProjectionMatrix();
   }
   input.setLookScale(1 - adsBlend * 0.45);
+  if (weapons && typeof weapons.setAimBlend === "function") {
+    weapons.setAimBlend(adsBlend, adsDeep);
+  }
 }
 
 function frame() {

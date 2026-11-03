@@ -576,6 +576,7 @@ const RECOIL_TAU = 0.07;  // s — exponential recovery (~94% back at 0.2 s, per
 const FLASH_TIME = 0.04;  // s — muzzle flash (spec: 40 ms)
 const VM_KICK_TAU = 0.055; // s — viewmodel kick-back recovery
 const VM_POS = { x: 0.26, y: -0.24, z: -0.5 }; // lower-right of the camera
+const VM_ADS = { x: 0, y: -0.155, z: -0.42 }; // centered sight-line while aiming
 
 // --- local synth for the expansion guns (see SOUNDS in the header) -----------
 const SETTINGS_KEY = "gungame.settings"; // the key settings.js persists
@@ -846,6 +847,14 @@ export function createWeapons(camera, input, audio, bus) {
   let lastYawApplied = 0;
   let flashTimer = 0;
   let vmKick = 0;
+  // ADS viewmodel blend — main.js updateAds drives it via setAimBlend();
+  // deep = deep-zoom gun → the model hides and the HUD scope takes over.
+  let vmAimBlend = 0;
+  let vmAimDeep = false;
+  function setAimBlend(v, deep) {
+    vmAimBlend = Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0;
+    vmAimDeep = deep === true;
+  }
   let time = 0;
   let autoReloadT = -1;      // >= 0 → seconds until the pending auto-reload fires
   let spinT = 0;             // minigun trigger-held seconds (0..spinup)
@@ -1566,13 +1575,26 @@ export function createWeapons(camera, input, audio, bus) {
       rotX += s * 0.55;
       rotZ += s * 0.35;
     }
-    // Idle breathing sway + recoil kick-back toward the camera.
+    // Idle breathing sway + recoil kick-back toward the camera; the aim
+    // blend (main.js setAimBlend) damps sway/dip and eases the gun onto the
+    // centered sight-line pose instead.
+    const swayK = 1 - vmAimBlend * 0.85;
+    const px = VM_POS.x + Math.cos(time * 1.1) * 0.0025 * swayK;
+    const py =
+      VM_POS.y + Math.sin(time * 1.7) * 0.0035 * swayK + dipY * (1 - vmAimBlend);
+    const pz = VM_POS.z + vmKick * (1 - vmAimBlend * 0.6);
     vmRoot.position.set(
-      VM_POS.x + Math.cos(time * 1.1) * 0.0025,
-      VM_POS.y + Math.sin(time * 1.7) * 0.0035 + dipY,
-      VM_POS.z + vmKick
+      px + (VM_ADS.x - px) * vmAimBlend,
+      py + (VM_ADS.y - py) * vmAimBlend,
+      pz + (VM_ADS.z - pz) * vmAimBlend
     );
-    vmRoot.rotation.set(rotX + vmKick * 0.9, 0, rotZ);
+    vmRoot.rotation.set(
+      (rotX + vmKick * 0.9) * (1 - vmAimBlend),
+      0,
+      rotZ * (1 - vmAimBlend)
+    );
+    // Deep-zoom aim replaces the gun model with the HUD scope overlay.
+    vmRoot.visible = !(vmAimDeep && vmAimBlend > 0.85);
   }
 
   // Beyond the frozen contract — main.js MAY call this on fresh runs so a new
@@ -1844,5 +1866,7 @@ export function createWeapons(camera, input, audio, bus) {
     // PERKS — independent multiplier surface (see header PERK MODIFIERS):
     setPerkMods,
     getPerkMods,
+    // ADS — main.js drives the viewmodel aim blend + deep-zoom hide:
+    setAimBlend,
   };
 }

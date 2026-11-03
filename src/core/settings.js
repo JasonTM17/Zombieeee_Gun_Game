@@ -90,6 +90,7 @@ const DEFAULTS = Object.freeze({
   crosshairSize: 1,
   damageNumbers: true,
   reducedMotion: false,
+  adsToggle: false, // false = hold RMB to aim; true = click toggles it
 });
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -145,6 +146,9 @@ function sanitize(raw) {
     }
     if (typeof o.reducedMotion === "boolean") {
       out.reducedMotion = o.reducedMotion;
+    }
+    if (typeof o.adsToggle === "boolean") {
+      out.adsToggle = o.adsToggle;
     }
   }
   return out;

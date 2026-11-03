@@ -267,6 +267,7 @@ export function createInput(canvas, settings) {
     const code = "Mouse" + e.button;
     down.add(code);
     if (e.button === 0) clickPending = true;
+    else pressed.add(code); // wasPressed() edge — read by ADS toggle (Mouse2)
   });
 
   document.addEventListener("mouseup", (e) => {

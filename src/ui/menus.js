@@ -156,6 +156,7 @@ const MENU_BUNDLE = {
     crosshairSize: "Crosshair size",
     damageNumbers: "Damage numbers",
     reducedMotion: "Reduced motion",
+    adsToggle: "Toggle aim (RMB)",
     settingsLiveHint: "Applies live. Press H for all controls.",
     toggleOn: "ON",
     toggleOff: "OFF",
@@ -217,6 +218,7 @@ const MENU_BUNDLE = {
     crosshairSize: "Cỡ tâm ngắm",
     damageNumbers: "Số sát thương",
     reducedMotion: "Giảm chuyển động",
+    adsToggle: "Ngắm bật/tắt (chuột phải)",
     settingsLiveHint: "Áp dụng ngay. Nhấn H để xem toàn bộ điều khiển.",
     toggleOn: "BẬT",
     toggleOff: "TẮT",
@@ -512,6 +514,15 @@ export function createMenus(container, bus, settings, i18n, services) {
   make("span", "setting-value", rowMotion);
   motionBtn.addEventListener("click", toggleReducedMotion);
 
+  const rowAds = make("div", "setting-row", grid);
+  const adsLbl = bind(make("label", "setting-label", rowAds), "adsToggle");
+  const adsBtn = make("button", "btn btn-small setting-toggle", rowAds);
+  adsBtn.type = "button";
+  adsBtn.id = "gg-set-ads-toggle";
+  adsLbl.htmlFor = adsBtn.id;
+  make("span", "setting-value", rowAds);
+  adsBtn.addEventListener("click", toggleAdsMode);
+
   function numOr(v, fallback) {
     return typeof v === "number" && Number.isFinite(v) ? v : fallback;
   }
@@ -544,6 +555,18 @@ export function createMenus(container, bus, settings, i18n, services) {
       settings.set({ reducedMotion: next });
     }
     emitSettings({ reducedMotion: next });
+    refreshToggleUI();
+  }
+
+  /** ADS mode: off = hold RMB to aim; on = a click latches it. */
+  function toggleAdsMode() {
+    const s = settings && typeof settings.get === "function" ? settings.get() : null;
+    const cur = !!(s && s.adsToggle === true);
+    const next = !cur;
+    if (settings && typeof settings.set === "function") {
+      settings.set({ adsToggle: next });
+    }
+    emitSettings({ adsToggle: next });
     refreshToggleUI();
   }
 
@@ -581,6 +604,7 @@ export function createMenus(container, bus, settings, i18n, services) {
     const motionOn = !!(s && s.reducedMotion === true);
     setToggleUI(dmgBtn, dmgOn, "damageNumbers");
     setToggleUI(motionBtn, motionOn, "reducedMotion");
+    setToggleUI(adsBtn, !!(s && s.adsToggle === true), "adsToggle");
   }
 
   /** Sliders + swatches + toggles from the current store (show/refresh). */

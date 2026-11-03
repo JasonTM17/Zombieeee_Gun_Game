@@ -667,7 +667,9 @@ export function createCity(scene, level) {
     center: r.id === "safehouse" ? { x: -75, z: 8 }
       : r.id === "residential" ? { x: -72, z: -80 }
       : r.id === "commercial" ? { x: 57, z: -92 }
-      : r.id === "hospital" ? { x: 92, z: -12 } // §3.1 contract point — inside the main block
+      : r.id === "hospital" ? { x: 68, z: 0 } // §3.1 (92,-12) is inside the
+      // main block — the recorded contract deviation puts the center on the
+      // clear forecourt between the H-Q gate and the triage tents (header §3).
       : r.id === "park" ? { x: 57, z: 80 }
       : { x: -72, z: 80 }, // docks
   }));
