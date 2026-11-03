@@ -4,11 +4,15 @@
 
 **Gun Game** là game bắn súng góc nhìn thứ nhất (FPS) sinh tồn zombie chạy ngay trên trình duyệt — **thế giới 7 khu quận**, **12 khẩu súng**, **thương lái**, **bom ném**, **XP + 12 kỹ năng**, **hợp đồng phụ**, **thời tiết động ảnh hưởng gameplay**, **động vật hoang dã**, **trại người sống sót**, **barel nổ dây chuyền** — cộng thêm **Boss Rush 5 boss**, **phụ tùng súng**, **hai đồng đội Mai & Eli**, **sét bão**, **chế độ ảnh**, **sao lưu JSON**, **vòng vũ khí 12 ô**, **bảng xếp hạng**, **thử thách hằng ngày** và **lưu đám mây theo tài khoản** (Neon Postgres) — viết bằng **Three.js + Vite** (ES modules thuần, không framework), tối ưu cho cả GPU tích hợp. Sống sót qua từng đợt wave ngày càng đông, săn headshot để ghi điểm và phá kỷ lục của chính mình.
 
-![Đêm đầu tiên trong khu cách ly](docs/screenshots/smoke.png)
+![Đêm đầu tiên trong khu cách ly](docs/screenshots/gg-storm.png)
 
-| 7 quận phong tỏa | Sự kiện đêm & bão | Trận cuối với Nguồn |
+| Mở đầu câu chuyện | Bão qua các quận | Bản đồ 7 quận phong tỏa |
 |---|---|---|
-| ![Khu chuyện cốt truyện](docs/screenshots/p1-story.png) | ![Bão và sự kiện đêm](docs/screenshots/p2-events.png) | ![Trận Origin cuối cùng](docs/screenshots/p3-finale.png) |
+| ![Đoạn mở đầu cốt truyện](docs/screenshots/gg-intro.png) | ![Ngắm súng dưới mưa, waypoint chỉ đường nhiệm vụ](docs/screenshots/gg-gameplay.png) | ![Bản đồ thành phố với điểm nhiệm vụ](docs/screenshots/gg-map.png) |
+
+| Menu chính | Cửa hàng vũ khí | Tài khoản & lưu đám mây |
+|---|---|---|
+| ![Menu chính](docs/screenshots/gg-menu.png) | ![Cửa hàng súng với chỉ số và giá tiền](docs/screenshots/gg-shop.png) | ![Đăng nhập tài khoản lưu đám mây](docs/screenshots/gg-cloudsave.png) |
 
 **Mới chơi?** Đọc [hướng dẫn người chơi đầy đủ](docs/GUIDE.md) — hoặc bấm `H` ngay trong game để mở sổ tay ba tab ĐIỀU KHIỂN · ZOMBIE · HỒ SƠ.
 
