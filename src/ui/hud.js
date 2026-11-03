@@ -2595,6 +2595,16 @@ export function createHud(container, bus, audio, i18n) {
   // resume() also passes through that state mid-boss.
   bus.addEventListener("state-changed", (e) => {
     const st = e && e.detail ? e.detail.state : null;
+    if (st === "paused") {
+      // update() doesn't run while paused — the full-screen scope vignette
+      // must not freeze over the pause screen. It re-arms on the first
+      // playing frame if RMB is still held.
+      if (scopeShown) {
+        scopeShown = false;
+        scopeOverlay.style.display = "none";
+      }
+      cross.style.opacity = "";
+    }
     if (st === "gameover" || st === "menu") {
       hideBossBar();
       hideToast();
@@ -3076,22 +3086,23 @@ export function createHud(container, bus, audio, i18n) {
       const cosY = Math.cos(s.yaw);
       const sinY = Math.sin(s.yaw);
       const rightD = dxm * cosY - dzm * sinY;
-      const fwdD = -dxm * sinY - dzm * cosY;
       const w = window.innerWidth;
       const h = window.innerHeight;
       let px;
       let py;
-      if (fwdD > 0.3) {
-        // In front: project the 2.4 m float height for a true world anchor.
-        dmgV.set(s.mx, 2.4, s.mz).project(mCam);
+      // Always project first (2.4 m float height) — the behind-camera test
+      // must read the clip-space z, not yaw: at near-90° pitch a yaw-"front"
+      // target can sit behind the camera plane and project() would mirror it.
+      dmgV.set(s.mx, 2.4, s.mz).project(mCam);
+      if (dmgV.z <= 1 && dmgV.z >= -1) {
         px = clamp((dmgV.x * 0.5 + 0.5) * w, 24, w - 24);
         py = clamp((-dmgV.y * 0.5 + 0.5) * h, 44, h - 44);
       } else {
-        // Behind / hard-side: pin to the edge on the target's side.
+        // Truly behind: pin to the edge on the target's yaw side.
         px = rightD >= 0 ? w - 30 : 30;
         py = h * 0.45;
       }
-      const mPulse = 1 + 0.09 * Math.sin(now * 0.006);
+      const mPulse = reducedMotionOn ? 1 : 1 + 0.09 * Math.sin(now * 0.006);
       mMarker.style.transform =
         "translate(" + Math.round(px) + "px," + Math.round(py) + "px) translateX(-50%) scale(" + mPulse.toFixed(3) + ")";
       const label = "◆ " + Math.round(dist) + "m";

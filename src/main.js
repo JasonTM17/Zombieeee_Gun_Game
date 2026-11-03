@@ -532,7 +532,9 @@ const map = createMap(uiRoot, bus, city);
 // driven by ending.update(dt) OUTSIDE the state branches of frame(). The
 // three panel buttons re-emit "ui-continue" / "ui-ngplus" / "ui-quit" (main
 // owns the responses below).
-const ending = createEnding(uiRoot, bus, gamestate, audio, i18n, camera);
+const ending = createEnding(uiRoot, bus, gamestate, audio, i18n, camera, () =>
+  sanitizeFov(settings.get().fov)
+);
 
 // --- GUN GAME 2.0 P4 bootstrap (P4-K19, order FROZEN) -------------------------
 // profile → save → saveDeps → endless → achievements → menus (moved here with
@@ -1904,6 +1906,7 @@ const SHARED_STEPS = [
 // the settings value (applyFov keeps writing it — we overwrite per-frame).
 let adsBlend = 0;
 let adsDeep = false; // deep-zoom gun (adsFov ≤ 32) → HUD scope overlay
+let adsTarget = 75; // last aimed FOV — kept so the ease-out has somewhere to go
 
 function updateAds(dt) {
   const w = weapons && weapons.list ? weapons.list[weapons.current] : null;
@@ -1912,11 +1915,12 @@ function updateAds(dt) {
   const aiming =
     gamestate.state === "playing" && scoped && input.isDown("Mouse2");
   const base = sanitizeFov(settings.get().fov);
-  const target = aiming ? Math.min(w.adsFov || 55, base) : base;
-  // ~90 ms ease in/out; snap the last sliver so updateProjectionMatrix stops.
+  if (aiming) adsTarget = Math.min(w.adsFov || 55, base);
+  // ~90 ms ease in AND out; snap the last sliver so updateProjectionMatrix
+  // stops being called once settled.
   adsBlend += ((aiming ? 1 : 0) - adsBlend) * Math.min(1, dt * 12);
   if (Math.abs((aiming ? 1 : 0) - adsBlend) < 0.01) adsBlend = aiming ? 1 : 0;
-  const fov = base + (target - base) * adsBlend;
+  const fov = base + (adsTarget - base) * adsBlend;
   if (Math.abs(camera.fov - fov) > 0.01) {
     camera.fov = fov;
     camera.updateProjectionMatrix();

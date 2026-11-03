@@ -144,7 +144,15 @@ function el(tag, css, parent) {
  * @param {import("three").PerspectiveCamera} camera
  * @returns {Ending}
  */
-export function createEnding(container, bus, gamestate, audio, i18n, camera) {
+export function createEnding(
+  container,
+  bus,
+  gamestate,
+  audio,
+  i18n,
+  camera,
+  getBaseFov
+) {
   if (!container || typeof container.appendChild !== "function") {
     throw new Error("createEnding: container (#ui) is required");
   }
@@ -312,8 +320,15 @@ export function createEnding(container, bus, gamestate, audio, i18n, camera) {
     active = true;
     phase = "approach";
     phaseT = 0;
+    // ADS (main.js updateAds): camera.fov is ZOOMED when the killing shot is
+    // scoped — prefer the settings base FOV via the getter main passes.
+    const gf = typeof getBaseFov === "function" ? getBaseFov() : NaN;
     baseFov =
-      camera && Number.isFinite(camera.fov) && camera.fov > 0 ? camera.fov : 75;
+      Number.isFinite(gf) && gf > 0
+        ? gf
+        : camera && Number.isFinite(camera.fov) && camera.fov > 0
+          ? camera.fov
+          : 75;
     if (whiteTimer !== 0) {
       clearTimeout(whiteTimer);
       whiteTimer = 0;
