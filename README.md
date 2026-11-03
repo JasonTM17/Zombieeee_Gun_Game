@@ -2,7 +2,7 @@
 
 > *Thành phố đã tắt đèn từ lâu. Chỉ còn bạn, một khẩu súng lục và những con quái vật biết đường về khu cách ly. Qua từng quận phong tỏa — từ sân trường bỏ hoang đến bệnh viện tối đen — bạn lần theo dấu vết của Nguồn, thứ đã biến cả thành phố thành nghĩa địa. Mở từng cánh cổng, cứu từng người sống sót, và kết liễu con quái vật cuối cùng trước khi bình minh kịp lên.*
 
-**Gun Game** là game bắn súng góc nhìn thứ nhất (FPS) sinh tồn zombie chạy ngay trên trình duyệt — **thế giới 7 khu quận**, **12 khẩu súng**, **thương lái**, **bom ném**, **XP + 12 kỹ năng**, **hợp đồng phụ**, **thời tiết động ảnh hưởng gameplay**, **động vật hoang dã**, **trại người sống sót**, **barel nổ dây chuyền** — cộng thêm **Boss Rush 5 boss**, **phụ tùng súng**, **hai đồng đội Mai & Eli**, **sét bão**, **chế độ ảnh**, **sao lưu JSON**, **vòng vũ khí 12 ô**, **bảng xếp hạng**, **thử thách hằng ngày** và **lưu đám mây theo tài khoản** (Neon Postgres) — viết bằng **Three.js + Vite** (ES modules thuần, không framework), tối ưu cho cả GPU tích hợp. Sống sót qua từng đợt wave ngày càng đông, săn headshot để ghi điểm và phá kỷ lục của chính mình.
+**Gun Game** là game bắn súng góc nhìn thứ nhất (FPS) sinh tồn zombie chạy ngay trên trình duyệt — **thế giới 7 khu quận**, **12 khẩu súng**, **thương lái**, **bom ném**, **XP + 12 kỹ năng**, **hợp đồng phụ**, **thời tiết động ảnh hưởng gameplay**, **động vật hoang dã**, **trại người sống sót**, **barel nổ dây chuyền** — cộng thêm **Boss Rush 5 boss**, **phụ tùng súng**, **hai đồng đội Mai & Eli**, **sét bão**, **chế độ ảnh**, **sao lưu JSON**, **vòng vũ khí 12 ô**, **ngắm súng chuột phải + waypoint chỉ đường nhiệm vụ**, **bảng xếp hạng**, **thử thách hằng ngày** và **lưu đám mây theo tài khoản** (Neon Postgres) — viết bằng **Three.js + Vite** (ES modules thuần, không framework), tối ưu cho cả GPU tích hợp. Sống sót qua từng đợt wave ngày càng đông, săn headshot để ghi điểm và phá kỷ lục của chính mình.
 
 ![Đêm đầu tiên trong khu cách ly](docs/screenshots/gg-storm.png)
 
@@ -46,6 +46,7 @@ npm run preview   # phục vụ dist/ tại http://localhost:4173
 | `Space` | Nhảy |
 | Chuột | Ngắm (pointer lock) |
 | Chuột trái | Bắn |
+| Chuột phải (giữ) | **Ngắm súng** — sniper/DMR/railgun/crossbow và súng gắn **kính ngắm**; zoom FOV mượt, nhạy chuột giảm, scope overlay ở zoom sâu. Bật **Ngắm bật/tắt** trong CÀI ĐẶT để bấm thay vì giữ |
 | `R` | Nạp đạn |
 | `E` | **Tương tác** — kích hoạt máy phát điện / đống lửa trại, nhặt vật phẩm nhiệm vụ (gói tiếp tế, hộp thuốc, can xăng); nhắc **"E — TƯƠNG TÁC"** hiện khi đứng gần điểm tương tác |
 | Giữ `Q` | **Vòng vũ khí 12 ô** — xoay bằng hướng chuột / con lăn / phím số, thả `Q` để xác nhận, `Esc` để hủy (game tạm dừng khi vòng mở) |
@@ -168,7 +169,8 @@ Chi tiết từng mục, bảng vũ khí, toàn bộ cốt truyện và kỹ thu
 - **XP & 12 kỹ năng**: XP từ kill / nhiệm vụ / hợp đồng / qua đợt; tối đa **cấp 20**; mỗi cấp chọn **1 trong 3 thẻ** từ pool 12, cộng dồn vô hạn; game tạm dừng khi chọn.
 - **Hợp đồng phụ**: bảng ở An Toàn Nhà, mở bằng `T` trong **3.5 m**; **3 hợp đồng** active xoay sau mỗi 3 đợt sạch, **8 loại**, tự trả tiền + XP.
 - **Thế giới sống**: mưa / bão / sương mù theo chu kỳ — mưa giảm **10%** tốc zombie, bão **12%**, sương mù **5% + tầm nhìn thấp**; 12 quạ · 10 chuột · 3 chó hoang, 7 trại người sống sót tặng quà, 13 barel + 5 bình gas nổ dây chuyền.
-- **Trợ năng**: FOV 60–110, rung màn hình 0–100, 4 màu tâm ngắm, cỡ tâm ngắm 0.75–1.5, số sát thương bật/tắt, giảm chuyển động — áp dụng ngay và lưu vào `localStorage`.
+- **Ngắm súng & chỉ đường nhiệm vụ**: giữ **chuột phải** để ngắm — 4 súng có scope sẵn (sniper 30° · railgun 28° · DMR 42° · crossbow 50°) và mọi súng gắn kính ngắm; súng hạ về tâm, badge `⌖` cạnh tên súng ngắm được. Marker `◆ + khoảng cách` trên màn hình trỏ đúng mục tiêu nhiệm vụ, **ghim mép** khi ngoài tầm nhìn — đồng bộ với beacon 3D, la bàn và bản đồ.
+- **Trợ năng**: FOV 60–110, rung màn hình 0–100, 4 màu tâm ngắm, cỡ tâm ngắm 0.75–1.5, số sát thương bật/tắt, ngắm giữ/bật-tắt (chuột phải), giảm chuyển động — áp dụng ngay và lưu vào `localStorage`.
 - **Thanh 12 ô vũ khí** ở đáy màn hình, đúng thứ tự phím `1`…`9`/`0`/`-`/`=`: ô đang cầm sáng vàng kèm `băng / dự trữ`, ô chưa mua bị mờ + ổ khoá, ô đang nạp có dấu riêng và vạch đạn màu theo lượng đạn còn lại. Giữ `Q` để mở **vòng vũ khí** cùng 12 ô đó.
 - **Tutorial lần đầu**: 9 bước (di chuyển → chạy → bắn → nạp → đổi súng → nhảy → tương tác → cửa hàng → sổ tay), chỉ tiến khi bạn làm đúng và tự nhảy sau 20 s mỗi bước để không chặn game; lưu cờ `gungame.tutorial.v1`. Chạy lại bằng nút **HUẤN LUYỆN** ở menu.
 - **Tự nạp đạn**: phát bắn làm băng đạn về 0 mà còn đạn dự trữ → **tự động nạp sau 0.35 s** (một lần; đổi súng sẽ hủy). Kéo cò khi hết băng mà còn dự trữ → **click khô + nạp ngay**. Hết cả băng lẫn dự trữ → chỉ khô đạn như cũ.
@@ -987,6 +989,7 @@ Mở **CÀI ĐẶT** ở menu chính hoặc menu tạm dừng. Mọi thay đổi
 | **Màu tâm ngắm** | Lục lam · Lục · Hổ phách · Trắng | **Trắng** (`#e6f1ff`) | Đổi màu tick tâm ngắm |
 | **Cỡ tâm ngắm** | 0.75–1.5 (bước 0.05) | **1.0** | Phóng to/thu nhỏ toàn bộ tâm ngắm |
 | **Số sát thương** | Bật / Tắt | **Bật** | Số bay khi trúng đích (headshot đỏ, thường trắng) |
+| **Ngắm bật/tắt (chuột phải)** | Bật / Tắt | **Tắt** | Tắt = giữ chuột phải để ngắm; Bật = bấm để bật/tắt ngắm |
 | **Giảm chuyển động** | Bật / Tắt | **Tắt** | Tắt rung camera + tắt kick tâm ngắm + rút ngắn pulse HUD |
 
 - **Giảm chuyển động** ghi đè **Rung màn hình** về 0 (không xoá giá trị đã lưu; tắt lại là rung trở về mức cũ).
@@ -1004,7 +1007,7 @@ Mở **CÀI ĐẶT** ở menu chính hoặc menu tạm dừng. Mọi thay đổi
 
 | Key | Nội dung | Xoá thì mất gì |
 |---|---|---|
-| `gungame.settings` | độ nhạy, âm lượng, ngôn ngữ, high score, độ khó, FOV, rung, tâm ngắm, số sát thương, giảm chuyển động | Toàn bộ thiết lập về mặc định |
+| `gungame.settings` | độ nhạy, âm lượng, ngôn ngữ, high score, độ khó, FOV, rung, tâm ngắm, số sát thương, ngắm bật/tắt, giảm chuyển động | Toàn bộ thiết lập về mặc định |
 | `gungame.save.v1` | save tự động: tiền, súng + nâng cấp, nhiệm vụ, cổng, điểm, wave | Nút TIẾP TỤC biến mất |
 | `gungame.endless.v1` | kỷ lục Sinh Tồn `{wave, score}` | Mất kỷ lục Sinh Tồn |
 | `gungame.profile.v1` | thống kê trọn đời (kill, headshot, chết, giờ chơi, boss, tiền, kỷ lục) | Mất thống kê vĩnh viễn |
@@ -1014,6 +1017,7 @@ Mở **CÀI ĐẶT** ở menu chính hoặc menu tạm dừng. Mọi thay đổi
 | `gungame.bossrush.board.v1` | top 10 Boss Rush local `{score,time,bossesDown,win,daily,dateKey,at}` | Mất bảng xếp hạng Boss Rush |
 | `gungame.bossrush.daily.v1` | kết quả thử thách ngày `{dateKey,complete,best}` | Mất best/trạng thái daily hôm nay |
 | `gungame.cloud.code.v1` | mã lưu đám mây đã dùng gần nhất (10 ký tự) | Mất mã đã lưu; bản trên cloud vẫn còn nếu biết mã |
+| `gungame.auth.session.v1` | session đăng nhập tài khoản `{token, user}` | Đăng xuất khỏi máy này; bản lưu trên Neon vẫn còn |
 | `gungame.tutorial.v1` | cờ `{done:true}` của tutorial | Tutorial chạy lại |
 
 Bộ **DỮ LIỆU LƯU** (`F5` / `F9`) và **LƯU ĐÁM MÂY** chỉ dùng **7 key tiến trình**: `settings`, `save.v1`, `endless.v1`, `profile.v1`, `achv.v1`, `codex.v1`, `codex.progress.v1` — **không** gồm `tutorial`, `bossrush.board`, `bossrush.daily` hay `cloud.code`.

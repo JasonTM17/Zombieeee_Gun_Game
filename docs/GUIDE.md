@@ -17,7 +17,7 @@ Cần **Node.js** `^20.19.0` hoặc `>=22.12.0` (yêu cầu của Vite 8): `npm 
 | **ĐẤU BOSS** | **Boss Rush**: 5 boss liên tiếp ở Vùng Cách Ly (xem mục 16) |
 | **THỬ THÁCH NGÀY** | **Daily Challenge**: Boss Rush với modifier cố định theo ngày + thời tiết ép buộc (xem 17.3) |
 | **BẢNG XẾP HẠNG** | Top 10 Boss Rush local, tab **TẤT CẢ / HẰNG NGÀY** (xem 17.2) |
-| **CÀI ĐẶT** | Độ nhạy, âm lượng, EN/VI, độ khó, **trợ năng** (FOV, rung, tâm ngắm, số sát thương, giảm chuyển động) |
+| **CÀI ĐẶT** | Độ nhạy, âm lượng, EN/VI, độ khó, **trợ năng** (FOV, rung, tâm ngắm, số sát thương, ngắm bật/tắt, giảm chuyển động) |
 | **HƯỚNG DẪN** | Sổ tay ba tab (như phím `H`) |
 | **ĐIỀU KHIỂN** | Mở thẳng tab ĐIỀU KHIỂN của sổ tay |
 | **HUẤN LUYỆN** | Chạy lại tutorial 9 bước |
@@ -30,7 +30,7 @@ Menu chính có **15 nút** (TIẾP TỤC ẩn khi chưa có save) trong **lư�
 
 **Tutorial lần đầu** gồm 9 bước: di chuyển → chạy → bắn → nạp → đổi súng → nhảy → tương tác → cửa hàng → sổ tay. Bước chỉ tiến khi làm đúng và tự nhảy sau **20 s**; hoàn thành hoặc **BỎ QUA** ghi cờ `gungame.tutorial.v1`. Chạy lại bằng nút **HUẤN LUYỆN**.
 
-**HUD:** máu + **giáp** + tiền góc trái; đạn `băng / dự trữ` + tên súng góc phải (pistol hiện `∞`); wave + điểm trên cùng; thanh máu boss ngay dưới; **thanh 12 ô vũ khí** ở đáy (ô đang cầm sáng vàng, ô chưa mua mờ + ổ khoá, ô đang nạp có dấu riêng); **chip thời tiết** góc trái trên (`CLEAR / RAIN / STORM / FOG` + % cường độ, `LOW VIS` khi sương); **chip bom** ngay trên ô đạn (`F NÉM · V ĐỔI`); **dòng LV + thanh XP**; tâm ngắm giãn theo spread; hitmarker trắng/đỏ khi headshot; kill feed 3 dòng; compass strip chỉ hướng; bản đồ `M` 7 khu. Giữ `Q` mở **vòng vũ khí 12 ô**.
+**HUD:** máu + **giáp** + tiền góc trái; đạn `băng / dự trữ` + tên súng góc phải (pistol hiện `∞`); wave + điểm trên cùng; thanh máu boss ngay dưới; **thanh 12 ô vũ khí** ở đáy (ô đang cầm sáng vàng, ô chưa mua mờ + ổ khoá, ô đang nạp có dấu riêng); **chip thời tiết** góc trái trên (`CLEAR / RAIN / STORM / FOG` + % cường độ, `LOW VIS` khi sương); **chip bom** ngay trên ô đạn (`F NÉM · V ĐỔI`); **dòng LV + thanh XP**; tâm ngắm giãn theo spread; hitmarker trắng/đỏ khi headshot; kill feed 3 dòng; compass strip chỉ hướng; **waypoint `◆ + m`** trỏ đúng mục tiêu nhiệm vụ, ghim mép màn hình khi ngoài tầm nhìn; bản đồ `M` 7 khu. Giữ `Q` mở **vòng vũ khí 12 ô**.
 
 **Bảy khu:** An Toàn Nhà (hub, M1) · Khu Dân Cư (quota 20, M2) · Phố Thương Mại (25, M3) · Bệnh Viện (30, M4) · Công Viên (25, M5) · Bến Cảng (30, M6) · Vùng Cách Ly (M7–M10). Quota chỉ đếm **walker / runner / brute** hạ **trong đúng khu**; crawler, bloater, armored và boss không tính.
 
@@ -43,6 +43,7 @@ Menu chính có **15 nút** (TIẾP TỤC ẩn khi chưa có save) trong **lư�
 | `Space` | Nhảy |
 | Chuột | Ngắm — cần pointer lock (bấm vào canvas) |
 | Chuột trái | Bắn |
+| Chuột phải (giữ) | **Ngắm súng** — sniper/DMR/railgun/crossbow + súng gắn kính ngắm; CÀI ĐẶT → **Ngắm bật/tắt** đổi sang bấm |
 | `R` | Nạp đạn |
 | Giữ `Q` | **Vòng vũ khí 12 ô** — hướng chuột / con lăn / phím số để chọn, thả `Q` xác nhận, `Esc` hủy |
 | `1` `2` `3` | Pistol · Shotgun · Rifle (miễn phí từ đầu) |
