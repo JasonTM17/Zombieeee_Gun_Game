@@ -818,6 +818,23 @@ export function createHud(container, bus, audio, i18n) {
   compassWrap.appendChild(compassCanvas);
   const compassCtx = compassCanvas.getContext("2d");
 
+  // ADS deep-zoom scope overlay: dark vignette outside a clear center circle
+  // plus hair-thin cross lines — one div, three background layers, zero JS
+  // cost beyond display toggling (main passes extras.ads {blend, deep}).
+  const scopeOverlay = make("div", "scope-overlay", root);
+  css(scopeOverlay, {
+    position: "absolute",
+    inset: "0",
+    display: "none",
+    pointerEvents: "none",
+    background:
+      "linear-gradient(to right, transparent calc(50% - 0.5px), rgba(0,0,0,0.85) calc(50% - 0.5px), rgba(0,0,0,0.85) calc(50% + 0.5px), transparent calc(50% + 0.5px))," +
+      "linear-gradient(to bottom, transparent calc(50% - 0.5px), rgba(0,0,0,0.85) calc(50% - 0.5px), rgba(0,0,0,0.85) calc(50% + 0.5px), transparent calc(50% + 0.5px))," +
+      "radial-gradient(circle at 50% 50%, transparent 34%, rgba(0,0,0,0.4) 36%, rgba(0,0,0,0.97) 42%)",
+    zIndex: "5",
+  });
+  let scopeShown = false;
+
   // P2+ mission waypoint: a floating ◆ + distance tag projected onto the
   // objective through extras.cam — pins to the screen edge when the target
   // sits behind the camera, so the player always knows which way to run.
@@ -1572,6 +1589,7 @@ export function createHud(container, bus, audio, i18n) {
   // starter set (weapons.js: pistol/shotgun/rifle owned, the shop guns not);
   // extras.weapons corrects it as soon as main passes weapons.list.
   const wbarOwned = WEAPON_SLOTS.map((_, i) => i < 3);
+  const wbarScoped = WEAPON_SLOTS.map(() => false); // adsFov>0 or scope fitted
   let wbarActive = 0; // active slot index (0 = pistol at spawn)
   let wbarActiveName = ""; // active weapon name last painted
   let wbarMag = -1; // last painted active mag
@@ -1613,6 +1631,13 @@ export function createHud(container, bus, audio, i18n) {
     const label = key ? tr(key) : String(name || "");
     wLabelCache.set(name, label);
     return label;
+  }
+
+  /** Name label + the ⌖ badge when the cached armory entry can aim. */
+  function weaponDisplayLabel(name) {
+    const idx = WEAPON_INDEX[name];
+    const scoped = idx !== undefined && wbarScoped[idx];
+    return weaponLabel(name) + (scoped ? " ⌖" : "");
   }
 
   // --- weapon slot bar helpers (additive) --------------------------------------
@@ -1744,10 +1769,22 @@ export function createHud(container, bus, audio, i18n) {
         wbarOwned[idx] = owned;
         changed = true;
       }
+      // ADS badge: the armory entry carries adsFov (inherent scope) and the
+      // trader scope attachment — the weapon name label shows ⌖ for either.
+      const scoped =
+        (Number(entry.adsFov) || 0) > 0 ||
+        !!(entry.attachments && entry.attachments.scope);
+      if (wbarScoped[idx] !== scoped) {
+        wbarScoped[idx] = scoped;
+        changed = true;
+      }
     }
     if (changed) {
       paintBarOwnership();
       paintBarLabels(); // the locked hint in the tooltip changed
+      // A scope bought on the ACTIVE gun doesn't change wname — repaint the
+      // label so its ⌖ badge appears without a weapon switch.
+      if (prevWeapon) wName.textContent = weaponDisplayLabel(prevWeapon);
     }
   }
 
@@ -1992,7 +2029,7 @@ export function createHud(container, bus, audio, i18n) {
     scoreLbl.textContent = tr("score");
     hpLbl.textContent = tr("health");
     reloadNote.textContent = tr("hudReloading");
-    if (prevWeapon) wName.textContent = weaponLabel(prevWeapon);
+    if (prevWeapon) wName.textContent = weaponDisplayLabel(prevWeapon);
     // EXPANSION labels.
     moneyLbl.textContent = tr("hudMoney");
     hintAction.textContent = tr("hudShopHint");
@@ -2198,6 +2235,11 @@ export function createHud(container, bus, audio, i18n) {
     if (mShown) {
       mShown = false;
       mMarker.style.display = "none";
+    }
+    if (scopeShown) {
+      scopeShown = false;
+      scopeOverlay.style.display = "none";
+      cross.style.opacity = "";
     }
     hideDmgNumbers(); // GUN GAME 2.0 P4: no floating numbers survive a run end
     mapOpen = false; // the map closes itself on the same states — stay in sync
@@ -2776,15 +2818,28 @@ export function createHud(container, bus, audio, i18n) {
     // every update() call, independent of the gameplay arguments.
     tickDamageNumbers(dt, extras ? extras.cam : null);
 
+    // ADS state (main.js): blend eases 0→1 while aiming; deep = sniper-class
+    // zoom → scope overlay replaces the tick crosshair.
+    const adsB = extras && extras.ads ? extras.ads.blend : 0;
+    const wantScope = !!(extras && extras.ads && extras.ads.deep && adsB > 0.6);
+    if (wantScope !== scopeShown) {
+      scopeShown = wantScope;
+      scopeOverlay.style.display = wantScope ? "block" : "none";
+    }
+    cross.style.opacity = wantScope ? "0" : "";
+
     // Crosshair: ease toward base + weapon spread, plus decaying shot kick.
+    // Aiming tightens the gap up to 55% so the reticle reads as steadier.
     kick *= Math.exp(-dt * 9);
     const spread =
       weapons && Number.isFinite(weapons.spread) ? Number(weapons.spread) : 0;
-    const target = clamp(
-      BASE_GAP + clamp(spread, 0, 0.2) * GAP_PER_RAD + kick,
-      BASE_GAP,
-      MAX_GAP
-    );
+    const target =
+      clamp(
+        BASE_GAP + clamp(spread, 0, 0.2) * GAP_PER_RAD + kick,
+        BASE_GAP,
+        MAX_GAP
+      ) *
+      (1 - adsB * 0.55);
     gapCur += (target - gapCur) * Math.min(1, dt * 20);
     if (Math.abs(gapCur - gapWritten) > 0.25) {
       gapWritten = gapCur;
@@ -2823,7 +2878,7 @@ export function createHud(container, bus, audio, i18n) {
 
     const wname = String(weapons.name || "");
     if (wname !== prevWeapon) {
-      wName.textContent = weaponLabel(wname);
+      wName.textContent = weaponDisplayLabel(wname);
       prevWeapon = wname;
     }
 
@@ -3036,8 +3091,9 @@ export function createHud(container, bus, audio, i18n) {
         px = rightD >= 0 ? w - 30 : 30;
         py = h * 0.45;
       }
+      const mPulse = 1 + 0.09 * Math.sin(now * 0.006);
       mMarker.style.transform =
-        "translate(" + Math.round(px) + "px," + Math.round(py) + "px) translateX(-50%)";
+        "translate(" + Math.round(px) + "px," + Math.round(py) + "px) translateX(-50%) scale(" + mPulse.toFixed(3) + ")";
       const label = "◆ " + Math.round(dist) + "m";
       if (label !== prevMText) {
         prevMText = label;

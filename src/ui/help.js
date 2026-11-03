@@ -105,6 +105,7 @@ const HELP_BUNDLE = {
     helpJump: "Jump",
     helpAim: "Aim",
     helpFire: "Fire",
+    helpAimDown: "Hold: aim down sights (scoped guns)",
     helpReload: "Reload",
     helpWeaponWheel: "Hold for weapon wheel",
     helpSwitch: "Switch weapon",
@@ -277,6 +278,7 @@ const HELP_BUNDLE = {
     helpJump: "Nhảy",
     helpAim: "Ngắm",
     helpFire: "Bắn",
+    helpAimDown: "Giữ: ngắm súng (súng có scope)",
     helpReload: "Nạp đạn",
     helpWeaponWheel: "Giữ để mở vòng vũ khí",
     helpSwitch: "Đổi súng",
@@ -445,6 +447,7 @@ const HELP_SECTIONS = [
     rows: [
       { keys: ["Mouse"], labelKey: "helpAim" },
       { keys: ["Mouse L"], labelKey: "helpFire" },
+      { keys: ["Mouse R"], labelKey: "helpAimDown" },
       { keys: ["F"], labelKey: "helpThrowBomb" },
       { keys: ["V"], labelKey: "helpSwitchBomb" },
       { keys: ["R"], labelKey: "helpReload" },

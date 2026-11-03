@@ -1574,9 +1574,11 @@ const hudExtrasScratch = {
   endless: null, // GUN GAME 2.0 P4 (P4-K12): {active, wave, score} | null
   cam: null, // GUN GAME 2.0 P4 (P4-K16): the camera for the floating numbers
   weapons: null, // live armory list → HUD weapon-slot ownership/ammo
+  ads: null, // {blend, deep} — ADS state: crosshair tighten + scope overlay
 };
 const hudBossScratch = { position: null, hp: 0, maxHp: 0, type: "" };
 const hudMissionScratch = { x: 0, z: 0 }; // reused — zero per-frame alloc
+const hudAdsScratch = { blend: 0, deep: false }; // ADS state → HUD widgets
 const hudEventScratch = { type: "", x: 0, z: 0 };
 // mapExtras (§8.4): the map's 10 Hz argument — boss + yaw + mission/event.
 const mapExtrasScratch = { boss: null, yaw: 0, mission: null, event: null };
@@ -1696,6 +1698,11 @@ function hudExtras() {
   // assignments (zero-alloc — endless.snapshot() reuses its own scratch).
   hudExtrasScratch.endless = endless.isActive() ? endless.snapshot() : null;
   hudExtrasScratch.cam = camera;
+  // ADS: the HUD tightens the crosshair with blend and shows the scope
+  // overlay on deep-zoom guns (sniper/railgun) — same scratch, zero alloc.
+  hudAdsScratch.blend = adsBlend;
+  hudAdsScratch.deep = adsDeep;
+  hudExtrasScratch.ads = adsBlend > 0.02 ? hudAdsScratch : null;
   // HUD weapon-slot bar: the live armory (ownership + per-slot ammo). Refs
   // only — the HUD reads name/owned/mag/reserve/magSize/reloading.
   hudExtrasScratch.weapons = weapons.list;
@@ -1896,10 +1903,12 @@ const SHARED_STEPS = [
 // sensitivity scales down with the zoom, and the base FOV always comes from
 // the settings value (applyFov keeps writing it — we overwrite per-frame).
 let adsBlend = 0;
+let adsDeep = false; // deep-zoom gun (adsFov ≤ 32) → HUD scope overlay
 
 function updateAds(dt) {
   const w = weapons && weapons.list ? weapons.list[weapons.current] : null;
   const scoped = !!(w && (w.adsFov > 0 || (w.attachments && w.attachments.scope)));
+  adsDeep = scoped && (w.adsFov || 55) <= 32;
   const aiming =
     gamestate.state === "playing" && scoped && input.isDown("Mouse2");
   const base = sanitizeFov(settings.get().fov);
